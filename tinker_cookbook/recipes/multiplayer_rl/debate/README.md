@@ -1,6 +1,34 @@
 # Debate Environment
 
-Algorithm-agnostic debate environment for Tinker RL. Two debaters defend candidate answers; a judge evaluates. Produces structured trajectories consumable by any training algorithm (GRPO, ExIt, DPO, MCTS, actor-critic).
+Algorithm-agnostic debate environment for Tinker RL. Two debaters defend candidate answers; a judge evaluates. Works with any training algorithm (GRPO, ExIt, DPO, MCTS, actor-critic).
+
+## Quickstart
+
+```bash
+# Setup
+export $(cat .env | xargs)   # or set TINKER_API_KEY directly
+uv sync
+
+# Smoke test (~$0.01, writes HTML trace)
+uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.smoke_mcq
+
+# Train (GRPO on GPQA diamond, frozen opponent + LLM judge)
+uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.train
+
+# Train with custom config (chz entrypoint)
+uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.train \
+  --model_name Qwen/Qwen3-8B \
+  --batch_size 8 \
+  --group_size 4 \
+  --learning_rate 3e-5 \
+  --num_rounds 2 \
+  --prompts_ref scientific_mcq
+
+# Run tests (offline, no API needed)
+uv run pytest tinker_cookbook/recipes/multiplayer_rl/debate/ -x -q
+```
+
+The smoke test writes an HTML trace to `/tmp/tinker-examples/smoke_mcq.html` — open it to inspect the full debate (system prompts, per-turn I/O, judge verdict, metrics).
 
 ## Architecture
 
@@ -15,13 +43,36 @@ Env      (Layer 3)  Thin Tinker adapter (~30 lines). Owns renderer. Converts tok
 **File map:**
 ```
 debate/
+  # Core
   types.py       Frozen types: Role, Phase, TurnSlot, Utterance, DebateState, ...
   plugins.py     StepRewardFn, JudgeCallback, OutcomeRewardFn protocols
   schedule.py    build_schedule() -> tuple[TurnSlot, ...]
   visibility.py  Visibility policy registry + get_visible_messages()
   reducer.py     Pure state transitions (apply_action, commit_slot_actions, ...)
   runtime.py     DebateRuntime: async shell over reducer
-  env.py         DebateEnv, DebateGroupBuilder, DebateDataset, DebateDatasetBuilder
+  env.py         DebateEnv, DebateGroupBuilder, DebateDataset
+
+  # Scoring pipeline
+  scoring.py     FieldSpec, ScoringMode, classifiers, normalizers
+  parsing.py     XML field extraction (extract_fields, generate_format_instructions)
+  mcq.py         MCQ answer normalization (normalize_mcq, strip_think)
+  trajectory.py  Transcript queries (final_answer, answers_by_round, ...)
+  metrics.py     16 metric factories (accuracy, judge_quality, truth_win, ...)
+  judge.py       LLMJudgeCallback with schema-driven verdict parsing
+
+  # Prompts
+  prompts/
+    __init__.py          DebatePrompts, resolve_prompts(), YAML loading
+    default.yaml         Minimal debate prompts
+    scientific_mcq.yaml  GPQA-style MCQ with field extraction
+    galaxy_brain.yaml    Open-ended debate
+
+  # Entry points
+  train.py       Training loop (GRPO, frozen opponent, LLM judge)
+  smoke_mcq.py   Smoke test: 2 GPQA problems, HTML trace
+  smoke_galaxy.py  Smoke test: open-ended debate
+  dump_io.py     Debug: print assembled prompts for each role/phase
+  trace_fmt.py   HTML trace renderer
 ```
 
 ## Protocols
@@ -56,25 +107,44 @@ With `include_judge_turns=True`, `JUDGE_QUERY` and `JUDGE_VERDICT` slots are app
 
 ## Usage
 
-### Basic GRPO training
+### Training config
+
+`train.py` uses `chz` for config. Key knobs in `CLIConfig`:
+
+| Param | Default | What it does |
+|---|---|---|
+| `model_name` | `Qwen/Qwen3-4B-Instruct-2507` | Trained debater model |
+| `opponent_model` | same | Frozen opponent model |
+| `judge_model` | same | LLM judge model |
+| `batch_size` | 4 | Problems per training batch |
+| `group_size` | 4 | Rollouts per problem (for advantage estimation) |
+| `num_rounds` | 2 | Debate rounds (propose + N-1 critique rounds) |
+| `learning_rate` | 3e-5 | LoRA learning rate |
+| `prompts_ref` | `default` | Prompt config (`default`, `scientific_mcq`, `galaxy_brain`) |
+| `protocol_kind` | `SEQUENTIAL` | `SEQUENTIAL`, `SIMULTANEOUS`, or `HYBRID` |
+| `randomize_position` | `True` | Trained model plays both debater_a and debater_b |
+
+### Programmatic usage
 
 ```python
-from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateDatasetBuilder
+from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateDataset
 
-builder = DebateDatasetBuilder(
-    model_name="Qwen/Qwen3-8B",
-    renderer_name="qwen3",
-    protocol_kind="sequential",
+dataset = DebateDataset(
+    problems=[("Is P=NP?", "Yes", "No", "No")],  # (prompt, ans_a, ans_b, target)
+    batch_size=1,
+    renderer=renderer,
+    protocol_kind=ProtocolKind.SEQUENTIAL,
     num_rounds=2,
-    train_problems=[
-        ("Is P=NP?", "Yes, P=NP", "No, P!=NP"),
-        ("Is the Earth flat?", "Yes", "No"),
-    ],
+    judge_callback=judge_callback,
+    outcome_reward_fn=zero_sum_outcome_reward,
+    opponent_completer=opponent_completer,
+    group_size=4,
+    prompts_ref="scientific_mcq",
+    metrics=mcq_debate_metrics(),
 )
-train_dataset, test_dataset = await builder()
 ```
 
-Pass `train_dataset` to any Tinker RL training loop (GRPO, etc.). Each `get_batch()` returns `DebateGroupBuilder` instances that produce paired `DebateEnv` objects sharing a runtime.
+Each `get_batch()` returns `DebateGroupBuilder` instances that produce paired `DebateEnv` objects sharing a runtime.
 
 ### Custom rewards with plugins
 
@@ -171,13 +241,61 @@ Each branch gets an independent `DebateRuntime` with a forked copy of the state.
 | `JudgeCallback.on_final` | `(JudgeRequest) -> DebateOutcome` | When schedule is exhausted |
 | `OutcomeRewardFn` | `(DebateOutcome) -> Mapping[Role, float]` | In `compute_group_rewards()` |
 
-## Key design decisions
+## Design notes
 
-- **Text is canonical** in reducer/runtime layers. Token conversion happens only in the env layer.
-- **All state is frozen.** `DebateState` is an immutable dataclass; transitions produce new instances. This makes forking trivial and eliminates mutation bugs.
-- **Visibility is policy-based.** The `visibility_policy` field on each `TurnSlot` keys into a registry of filter functions. Two built-in policies: `all_prior` (see everything) and `completed_rounds_only` (hide current-round opponent text).
-- **Reasoning stripping.** When `open_reasoning=False`, `<thinking>...</thinking>` tags are stripped from opponent messages in the visibility layer.
-- **Simultaneous barrier.** In simultaneous slots, the first arriver buffers and waits on an `asyncio.Condition`; the last arriver commits and notifies all waiters.
+Text is canonical in reducer/runtime layers; token conversion happens only in the env layer. All state is frozen (`DebateState` is immutable; transitions produce new instances), which makes forking trivial.
+
+Visibility is policy-based: each `TurnSlot` has a `visibility_policy` that keys into a registry of filter functions (`all_prior` or `completed_rounds_only`). When `open_reasoning=False`, `<thinking>` tags are stripped from opponent messages.
+
+In simultaneous slots, the first arriver buffers and waits on an `asyncio.Condition`; the last arriver commits and notifies all waiters.
+
+## Scoring pipeline
+
+YAML field definitions → `FieldSpec` with scoring + normalizer → XML extraction from model output → structured fields on `Utterance` → transcript queries → metrics + rewards.
+
+```
+Model output: "<answer>C</answer><reasoning>because...</reasoning>"
+    ↓ extract_fields(text, field_specs)         [parsing.py]
+    ↓ stored on Utterance.fields                [reducer.py, runtime.py]
+    ↓ queried via final_answer(), answers_by_round()  [trajectory.py]
+    ↓ metric computation                        [metrics.py]
+accuracy(DEBATER_A)(state) → MetricResult(1.0)
+```
+
+Field specs are defined in YAML prompt configs (e.g. `scientific_mcq.yaml`):
+```yaml
+fields:
+  debater_a:
+    propose:
+      answer: {type: str, scoring: {mode: enum, values: [A, B, C, D]}}
+      reasoning: {type: str, description: "your scientific reasoning"}
+```
+
+### Key metrics
+
+| Metric | What it measures |
+|---|---|
+| `truth_win_if_disagreement` | Does debate help judges pick truth under adversarial pressure? Primary alignment signal. |
+| `judge_quality` | Did the debate produce the right verdict? |
+| `truth_surfaced` | Was the correct answer argued by any debater? |
+| `concession_correctness` | +1 revised from wrong, -1 capitulated from correct. Detects sycophancy. |
+| `accuracy(role)` | Per-role final answer correctness. |
+| `disagreement` | Did adversarial pressure manifest? |
+| `draw_rate` | Is the judge hedging? |
+
+See `metrics.py` for all 16 metrics and `mcq_debate_metrics()` for the default set.
+
+## Testing
+
+All 314 tests run offline.
+
+```bash
+uv run pytest tinker_cookbook/recipes/multiplayer_rl/debate/ -x -q
+uv run pytest tinker_cookbook/recipes/multiplayer_rl/debate/test_reducer.py -x -q
+
+# Debug prompt assembly (prints what each role sees at each phase)
+uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.dump_io --prompts scientific_mcq
+```
 
 ## References
 
