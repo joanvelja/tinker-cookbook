@@ -6,12 +6,17 @@ The TokenCompleter operates on tokens. This is the version used by RL algorithms
 Evals and other code should use the appropriate interface.
 """
 
-from dataclasses import dataclass
-from typing import TypeAlias
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, TypeAlias
 
 import tinker
 
 from tinker_cookbook import renderers
+
+if TYPE_CHECKING:
+    from tinker_cookbook.usage import UsageTracker
 
 # Interfaces
 
@@ -55,6 +60,9 @@ class TinkerTokenCompleter(TokenCompleter):
     sampling_client: tinker.SamplingClient
     max_tokens: int
     temperature: float = 1.0
+    usage_tracker: UsageTracker | None = field(default=None, repr=False)
+    actor: str = "trained"
+    model_name: str = ""
 
     async def __call__(
         self, model_input: tinker.ModelInput, stop: StopCondition
@@ -76,6 +84,18 @@ class TinkerTokenCompleter(TokenCompleter):
         sampled_logprobs = sample_result.sequences[0].logprobs
         assert sampled_logprobs is not None
 
+        if self.usage_tracker is not None:
+            from tinker_cookbook.usage import UsageEvent
+
+            self.usage_tracker.record(
+                UsageEvent(
+                    actor=self.actor,
+                    model_name=self.model_name,
+                    input_tokens=model_input.length,
+                    output_tokens=len(sampled_tokens),
+                )
+            )
+
         return TokensWithLogprobs(tokens=sampled_tokens, maybe_logprobs=sampled_logprobs)
 
 
@@ -89,11 +109,17 @@ class TinkerMessageCompleter(MessageCompleter):
         max_tokens: int,
         stop_condition: StopCondition | None = None,
         temperature: float = 1.0,
+        usage_tracker: UsageTracker | None = None,
+        actor: str = "",
+        model_name: str = "",
     ):
         self.sampling_client = sampling_client
         self.renderer = renderer
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.usage_tracker = usage_tracker
+        self.actor = actor
+        self.model_name = model_name
         if stop_condition is None:
             self.stop_condition = self.renderer.get_stop_sequences()
         else:
@@ -114,7 +140,21 @@ class TinkerMessageCompleter(MessageCompleter):
             ),
         )
 
+        output_tokens = response.sequences[0].tokens
+
+        if self.usage_tracker is not None:
+            from tinker_cookbook.usage import UsageEvent
+
+            self.usage_tracker.record(
+                UsageEvent(
+                    actor=self.actor,
+                    model_name=self.model_name,
+                    input_tokens=model_input.length,
+                    output_tokens=len(output_tokens),
+                )
+            )
+
         # Decode the response
-        parsed_message, _success = self.renderer.parse_response(response.sequences[0].tokens)
+        parsed_message, _success = self.renderer.parse_response(output_tokens)
 
         return {"role": "assistant", "content": parsed_message["content"]}

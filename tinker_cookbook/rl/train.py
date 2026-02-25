@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from tinker_cookbook import checkpoint_utils
 from tinker_cookbook.completers import TinkerTokenCompleter
+from tinker_cookbook.usage import UsageEvent, UsageTracker
 from tinker_cookbook.display import colorize_example
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator, SamplingClientEvaluatorBuilder
 from tinker_cookbook.rl.data_processing import (
@@ -423,6 +424,7 @@ async def do_sync_training_with_stream_minibatch(
     dataset: RLDataset,
     ml_logger: ml_log.Logger,
     tokenizer: Tokenizer,
+    usage_tracker: UsageTracker | None = None,
 ):
     """
     Implements fully synchronous on-policy training with minibatch streaming.
@@ -475,6 +477,8 @@ async def do_sync_training_with_stream_minibatch(
                     temperature=cfg.temperature,
                     do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
                     enable_logging=enable_logging,
+                    usage_tracker=usage_tracker,
+                    model_name=cfg.model_name,
                 )
                 metrics["time/trajectory_group_worker_loop/total"] = time.time() - t_start
                 if trajectory_group is not None:
@@ -508,10 +512,13 @@ async def do_sync_training_with_stream_minibatch(
                 training_client,
                 kl_reference_client,
                 tokenizer,
+                usage_tracker=usage_tracker,
             )
 
         # Log metrics
         metrics.update(full_batch_metrics)
+        if usage_tracker is not None:
+            metrics.update(usage_tracker.as_metrics())
         metrics["time/total"] = time.time() - t_start
         ml_logger.log_metrics(metrics, step=i_batch)
 
@@ -545,6 +552,7 @@ async def do_async_training(
     dataset: RLDataset,
     ml_logger: ml_log.Logger,
     tokenizer: Tokenizer,
+    usage_tracker: UsageTracker | None = None,
 ):
     """Implements async off-policy training, capped at K steps off policy."""
     assert cfg.async_config is not None
@@ -611,6 +619,8 @@ async def do_async_training(
                 max_tokens=cfg.max_tokens,
                 temperature=cfg.temperature,
                 do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
+                usage_tracker=usage_tracker,
+                model_name=cfg.model_name,
             )
             if trajectory_group is None:
                 trajectory_groups_queue.put_nowait(None)
@@ -685,6 +695,7 @@ async def do_async_training(
                     kl_reference_client,
                     tokenizer,
                     filter_stale_trajectory_group,
+                    usage_tracker=usage_tracker,
                 )
             else:
                 if not filter_stale_trajectory_group(wrapped_trajectory_group):
@@ -714,12 +725,15 @@ async def do_async_training(
                     tokenizer,
                     [g.env_group_builder for g in wrapped_trajectory_groups],
                     [g.trajectory_group for g in wrapped_trajectory_groups],
+                    usage_tracker=usage_tracker,
                 )
             sampling_client_step = i_batch + 1
             sampling_client_updated_event.set()
 
             # Log metrics
             metrics.update(train_step_metrics)
+            if usage_tracker is not None:
+                metrics.update(usage_tracker.as_metrics())
             metrics["time/training_loop/total"] = time.time() - t_start
             ml_logger.log_metrics(metrics, step=i_batch)
             i_batch += 1
@@ -772,8 +786,17 @@ async def do_group_rollout_and_filter_constant_reward(
     temperature: float,
     do_remove_constant_reward_groups: bool,
     enable_logging: bool = True,
+    usage_tracker: UsageTracker | None = None,
+    model_name: str = "",
 ) -> TrajectoryGroup | None:
-    policy = TinkerTokenCompleter(sampling_client, max_tokens=max_tokens, temperature=temperature)
+    policy = TinkerTokenCompleter(
+        sampling_client,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        usage_tracker=usage_tracker,
+        actor="trained",
+        model_name=model_name,
+    )
 
     with logtree.optional_enable_logging(enable_logging):
         trajectory_group = await do_group_rollout(env_group_builder, policy)
@@ -898,6 +921,7 @@ async def do_train_step_streaming_and_get_sampling_client(
     kl_reference_client: tinker.SamplingClient | None,
     tokenizer: Tokenizer,
     trajectory_group_filter: Callable[[WrappedTrajectoryGroup | None], bool] = lambda _: True,
+    usage_tracker: UsageTracker | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     """
     As soon as we have enough trajectories for a minibatch, we will train on them.
@@ -958,6 +982,16 @@ async def do_train_step_streaming_and_get_sampling_client(
                 kl_discount_factor=cfg.kl_discount_factor,
             )
             metrics.update(prepare_minibatch_metrics)
+
+            if usage_tracker is not None:
+                train_tokens = sum(d.model_input.length for d in data_D)
+                usage_tracker.record(UsageEvent(
+                    actor="training",
+                    model_name=cfg.model_name,
+                    input_tokens=train_tokens,
+                    output_tokens=0,
+                    call_type="train",
+                ))
 
             # Enqueue forward-backward (we'll await results after all minibatches are enqueued)
             with timed(f"train/fwd_bwd_substep_{i_substep}_mb_{i_minibatch}_enqueue", metrics):
@@ -1027,6 +1061,7 @@ async def do_train_step_and_get_sampling_client(
     tokenizer: Tokenizer,
     env_group_builders_P: Sequence[EnvGroupBuilder],
     trajectory_groups_P: list[TrajectoryGroup],
+    usage_tracker: UsageTracker | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     update_scope_context({"step": i_batch})
 
@@ -1040,6 +1075,16 @@ async def do_train_step_and_get_sampling_client(
         kl_discount_factor=cfg.kl_discount_factor,
     )
     metrics.update(prepare_minibatch_metrics)
+
+    if usage_tracker is not None:
+        train_tokens = sum(d.model_input.length for d in data_D)
+        usage_tracker.record(UsageEvent(
+            actor="training",
+            model_name=cfg.model_name,
+            input_tokens=train_tokens,
+            output_tokens=0,
+            call_type="train",
+        ))
 
     with timed("train", metrics):
         training_logprobs_D = await train_step(
@@ -1080,6 +1125,7 @@ async def do_sync_training(
     dataset: RLDataset,
     ml_logger: ml_log.Logger,
     tokenizer: Tokenizer,
+    usage_tracker: UsageTracker | None = None,
 ):
     """Implements fully synchronous on-policy training"""
     # Initial sampling client
@@ -1124,6 +1170,8 @@ async def do_sync_training(
                         temperature=cfg.temperature,
                         do_remove_constant_reward_groups=False,
                         enable_logging=i < cfg.num_groups_to_log,
+                        usage_tracker=usage_tracker,
+                        model_name=cfg.model_name,
                     )
                     for i, builder in enumerate(env_group_builders_P)
                 ),
@@ -1142,10 +1190,13 @@ async def do_sync_training(
             tokenizer,
             env_group_builders_P,
             trajectory_groups_P,
+            usage_tracker=usage_tracker,
         )
 
         # Log metrics
         metrics.update(train_step_metrics)
+        if usage_tracker is not None:
+            metrics.update(usage_tracker.as_metrics())
         metrics["time/total"] = time.time() - t_start
         ml_logger.log_metrics(metrics, step=i_batch)
 
@@ -1153,6 +1204,7 @@ async def do_sync_training(
 @scope
 async def main(
     cfg: Config,
+    usage_tracker: UsageTracker | None = None,
 ):
     """Main training loop for MDP RL."""
     ml_logger = ml_log.setup_logging(
@@ -1243,6 +1295,7 @@ async def main(
         dataset=dataset,
         ml_logger=ml_logger,
         tokenizer=tokenizer,
+        usage_tracker=usage_tracker,
     )
 
     # Save final checkpoint
@@ -1257,6 +1310,10 @@ async def main(
         )
     else:
         logger.info("Training was already complete; nothing to do")
+
+    # Print cost report
+    if usage_tracker is not None:
+        logger.info(usage_tracker.format_cost_report())
 
     # Cleanup
     ml_logger.close()

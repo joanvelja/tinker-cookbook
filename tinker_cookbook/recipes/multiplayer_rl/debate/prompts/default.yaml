@@ -1,0 +1,28 @@
+version: 2
+
+system:
+  judge:
+    default: "You are the judge. Evaluate the debaters' arguments."
+  debater_a:
+    default: "You are {{ viewer_role }}.{% if has_assigned_answer %} Your goal is to defend your assigned position.{% endif %}"
+  debater_b:
+    default: "You are {{ viewer_role }}.{% if has_assigned_answer %} Your goal is to defend your assigned position.{% endif %}"
+
+question:
+  judge: "{{ task_prompt }}"
+  debater_a: "{{ task_prompt }}{% if has_assigned_answer %}\n\nYour assigned position: {{ answer }}{% endif %}"
+  debater_b: "{{ task_prompt }}{% if has_assigned_answer %}\n\nYour assigned position: {{ answer }}{% endif %}"
+
+user:
+  judge:
+    final: "Which debater was more convincing?"
+  debater_a:
+    default: ""
+  debater_b:
+    default: ""
+
+fields:
+  judge:
+    final:
+      decision: {type: str, description: "debater_a or debater_b or tie"}
+      reason: {type: str, description: "your reasoning"}

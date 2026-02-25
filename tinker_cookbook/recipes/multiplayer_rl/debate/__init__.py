@@ -1,0 +1,82 @@
+"""Debate environment for Tinker RL."""
+
+from .env import (
+    DebateBranchGroupBuilder,
+    DebateDataset,
+    DebateDatasetBuilder,
+    DebateEnv,
+    DebateGroupBuilder,
+    DebateProblem,
+)
+from .judge import LLMJudgeCallback, zero_sum_outcome_reward
+from .metrics import MetricFn, MetricResult, mcq_debate_metrics
+from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
+from .prompts import DebatePrompts, resolve_prompts
+from .scoring import FieldSpec
+from .runtime import DebateRuntime, SubmitResult
+from .schedule import build_schedule
+from .types import (
+    ActionResult,
+    DebateOutcome,
+    DebateSnapshot,
+    DebateSpec,
+    DebateState,
+    JudgeDecision,
+    JudgeRequest,
+    Phase,
+    ProtocolKind,
+    Role,
+    TurnSlot,
+    VisibilityPolicy,
+    TurnTicket,
+    Utterance,
+)
+from .visibility import build_generation_messages, get_visible_messages
+
+__all__ = [
+    # Enums
+    "Phase",
+    "ProtocolKind",
+    "Role",
+    "VisibilityPolicy",
+    # Frozen dataclasses
+    "ActionResult",
+    "DebateOutcome",
+    "DebateSnapshot",
+    "DebateSpec",
+    "DebateState",
+    "JudgeDecision",
+    "JudgeRequest",
+    "TurnSlot",
+    "TurnTicket",
+    "Utterance",
+    # Protocols
+    "JudgeCallback",
+    "OutcomeRewardFn",
+    "StepRewardFn",
+    # Env + builders
+    "DebateEnv",
+    "DebateGroupBuilder",
+    "DebateBranchGroupBuilder",
+    "DebateDataset",
+    "DebateDatasetBuilder",
+    "DebateProblem",
+    # Metrics
+    "MetricFn",
+    "MetricResult",
+    "mcq_debate_metrics",
+    # Runtime
+    "DebateRuntime",
+    "SubmitResult",
+    # Concrete implementations
+    "LLMJudgeCallback",
+    "zero_sum_outcome_reward",
+    # Prompts
+    "DebatePrompts",
+    "FieldSpec",
+    "resolve_prompts",
+    # Functions
+    "build_schedule",
+    "build_generation_messages",
+    "get_visible_messages",
+]
