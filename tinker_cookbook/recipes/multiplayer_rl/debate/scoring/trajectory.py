@@ -1,7 +1,7 @@
 """Transcript query helpers for debate state."""
 from __future__ import annotations
 
-from .types import DebateState, Phase, Role, Utterance
+from ..types import DebateState, Phase, Role, Utterance
 
 Answer = str
 

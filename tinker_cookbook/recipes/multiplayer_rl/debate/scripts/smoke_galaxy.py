@@ -22,11 +22,11 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.usage import UsageTracker
 from tinker_cookbook.utils import logtree
 
-from .env import DebateDataset, DebateEnv
-from .judge import LLMJudgeCallback, zero_sum_outcome_reward
-from .prompts import resolve_prompts
+from ..env import DebateDataset, DebateEnv
+from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
+from ..prompts import resolve_prompts
 from .trace_fmt import DebateTraceCSSInjector, render_rollout_html
-from .types import ProtocolKind
+from ..types import ProtocolKind
 
 
 MODEL = "Qwen/Qwen3-4B-Instruct-2507"

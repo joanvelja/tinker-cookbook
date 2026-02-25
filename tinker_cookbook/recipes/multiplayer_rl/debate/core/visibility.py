@@ -9,8 +9,8 @@ from collections.abc import Callable
 
 from tinker_cookbook.renderers import Message
 
-from .prompts import resolve_prompts
-from .types import DebateState, Role, TurnSlot, Utterance, VisibilityPolicy
+from ..prompts import resolve_prompts
+from ..types import DebateState, Role, TurnSlot, Utterance, VisibilityPolicy
 
 VisibilityFn = Callable[[DebateState, Role], list[Utterance]]
 REGISTRY: dict[VisibilityPolicy, VisibilityFn] = {}

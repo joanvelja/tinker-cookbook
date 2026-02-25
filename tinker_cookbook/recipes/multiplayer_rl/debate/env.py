@@ -26,12 +26,12 @@ from tinker_cookbook.rl.types import (
 from tinker_cookbook.completers import MessageCompleter, StopCondition
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
-from .metrics import MetricFn, MetricResult, mcq_debate_metrics
+from .scoring.metrics import MetricFn, MetricResult, mcq_debate_metrics
 from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
 from .prompts import check_ab_symmetry, resolve_prompts
-from .reducer import fork_state, get_current_slot
-from .runtime import DebateRuntime
-from .schedule import build_schedule
+from .core.reducer import fork_state, get_current_slot
+from .core.runtime import DebateRuntime
+from .core.schedule import build_schedule
 from .types import (
     DebateSnapshot,
     DebateSpec,
@@ -40,7 +40,7 @@ from .types import (
     Role,
     TurnTicket,
 )
-from .visibility import build_generation_messages
+from .core.visibility import build_generation_messages
 
 # (task_prompt, answer_a, answer_b) or (task_prompt, answer_a, answer_b, target)
 DebateProblem = tuple[str, str, str] | tuple[str, str, str, str]

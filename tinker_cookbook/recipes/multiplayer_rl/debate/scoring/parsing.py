@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from .scoring import FieldSpec
+    from .fields import FieldSpec
 
 _log = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def extract_fields(text: str, specs: dict[str, FieldSpec]) -> dict[str, Any] | N
 
 def generate_format_instructions(fields: Mapping[str, FieldSpec]) -> str:
     """Generate XML format instruction text from field specs."""
-    from .scoring import BinaryScoring, EnumScoring, NumericScoring
+    from .fields import BinaryScoring, EnumScoring, NumericScoring
 
     lines = ["You MUST include the following XML tags in your response:"]
     for name, spec in fields.items():

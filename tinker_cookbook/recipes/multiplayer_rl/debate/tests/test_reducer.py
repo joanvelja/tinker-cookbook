@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.reducer import (
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.reducer import (
     apply_action,
     apply_judge_event,
     commit_slot_actions,
@@ -12,7 +12,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.reducer import (
     get_current_slot,
     get_eligible_roles,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.schedule import build_schedule
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateSpec,
     DebateState,

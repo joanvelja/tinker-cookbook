@@ -21,14 +21,14 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     Role,
     Utterance,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.schedule import build_schedule
-from tinker_cookbook.recipes.multiplayer_rl.debate.reducer import apply_action
-from tinker_cookbook.recipes.multiplayer_rl.debate.trajectory import (
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.reducer import apply_action
+from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.trajectory import (
     answer_from_utterance,
     answers_by_round,
     final_answer,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.metrics import (
+from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.metrics import (
     accuracy,
     concession_correctness,
     debater_accuracy_delta,
@@ -39,9 +39,9 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.metrics import (
     truth_surfaced,
     truth_win_if_disagreement,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.parsing import extract_fields
+from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.parsing import extract_fields
 from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import resolve_prompts
-from tinker_cookbook.recipes.multiplayer_rl.debate.judge import _parse_verdict
+from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.judge import _parse_verdict
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +359,7 @@ class TestFieldSymmetryCheck:
     def test_asymmetric_field_triggers_detected(self):
         """Synthetic test: asymmetric triggers should produce a warning."""
         from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import check_ab_symmetry, DebatePrompts
-        from tinker_cookbook.recipes.multiplayer_rl.debate.scoring import FieldSpec
+        from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.fields import FieldSpec
         prompts = resolve_prompts("scientific_mcq")
         # Patch fields to create asymmetry (debater_b missing 'critique' trigger).
         asymmetric_fields = {
@@ -377,7 +377,7 @@ class TestFieldSymmetryCheck:
     def test_asymmetric_field_names_detected(self):
         """Synthetic test: same triggers but different field names should warn."""
         from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import check_ab_symmetry, DebatePrompts
-        from tinker_cookbook.recipes.multiplayer_rl.debate.scoring import FieldSpec
+        from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.fields import FieldSpec
         prompts = resolve_prompts("scientific_mcq")
         # debater_b.propose has extra field
         b_propose = dict(prompts.fields.get("debater_b", {}).get("propose", {}))
@@ -430,12 +430,12 @@ class TestFrozenOpponentJudgeValidation:
 
 class TestPhaseToTriggerMapping:
     def test_judge_verdict_maps_to_final(self):
-        from tinker_cookbook.recipes.multiplayer_rl.debate.runtime import _PHASE_TO_TRIGGER
+        from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import _PHASE_TO_TRIGGER
         assert _PHASE_TO_TRIGGER["judge_verdict"] == "final"
         assert _PHASE_TO_TRIGGER["judge_query"] == "boundary"
 
     def test_debater_phases_pass_through(self):
-        from tinker_cookbook.recipes.multiplayer_rl.debate.runtime import _PHASE_TO_TRIGGER
+        from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import _PHASE_TO_TRIGGER
         # Debater phases should not be in the mapping (pass through as-is)
         assert "propose" not in _PHASE_TO_TRIGGER
         assert "critique" not in _PHASE_TO_TRIGGER
@@ -454,7 +454,7 @@ class TestDumpIO:
                 "run",
                 "python",
                 "-m",
-                "tinker_cookbook.recipes.multiplayer_rl.debate.dump_io",
+                "tinker_cookbook.recipes.multiplayer_rl.debate.scripts.dump_io",
                 "--prompts",
                 "scientific_mcq",
             ],

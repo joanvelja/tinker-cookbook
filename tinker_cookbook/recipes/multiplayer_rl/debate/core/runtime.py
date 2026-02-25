@@ -9,10 +9,10 @@ from typing import Any, Mapping
 from tinker_cookbook.renderers import Message
 from tinker_cookbook.utils import logtree
 
-from .parsing import extract_fields
-from .plugins import JudgeCallback, StepRewardFn
-from .prompts import resolve_prompts
-from .types import Phase
+from ..scoring.parsing import extract_fields
+from ..plugins import JudgeCallback, StepRewardFn
+from ..prompts import resolve_prompts
+from ..types import Phase
 
 # Map schedule phase values to YAML trigger keys where they differ.
 _PHASE_TO_TRIGGER: dict[str, str] = {
@@ -20,7 +20,7 @@ _PHASE_TO_TRIGGER: dict[str, str] = {
     Phase.JUDGE_QUERY.value: "boundary",
 }
 from .reducer import apply_action, apply_judge_event, get_current_slot, get_eligible_roles
-from .types import (
+from ..types import (
     DebateSnapshot,
     DebateState,
     JudgeRequest,

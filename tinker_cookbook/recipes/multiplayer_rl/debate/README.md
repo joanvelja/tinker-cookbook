@@ -10,13 +10,13 @@ export $(cat .env | xargs)   # or set TINKER_API_KEY directly
 uv sync
 
 # Smoke test (~$0.01, writes HTML trace)
-uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.smoke_mcq
+uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.smoke_mcq
 
 # Train (GRPO on GPQA diamond, frozen opponent + LLM judge)
-uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.train
+uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train
 
 # Train with custom config (chz entrypoint)
-uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.train \
+uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train \
   --model_name Qwen/Qwen3-8B \
   --batch_size 8 \
   --group_size 4 \
@@ -43,36 +43,38 @@ Env      (Layer 3)  Thin Tinker adapter (~30 lines). Owns renderer. Converts tok
 **File map:**
 ```
 debate/
-  # Core
-  types.py       Frozen types: Role, Phase, TurnSlot, Utterance, DebateState, ...
-  plugins.py     StepRewardFn, JudgeCallback, OutcomeRewardFn protocols
-  schedule.py    build_schedule() -> tuple[TurnSlot, ...]
-  visibility.py  Visibility policy registry + get_visible_messages()
-  reducer.py     Pure state transitions (apply_action, commit_slot_actions, ...)
-  runtime.py     DebateRuntime: async shell over reducer
-  env.py         DebateEnv, DebateGroupBuilder, DebateDataset
+  types.py        Frozen types: Role, Phase, TurnSlot, Utterance, DebateState, ...
+  plugins.py      StepRewardFn, JudgeCallback, OutcomeRewardFn protocols
+  env.py          DebateEnv, DebateGroupBuilder, DebateDataset
 
-  # Scoring pipeline
-  scoring.py     FieldSpec, ScoringMode, classifiers, normalizers
-  parsing.py     XML field extraction (extract_fields, generate_format_instructions)
-  mcq.py         MCQ answer normalization (normalize_mcq, strip_think)
-  trajectory.py  Transcript queries (final_answer, answers_by_round, ...)
-  metrics.py     16 metric factories (accuracy, judge_quality, truth_win, ...)
-  judge.py       LLMJudgeCallback with schema-driven verdict parsing
+  core/
+    reducer.py    Pure state transitions (apply_action, commit_slot_actions, ...)
+    runtime.py    DebateRuntime: async shell over reducer
+    schedule.py   build_schedule() -> tuple[TurnSlot, ...]
+    visibility.py Visibility policy registry + get_visible_messages()
 
-  # Prompts
+  scoring/
+    fields.py     FieldSpec, ScoringMode, classifiers, normalizers
+    parsing.py    XML field extraction (extract_fields, generate_format_instructions)
+    mcq.py        MCQ answer normalization (normalize_mcq, strip_think)
+    trajectory.py Transcript queries (final_answer, answers_by_round, ...)
+    metrics.py    16 metric factories (accuracy, judge_quality, truth_win, ...)
+    judge.py      LLMJudgeCallback with schema-driven verdict parsing
+
   prompts/
     __init__.py          DebatePrompts, resolve_prompts(), YAML loading
     default.yaml         Minimal debate prompts
     scientific_mcq.yaml  GPQA-style MCQ with field extraction
     galaxy_brain.yaml    Open-ended debate
 
-  # Entry points
-  train.py       Training loop (GRPO, frozen opponent, LLM judge)
-  smoke_mcq.py   Smoke test: 2 GPQA problems, HTML trace
-  smoke_galaxy.py  Smoke test: open-ended debate
-  dump_io.py     Debug: print assembled prompts for each role/phase
-  trace_fmt.py   HTML trace renderer
+  scripts/
+    train.py       Training loop (GRPO, frozen opponent, LLM judge)
+    smoke_mcq.py   Smoke test: 2 GPQA problems, HTML trace
+    smoke_galaxy.py  Smoke test: open-ended debate
+    dump_io.py     Debug: print assembled prompts for each role/phase
+    trace_fmt.py   HTML trace renderer
+
+  tests/            314 offline tests
 ```
 
 ## Protocols
@@ -294,7 +296,7 @@ uv run pytest tinker_cookbook/recipes/multiplayer_rl/debate/ -x -q
 uv run pytest tinker_cookbook/recipes/multiplayer_rl/debate/test_reducer.py -x -q
 
 # Debug prompt assembly (prints what each role sees at each phase)
-uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.dump_io --prompts scientific_mcq
+uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.dump_io --prompts scientific_mcq
 ```
 
 ## References

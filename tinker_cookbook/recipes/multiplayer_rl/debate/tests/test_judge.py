@@ -7,9 +7,9 @@ import pytest
 from tinker_cookbook.completers import MessageCompleter
 from tinker_cookbook.renderers import Message
 
-from .judge import LLMJudgeCallback, _extract_xml_fields, _parse_verdict, zero_sum_outcome_reward
-from .schedule import build_schedule
-from .types import (
+from ..scoring.judge import LLMJudgeCallback, _extract_xml_fields, _parse_verdict, zero_sum_outcome_reward
+from ..core.schedule import build_schedule
+from ..types import (
     DebateOutcome,
     DebateSpec,
     DebateState,

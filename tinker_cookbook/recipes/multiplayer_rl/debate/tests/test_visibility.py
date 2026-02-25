@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.schedule import build_schedule
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateSpec,
     DebateState,
@@ -15,7 +15,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     Utterance,
     VisibilityPolicy,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.visibility import (
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.visibility import (
     REGISTRY,
     _consolidate_str_messages,
     _shuffle_simultaneous,

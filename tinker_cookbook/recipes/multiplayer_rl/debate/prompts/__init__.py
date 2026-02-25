@@ -16,8 +16,8 @@ import jinja2.sandbox
 import yaml
 
 from ..types import DebateState, Role
-from ..scoring import FieldSpec, _resolve_fields, validate_type_scoring, _TYPE_MAP
-from ..parsing import generate_format_instructions
+from ..scoring.fields import FieldSpec, _resolve_fields, validate_type_scoring, _TYPE_MAP
+from ..scoring.parsing import generate_format_instructions
 
 _PROMPTS_DIR = Path(__file__).parent
 
@@ -373,7 +373,7 @@ def _validate(d: dict) -> None:
                 if isinstance(props, dict) and "scoring" in props:
                     type_str = props.get("type", "str")
                     if type_str in _TYPE_MAP:
-                        from ..scoring import resolve_scoring
+                        from ..scoring.fields import resolve_scoring
 
                         scoring = resolve_scoring(props["scoring"])
                         if scoring is not None:

@@ -16,9 +16,9 @@ import sys
 import textwrap
 from dataclasses import replace
 
-from .prompts import resolve_prompts
-from .schedule import build_schedule
-from .types import (
+from ..prompts import resolve_prompts
+from ..core.schedule import build_schedule
+from ..types import (
     DebateSpec,
     DebateState,
     Phase,
@@ -26,7 +26,7 @@ from .types import (
     Role,
     Utterance,
 )
-from .visibility import build_generation_messages, get_visible_messages
+from ..core.visibility import build_generation_messages, get_visible_messages
 
 # Fake debate utterances (recognizable text for inspection).
 _FAKE_TURNS: dict[tuple[Role, int, str], str] = {

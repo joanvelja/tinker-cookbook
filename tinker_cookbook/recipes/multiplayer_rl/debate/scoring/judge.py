@@ -9,9 +9,9 @@ from tinker_cookbook.completers import MessageCompleter
 from tinker_cookbook.renderers import Message
 
 from .parsing import extract_fields
-from .prompts import resolve_prompts
-from .types import DebateOutcome, JudgeDecision, JudgeRequest, Role
-from .visibility import build_generation_messages
+from ..prompts import resolve_prompts
+from ..types import DebateOutcome, JudgeDecision, JudgeRequest, Role
+from ..core.visibility import build_generation_messages
 
 _XML_TAG_RE = re.compile(r"<(\w+)>(.*?)</\1>", re.DOTALL)
 _VALID_DECISIONS = {"debater_a": Role.DEBATER_A, "debater_b": Role.DEBATER_B}

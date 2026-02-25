@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .types import Phase, ProtocolKind, Role, TurnSlot, VisibilityPolicy
+from ..types import Phase, ProtocolKind, Role, TurnSlot, VisibilityPolicy
 
 
 def build_schedule(

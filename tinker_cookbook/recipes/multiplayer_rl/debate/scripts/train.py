@@ -18,9 +18,9 @@ from tinker_cookbook.rl.types import RLDataset, RLDatasetBuilder
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.usage import UsageTracker
 
-from .env import DebateDataset
-from .judge import LLMJudgeCallback, zero_sum_outcome_reward
-from .types import ProtocolKind, Role
+from ..env import DebateDataset
+from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
+from ..types import ProtocolKind, Role
 
 
 def _load_gpqa(

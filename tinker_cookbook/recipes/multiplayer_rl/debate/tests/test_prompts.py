@@ -14,8 +14,8 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import (
     resolve_prompts,
     _check_migration_lint,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.scoring import FieldSpec
-from tinker_cookbook.recipes.multiplayer_rl.debate.parsing import generate_format_instructions
+from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.fields import FieldSpec
+from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.parsing import generate_format_instructions
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateSpec,
     DebateState,

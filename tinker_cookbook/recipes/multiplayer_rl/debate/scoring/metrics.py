@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .mcq import normalize_mcq
 from .trajectory import answer_from_utterance, answers_by_round, final_answer
-from .types import DebateState, Phase, Role
+from ..types import DebateState, Phase, Role
 
 
 # ---------------------------------------------------------------------------

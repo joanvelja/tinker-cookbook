@@ -18,9 +18,9 @@ from dataclasses import replace
 from tinker_cookbook.renderers import get_text_content
 from tinker_cookbook.utils.logtree import Formatter
 
-from .prompts import resolve_prompts
-from .types import Role
-from .visibility import build_generation_messages
+from ..prompts import resolve_prompts
+from ..types import Role
+from ..core.visibility import build_generation_messages
 
 
 def _esc(text: str) -> str:

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.runtime import DebateRuntime
-from tinker_cookbook.recipes.multiplayer_rl.debate.schedule import build_schedule
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import DebateRuntime
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
     DebateSpec,

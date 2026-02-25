@@ -27,7 +27,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.env import (
     DebateEnv,
     DebateGroupBuilder,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.reducer import (
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.reducer import (
     apply_action,
     apply_judge_event,
     commit_slot_actions,
@@ -35,8 +35,8 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.reducer import (
     get_current_slot,
     get_eligible_roles,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.runtime import DebateRuntime
-from tinker_cookbook.recipes.multiplayer_rl.debate.schedule import build_schedule
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import DebateRuntime
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
     DebateSnapshot,
@@ -51,7 +51,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     Utterance,
     VisibilityPolicy,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.visibility import (
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.visibility import (
     REGISTRY,
     _consolidate_str_messages,
     _shuffle_simultaneous,

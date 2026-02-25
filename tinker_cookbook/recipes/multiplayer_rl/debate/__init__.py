@@ -8,13 +8,13 @@ from .env import (
     DebateGroupBuilder,
     DebateProblem,
 )
-from .judge import LLMJudgeCallback, zero_sum_outcome_reward
-from .metrics import MetricFn, MetricResult, mcq_debate_metrics
+from .scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
+from .scoring.metrics import MetricFn, MetricResult, mcq_debate_metrics
 from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
 from .prompts import DebatePrompts, resolve_prompts
-from .scoring import FieldSpec
-from .runtime import DebateRuntime, SubmitResult
-from .schedule import build_schedule
+from .scoring.fields import FieldSpec
+from .core.runtime import DebateRuntime, SubmitResult
+from .core.schedule import build_schedule
 from .types import (
     ActionResult,
     DebateOutcome,
@@ -31,7 +31,7 @@ from .types import (
     TurnTicket,
     Utterance,
 )
-from .visibility import build_generation_messages, get_visible_messages
+from .core.visibility import build_generation_messages, get_visible_messages
 
 __all__ = [
     # Enums

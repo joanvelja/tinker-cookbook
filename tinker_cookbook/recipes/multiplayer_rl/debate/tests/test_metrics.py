@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
-from .metrics import (
+from ..scoring.metrics import (
     MetricResult,
     accuracy,
     choice_match,
@@ -21,7 +21,7 @@ from .metrics import (
     truth_surfaced,
     truth_win_if_disagreement,
 )
-from .types import (
+from ..types import (
     DebateOutcome,
     DebateSpec,
     DebateState,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Mapping
 
-from .types import (
+from ..types import (
     ActionResult,
     DebateState,
     JudgeDecision,

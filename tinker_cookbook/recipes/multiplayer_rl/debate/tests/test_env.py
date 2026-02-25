@@ -16,8 +16,8 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.env import (
     DebateEnv,
     DebateGroupBuilder,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.runtime import DebateRuntime
-from tinker_cookbook.recipes.multiplayer_rl.debate.schedule import build_schedule
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import DebateRuntime
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
     DebateSpec,
@@ -339,7 +339,7 @@ def test_frozen_opponent_b_first():
     # Manually set up frozen-opponent with B as the trained role.
     # We bypass the builder to control role assignment.
     _run(builder.make_envs())  # triggers schedule build
-    from tinker_cookbook.recipes.multiplayer_rl.debate.schedule import build_schedule as bs
+    from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule as bs
     schedule = bs(ProtocolKind.SEQUENTIAL, 1)
     spec = DebateSpec(
         debate_id="test-b-first",
@@ -374,7 +374,7 @@ def test_frozen_opponent_hybrid():
     completer = MockCompleter()
 
     # Hybrid requires num_rounds >= 2
-    from tinker_cookbook.recipes.multiplayer_rl.debate.schedule import build_schedule as bs
+    from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule as bs
     schedule = bs(ProtocolKind.HYBRID, 2)
     spec = DebateSpec(
         debate_id="hybrid-frozen",
