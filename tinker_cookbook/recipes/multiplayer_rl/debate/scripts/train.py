@@ -19,6 +19,7 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.usage import UsageTracker
 
 from ..env import DebateDataset
+from ..eval.evaluator import DebateInspectEvaluatorBuilder
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from ..types import ProtocolKind, Role
 
@@ -146,6 +147,7 @@ class CLIConfig:
     randomize_position: bool = True
     prompts_ref: str = "default"
     kl_penalty_coef: float = 0.0
+    inspect_eval: DebateInspectEvaluatorBuilder | None = None
     eval_every: int = 5
     save_every: int = 20
     wandb_project: str | None = None
@@ -184,6 +186,15 @@ def build_config(cli: CLIConfig) -> train.Config:
         base_url=cli.base_url,
     )
 
+    evaluator_builders = []
+    if cli.inspect_eval is not None:
+        inspect_builder = chz.replace(
+            cli.inspect_eval,
+            renderer_name=cli.inspect_eval.renderer_name or renderer_name,
+            model_name=cli.inspect_eval.model_name or model_name,
+        )
+        evaluator_builders.append(inspect_builder)
+
     return train.Config(
         model_name=model_name,
         log_path=log_path,
@@ -193,6 +204,7 @@ def build_config(cli: CLIConfig) -> train.Config:
         kl_penalty_coef=cli.kl_penalty_coef,
         eval_every=cli.eval_every,
         save_every=cli.save_every,
+        evaluator_builders=evaluator_builders,
         wandb_project=cli.wandb_project,
         wandb_name=wandb_name,
         base_url=cli.base_url,

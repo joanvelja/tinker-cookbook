@@ -1,0 +1,553 @@
+"""Tests for debate eval module (Inspect AI integration)."""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
+from tinker_cookbook.recipes.multiplayer_rl.debate.eval.dataset_adapter import (
+    DatasetAdapter,
+    GPQAAdapter,
+)
+from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
+    _state_from_json,
+    _state_to_json,
+    _STORE_KEY,
+    debate_scorer,
+)
+from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.metrics import MetricResult
+from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateOutcome,
+    DebateSpec,
+    DebateState,
+    JudgeDecision,
+    Phase,
+    ProtocolKind,
+    Role,
+    Utterance,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_spec(
+    *,
+    target: str | None = "A",
+    num_rounds: int = 2,
+    prompts_ref: str = "scientific_mcq",
+) -> DebateSpec:
+    schedule = build_schedule(ProtocolKind.SEQUENTIAL, num_rounds)
+    return DebateSpec(
+        debate_id="test-debate-001",
+        task_prompt="What is the answer?\nA) Foo\nB) Bar\nC) Baz\nD) Qux",
+        answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+        schedule=schedule,
+        open_reasoning=True,
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        prompts_ref=prompts_ref,
+        target=target,
+    )
+
+
+def _make_utterance(
+    role: Role,
+    round_index: int,
+    phase: Phase,
+    text: str,
+    *,
+    answer: str | None = None,
+    slot_id: int = 0,
+) -> Utterance:
+    fields = {"answer": answer} if answer is not None else None
+    return Utterance(
+        role=role,
+        round_index=round_index,
+        phase=phase,
+        text=text,
+        token_count=len(text.split()),
+        slot_id=slot_id,
+        fields=fields,
+    )
+
+
+def _make_completed_state(
+    *,
+    target: str | None = "A",
+    a_answer: str = "A",
+    b_answer: str = "B",
+    winner: Role | None = Role.DEBATER_A,
+) -> DebateState:
+    """Create a completed debate state with known answers and winner."""
+    spec = _make_spec(target=target, num_rounds=2)
+    transcript = (
+        _make_utterance(
+            Role.DEBATER_A, 0, Phase.PROPOSE,
+            "I argue for A because...",
+            answer=a_answer, slot_id=0,
+        ),
+        _make_utterance(
+            Role.DEBATER_B, 0, Phase.PROPOSE,
+            "I argue for B because...",
+            answer=b_answer, slot_id=1,
+        ),
+        _make_utterance(
+            Role.DEBATER_A, 1, Phase.CRITIQUE,
+            "Responding to B's argument...",
+            answer=a_answer, slot_id=2,
+        ),
+        _make_utterance(
+            Role.DEBATER_B, 1, Phase.CRITIQUE,
+            "Responding to A's argument...",
+            answer=b_answer, slot_id=3,
+        ),
+    )
+    judge_trace = (
+        JudgeDecision(
+            round_index=0,
+            verdict="debater_a is more convincing",
+            score_delta_by_role={Role.DEBATER_A: 1.0, Role.DEBATER_B: -1.0},
+        ),
+    )
+    outcome = DebateOutcome(
+        winner=winner,
+        scores_by_role={Role.DEBATER_A: 1.0, Role.DEBATER_B: -1.0},
+        verdict_text="Debater A wins",
+    )
+    return DebateState(
+        spec=spec,
+        slot_index=4,
+        rounds_completed=2,
+        transcript=transcript,
+        pending_simultaneous={},
+        judge_trace=judge_trace,
+        done=True,
+        outcome=outcome,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 1. test_dataset_adapter_protocol
+# ---------------------------------------------------------------------------
+
+
+def test_dataset_adapter_protocol():
+    """GPQAAdapter satisfies DatasetAdapter protocol."""
+    assert isinstance(GPQAAdapter(), DatasetAdapter)
+
+
+# ---------------------------------------------------------------------------
+# 2. test_gpqa_adapter_samples
+# ---------------------------------------------------------------------------
+
+
+def test_gpqa_adapter_samples():
+    """GPQAAdapter returns well-formed Samples with correct fields."""
+    adapter = GPQAAdapter(limit=5, seed=42)
+    samples = adapter.to_samples()
+    assert len(samples) == 5
+
+    for s in samples:
+        assert isinstance(s.input, str)
+        assert len(s.input) > 0
+        assert s.target in ("A", "B", "C", "D")
+        assert "answer_a" in s.metadata
+        assert "answer_b" in s.metadata
+        assert "source" in s.metadata
+        assert s.metadata["answer_a"] in ("A", "B", "C", "D")
+        assert s.metadata["answer_b"] in ("A", "B", "C", "D")
+        assert s.metadata["answer_a"] != s.metadata["answer_b"]
+        assert s.metadata["source"] == "gpqa_diamond"
+
+
+# ---------------------------------------------------------------------------
+# 3. test_debate_state_json_roundtrip
+# ---------------------------------------------------------------------------
+
+
+def test_debate_state_json_roundtrip():
+    """DebateState survives JSON serialization/deserialization."""
+    original = _make_completed_state()
+
+    json_str = _state_to_json(original)
+    restored = _state_from_json(json_str)
+
+    # Verify spec
+    assert restored.spec.debate_id == original.spec.debate_id
+    assert restored.spec.task_prompt == original.spec.task_prompt
+    assert restored.spec.target == original.spec.target
+    assert restored.spec.protocol_kind == original.spec.protocol_kind
+    assert restored.spec.prompts_ref == original.spec.prompts_ref
+    assert restored.spec.open_reasoning == original.spec.open_reasoning
+    assert dict(restored.spec.answer_by_role) == dict(original.spec.answer_by_role)
+    assert len(restored.spec.schedule) == len(original.spec.schedule)
+    for r_slot, o_slot in zip(restored.spec.schedule, original.spec.schedule):
+        assert r_slot.slot_id == o_slot.slot_id
+        assert r_slot.round_index == o_slot.round_index
+        assert r_slot.phase == o_slot.phase
+        assert r_slot.actors == o_slot.actors
+        assert r_slot.boundary_after == o_slot.boundary_after
+        assert r_slot.visibility_policy == o_slot.visibility_policy
+
+    # Verify top-level state fields
+    assert restored.slot_index == original.slot_index
+    assert restored.rounds_completed == original.rounds_completed
+    assert restored.done == original.done
+
+    # Verify transcript
+    assert len(restored.transcript) == len(original.transcript)
+    for r_utt, o_utt in zip(restored.transcript, original.transcript):
+        assert r_utt.role == o_utt.role
+        assert r_utt.round_index == o_utt.round_index
+        assert r_utt.phase == o_utt.phase
+        assert r_utt.text == o_utt.text
+        assert r_utt.token_count == o_utt.token_count
+        assert r_utt.slot_id == o_utt.slot_id
+        if o_utt.fields is not None:
+            assert dict(r_utt.fields) == dict(o_utt.fields)
+
+    # Verify judge_trace
+    assert len(restored.judge_trace) == len(original.judge_trace)
+    for r_jd, o_jd in zip(restored.judge_trace, original.judge_trace):
+        assert r_jd.round_index == o_jd.round_index
+        assert r_jd.verdict == o_jd.verdict
+        assert dict(r_jd.score_delta_by_role) == dict(o_jd.score_delta_by_role)
+
+    # Verify outcome
+    assert restored.outcome is not None
+    assert restored.outcome.winner == original.outcome.winner
+    assert dict(restored.outcome.scores_by_role) == dict(original.outcome.scores_by_role)
+    assert restored.outcome.verdict_text == original.outcome.verdict_text
+
+    # Verify pending_simultaneous roundtrips (empty here)
+    assert len(restored.pending_simultaneous) == 0
+
+
+def test_debate_state_json_roundtrip_with_pending():
+    """Roundtrip with pending_simultaneous entries."""
+    spec = _make_spec()
+    pending_utt = _make_utterance(
+        Role.DEBATER_A, 0, Phase.PROPOSE, "pending text", answer="A", slot_id=0
+    )
+    state = DebateState(
+        spec=spec,
+        slot_index=0,
+        rounds_completed=0,
+        transcript=(),
+        pending_simultaneous={Role.DEBATER_A: pending_utt},
+        judge_trace=(),
+        done=False,
+        outcome=None,
+    )
+    json_str = _state_to_json(state)
+    restored = _state_from_json(json_str)
+    assert Role.DEBATER_A in restored.pending_simultaneous
+    r_utt = restored.pending_simultaneous[Role.DEBATER_A]
+    assert r_utt.text == "pending text"
+    assert dict(r_utt.fields) == {"answer": "A"}
+
+
+# ---------------------------------------------------------------------------
+# 4. test_debate_scorer_synthetic
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_debate_scorer_synthetic():
+    """Scorer produces correct metrics for a completed debate with known answers."""
+    from inspect_ai.scorer import Target
+    from inspect_ai.solver import TaskState
+
+    state = _make_completed_state(target="A", a_answer="A", b_answer="B", winner=Role.DEBATER_A)
+    json_str = _state_to_json(state)
+
+    task_state = MagicMock(spec=TaskState)
+    task_state.store = MagicMock()
+    task_state.store.get = MagicMock(return_value=json_str)
+
+    target = Target("A")
+    scorer_fn = debate_scorer()
+    score = await scorer_fn(task_state, target)
+
+    assert isinstance(score.value, dict)
+    v = score.value
+    assert v["accuracy.debater_a"] == 1.0
+    assert v["accuracy.debater_b"] == 0.0
+    assert v["judge_quality"] == 1.0
+    # truth_win_if_disagreement: A correct, B wrong, judge picked A -> 1.0
+    assert v["truth_win_if_disagreement"] == 1.0
+    assert v["truth_surfaced"] == 1.0
+    assert v["disagreement"] == 1.0
+    # No None values should appear in the dict
+    for key, val in v.items():
+        assert val is not None, f"Metric {key} should not be None"
+
+
+# ---------------------------------------------------------------------------
+# 5. test_debate_scorer_handles_none_metrics
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_debate_scorer_handles_none_metrics():
+    """Scorer with target=None produces only non-None metric values."""
+    from inspect_ai.scorer import Target
+    from inspect_ai.solver import TaskState
+
+    state = _make_completed_state(target=None, a_answer="A", b_answer="B", winner=Role.DEBATER_A)
+    json_str = _state_to_json(state)
+
+    task_state = MagicMock(spec=TaskState)
+    task_state.store = MagicMock()
+    task_state.store.get = MagicMock(return_value=json_str)
+
+    target = Target("")
+    scorer_fn = debate_scorer()
+    score = await scorer_fn(task_state, target)
+
+    assert isinstance(score.value, dict)
+    # With target=None, accuracy/judge_quality/truth metrics should be absent
+    for key, val in score.value.items():
+        assert val is not None, f"Metric {key} should not be None in score dict"
+    # Metrics that require target should be absent
+    assert "accuracy.debater_a" not in score.value
+    assert "accuracy.debater_b" not in score.value
+    assert "judge_quality" not in score.value
+    assert "truth_win_if_disagreement" not in score.value
+    assert "truth_surfaced" not in score.value
+
+
+@pytest.mark.asyncio
+async def test_debate_scorer_no_store_data():
+    """Scorer returns empty dict when no debate state in store."""
+    from inspect_ai.scorer import Target
+    from inspect_ai.solver import TaskState
+
+    task_state = MagicMock(spec=TaskState)
+    task_state.store = MagicMock()
+    task_state.store.get = MagicMock(return_value=None)
+
+    target = Target("A")
+    scorer_fn = debate_scorer()
+    score = await scorer_fn(task_state, target)
+
+    assert score.value == {}
+    assert "No debate state" in score.explanation
+
+
+# ---------------------------------------------------------------------------
+# 6. test_evaluator_fast_path_routing
+# ---------------------------------------------------------------------------
+
+_EVAL_MODULE = "tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator"
+
+
+def _dummy_adapter() -> MagicMock:
+    """Adapter mock that returns a non-empty sample list."""
+    from inspect_ai.dataset import Sample
+
+    adapter = MagicMock(spec=DatasetAdapter)
+    adapter.to_samples.return_value = [
+        Sample(input="test question", target="A", metadata={"answer_a": "A", "answer_b": "B", "source": "test"}),
+    ]
+    return adapter
+
+
+def _patch_evaluator_externals():
+    """Context manager stack for patching all external deps in evaluator."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+
+    mock_task_result = MagicMock()
+    mock_task_result.results = MagicMock()
+    mock_task_result.results.scores = []
+
+    mock_eval = stack.enter_context(
+        patch(f"{_EVAL_MODULE}.eval_async", new_callable=AsyncMock, return_value=[mock_task_result])
+    )
+    stack.enter_context(patch(f"{_EVAL_MODULE}.get_renderer", return_value=MagicMock()))
+    stack.enter_context(patch(f"{_EVAL_MODULE}.get_tokenizer", return_value=MagicMock()))
+    stack.enter_context(patch(f"{_EVAL_MODULE}.TinkerMessageCompleter", return_value=MagicMock()))
+    stack.enter_context(patch(f"{_EVAL_MODULE}.tinker.ServiceClient", return_value=MagicMock()))
+
+    return stack, mock_eval
+
+
+@pytest.mark.asyncio
+async def test_evaluator_fast_path_routing():
+    """DebateInspectEvaluator calls eval_async only on log_evals_every cadence."""
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+        DebateInspectEvaluator,
+    )
+
+    adapter = _dummy_adapter()
+
+    builder = DebateInspectEvaluatorBuilder(
+        adapter=adapter,
+        log_evals_every=3,
+        renderer_name="qwen3",
+        model_name="Qwen/Qwen3-4B-Instruct-2507",
+    )
+    evaluator = builder()
+    assert isinstance(evaluator, DebateInspectEvaluator)
+
+    mock_sampling = MagicMock()
+
+    stack, mock_eval = _patch_evaluator_externals()
+    with stack:
+        # Call 1: count=1, 1%3!=0 -> eval runs, no log
+        await evaluator(mock_sampling)
+        assert mock_eval.call_count == 1
+        call_kwargs_1 = mock_eval.call_args_list[0][1]
+        assert call_kwargs_1.get("log_dir") is None
+
+        # Call 2: count=2, 2%3!=0 -> eval runs, no log
+        await evaluator(mock_sampling)
+        assert mock_eval.call_count == 2
+        call_kwargs_2 = mock_eval.call_args_list[1][1]
+        assert call_kwargs_2.get("log_dir") is None
+
+        # Call 3: count=3, 3%3==0 -> eval runs, WITH log
+        await evaluator(mock_sampling)
+        assert mock_eval.call_count == 3
+        call_kwargs_3 = mock_eval.call_args_list[2][1]
+        assert call_kwargs_3.get("log_dir") is not None
+
+
+# ---------------------------------------------------------------------------
+# 7. test_evaluator_log_path_routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_evaluator_log_path_routing():
+    """DebateInspectEvaluator with log_evals_every=1 always writes logs."""
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+
+    adapter = _dummy_adapter()
+
+    builder = DebateInspectEvaluatorBuilder(
+        adapter=adapter,
+        log_evals_every=1,
+        renderer_name="qwen3",
+        model_name="Qwen/Qwen3-4B-Instruct-2507",
+        log_dir="/tmp/test-logs",
+    )
+    evaluator = builder()
+    mock_sampling = MagicMock()
+
+    stack, mock_eval = _patch_evaluator_externals()
+    with stack:
+        await evaluator(mock_sampling)
+        assert mock_eval.call_count == 1
+        call_kwargs = mock_eval.call_args_list[0][1]
+        assert call_kwargs.get("log_dir") == "/tmp/test-logs"
+
+
+# ---------------------------------------------------------------------------
+# 8. test_solver_scorer_pipeline (integration with mocks)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_solver_scorer_pipeline():
+    """End-to-end solver -> scorer pipeline with mock completers."""
+    from inspect_ai.dataset import Sample
+    from inspect_ai.model import ChatMessageUser
+    from inspect_ai.scorer import Target
+    from inspect_ai.solver import TaskState
+
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
+        debate_solver,
+    )
+
+    # Mock completers that return fixed responses with answer tags.
+    async def make_completer(answer: str):
+        completer = AsyncMock()
+        completer.return_value = {
+            "content": f"My argument is strong. <answer>{answer}</answer>",
+            "role": "assistant",
+        }
+        return completer
+
+    trained = await make_completer("A")
+    opponent = await make_completer("B")
+    judge = await make_completer("A")  # Judge picks A
+
+    # Override the LLMJudgeCallback to avoid real judge logic.
+    # The solver imports DebateRuntime which uses judge_callback after boundary rounds.
+    # We need to mock at the runtime level.
+
+    solver = debate_solver(
+        sampling_client=trained,
+        opponent_client=opponent,
+        judge_client=judge,
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=1,
+        prompts_ref="scientific_mcq",
+    )
+
+    # Create a TaskState with a Sample
+    sample = Sample(
+        input="What is X?\nA) Correct\nB) Wrong\nC) Also wrong\nD) Nope",
+        target="A",
+        metadata={"answer_a": "A", "answer_b": "B", "source": "test"},
+    )
+
+    # Build a real TaskState
+    task_state = TaskState(
+        model="test-model",
+        sample_id="test-1",
+        epoch=0,
+        input=[ChatMessageUser(content=sample.input)],
+        messages=[ChatMessageUser(content=sample.input)],
+        target=Target(sample.target),
+        metadata=sample.metadata,
+    )
+
+    generate = MagicMock()
+
+    # Patch the judge callback to avoid needing real judge parsing.
+    # The runtime calls judge_callback after boundary rounds.
+    with patch(
+        "tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime.DebateRuntime"
+    ) as MockRuntime:
+        # Create a mock runtime that simulates a completed debate
+        mock_runtime = MagicMock()
+        MockRuntime.return_value = mock_runtime
+
+        completed_state = _make_completed_state(
+            target="A", a_answer="A", b_answer="B", winner=Role.DEBATER_A
+        )
+        # Simulate done state
+        mock_runtime.state = completed_state
+
+        result = await solver(task_state, generate)
+
+    # Verify state was stored
+    assert result.store.get(_STORE_KEY) is not None or hasattr(result.store, "set")
+
+    # Now test the scorer on this stored state (use the state we know)
+    json_str = _state_to_json(completed_state)
+    scorer_state = MagicMock(spec=TaskState)
+    scorer_state.store = MagicMock()
+    scorer_state.store.get = MagicMock(return_value=json_str)
+
+    target = Target("A")
+    scorer_fn = debate_scorer()
+    score = await scorer_fn(scorer_state, target)
+
+    assert isinstance(score.value, dict)
+    assert score.value["accuracy.debater_a"] == 1.0
+    assert score.value["accuracy.debater_b"] == 0.0
+    assert score.value["judge_quality"] == 1.0
+    assert score.answer == "debater_a"
