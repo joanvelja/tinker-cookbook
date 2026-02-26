@@ -1,6 +1,6 @@
 # Debate Environment
 
-Algorithm-agnostic debate environment for Tinker RL. Two debaters defend candidate answers; a judge evaluates. Works with any training algorithm (GRPO, ExIt, DPO, MCTS, actor-critic).
+Algorithm-agnostic debate environment for Tinker RL. Two debaters defend candidate answers; a judge evaluates. Works with any training algorithm (REINFORCE, GRPO, MaxRL, ExIt, DPO, MCTS, actor-critic).
 
 ## Quickstart
 
@@ -12,7 +12,7 @@ uv sync
 # Smoke test (~$0.01, writes HTML trace)
 uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.smoke_mcq
 
-# Train (GRPO on GPQA diamond, frozen opponent + LLM judge)
+# Train (REINFORCE+IS on GPQA diamond, frozen opponent + LLM judge)
 uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train
 
 # Train with custom config (chz entrypoint)
@@ -68,7 +68,7 @@ debate/
     galaxy_brain.yaml    Open-ended debate
 
   scripts/
-    train.py       Training loop (GRPO, frozen opponent, LLM judge)
+    train.py       Training loop (REINFORCE+IS, frozen opponent, LLM judge)
     smoke_mcq.py   Smoke test: 2 GPQA problems, HTML trace
     smoke_galaxy.py  Smoke test: open-ended debate
     dump_io.py     Debug: print assembled prompts for each role/phase
@@ -299,7 +299,54 @@ uv run pytest tinker_cookbook/recipes/multiplayer_rl/debate/test_reducer.py -x -
 uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.dump_io --prompts scientific_mcq
 ```
 
+## RL algorithm notes
+
+The default training script uses Tinker's `importance_sampling` loss:
+
+```
+L = -(p/q * A).sum()
+```
+
+where `p` = learner policy probability, `q` = sampler policy probability, and `A` = advantage. No clipping (unlike PPO/CISPO). See `docs/losses.mdx` for all available loss functions.
+
+**Advantages** are computed as `rewards - mean(rewards)` within each group (`rl/data_processing.py:compute_advantages`). This is a group-mean baseline without standard-deviation normalization. The Tinker docs describe this as "similar to GRPO" — the group-based rollout structure matches, but GRPO proper (Shao et al., 2024) also std-normalizes: `A = (r - mean(r)) / std(r)`. Omitting std-norm means the effective gradient magnitude scales with reward variance, which can miscalibrate learning across groups with different reward spreads (Bereket & Leskovec, 2025).
+
+**IS ratios** (`p/q`): Tinker splits sampling and learning across separate GPU workers. Even in synchronous training, non-determinism between sampler and learner means their log-probs can differ slightly. The IS correction makes the gradient unbiased under this mismatch. In practice the ratio stays near 1.0 in sync mode.
+
+### Alternative algorithms to consider
+
+The loss function is a single string argument to `forward_backward_async`. Available built-in options: `importance_sampling` (default), `ppo`, `cispo`, `dro`. For anything else, use `forward_backward_custom`.
+
+The advantage baseline is also swappable — edit `compute_advantages` in `rl/data_processing.py`. Some alternatives from the literature:
+
+| Method | Baseline | Key property |
+|---|---|---|
+| GRPO (Shao et al., 2024) | `(r - mean) / std` | Std-normalizes per group. Can miscalibrate on stochastic outcomes. |
+| RLOO | `mean(r_{j≠i})` | Leave-one-out. Unbiased, standard alternative to group-mean. |
+| REINFORCE++ (Hu, 2025) | Global batch norm | More stable than prompt-local normalization. |
+| MaxRL (Tajwar et al., 2026) | `1/K` over successes | Only updates on winning trajectories, normalizes by K (number of wins) not N (group size). See below. |
+| MC-GRPO | `median(r)` | Median baseline, robust to outliers in low-rollout settings. |
+
+### MaxRL for debate
+
+Debate outcomes are binary (win/lose), so MaxRL (arXiv:2602.02710) applies directly. The estimator is:
+
+```
+loss = -(1/K) * sum_{i: r_i=1} log π(z_i|x)    if K > 0, else skip
+```
+
+where K = number of winning rollouts in the group. vs standard REINFORCE which uses `(1/N) * sum_i r_i * score_i`, MaxRL normalizes by K (successes) instead of N (group size). This means:
+
+- Only winning trajectories contribute to the gradient (failures get zero weight, not negative weight).
+- The objective targets a compute-indexed truncated maximum likelihood, not pass@1.
+- When K=0 (all rollouts lose), the prompt is skipped entirely — no gradient noise from all-loss groups.
+
+To implement: modify `compute_advantages` in `rl/data_processing.py` to set advantage=1/K for wins and 0 for losses (instead of `rewards - mean`), and skip groups with K=0. The loss function stays `importance_sampling`.
+
 ## References
 
 - Irving, G., Christiano, P., & Amodei, D. (2018). AI safety via debate. arXiv:1805.00899.
 - Khan, A., et al. (2024). Debating with More Persuasive LLMs Leads to More Truthful Answers. ICML 2024.
+- Shao, Z., et al. (2024). DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models. arXiv:2402.03300.
+- Tajwar, F., et al. (2026). Maximum Likelihood Reinforcement Learning. arXiv:2602.02710.
+- Bereket, M. & Leskovec, J. (2025). Uncalibrated Reasoning: GRPO Induces Overconfidence for Stochastic Outcomes. arXiv:2508.11800.
