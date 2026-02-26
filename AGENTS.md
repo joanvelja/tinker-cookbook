@@ -1,5 +1,7 @@
 # Tinker Cookbook Agent Guide
 
+**Debate recipe:** See `tinker_cookbook/recipes/multiplayer_rl/debate/AGENTS.md` for workflow norms.
+
 Quick reference for agents working on `tinker-cookbook`. Full documentation is in `docs/`.
 
 `tinker-cookbook` is a client library with training and eval code built on the Tinker service (hosted by Thinking Machines Lab) and the Tinker SDK (a separate repo with just the API). You author training/eval loops that run on a CPU machine; Tinker executes the heavy GPU work.
