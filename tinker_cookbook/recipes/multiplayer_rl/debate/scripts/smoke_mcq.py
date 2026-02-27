@@ -72,17 +72,17 @@ def _load_gpqa_problems(n: int, seed: int = 42) -> list[DebateProblem]:
 
 async def run():
     problems = _load_gpqa_problems(N_PROBLEMS)
-    print(f"Loaded {len(problems)} GPQA problems")
+    print(f"Loaded {len(problems)} GPQA problems", flush=True)
     for i, (prompt, ans_a, ans_b, target) in enumerate(problems):
-        print(f"  [{i}] A={ans_a} B={ans_b} target={target}  {prompt[:80]}...")
-    print()
+        print(f"  [{i}] A={ans_a} B={ans_b} target={target}  {prompt[:80]}...", flush=True)
+    print(flush=True)
 
-    service = tinker.ServiceClient()
+    # Separate ServiceClient per actor to avoid holder-level backoff coupling.
     renderer = get_renderer(RENDERER, get_tokenizer(MODEL))
     usage = UsageTracker()
 
     opponent_completer = TinkerMessageCompleter(
-        sampling_client=service.create_sampling_client(base_model=MODEL),
+        sampling_client=tinker.ServiceClient().create_sampling_client(base_model=MODEL),
         renderer=renderer,
         max_tokens=2048,
         usage_tracker=usage,
@@ -90,7 +90,7 @@ async def run():
         model_name=MODEL,
     )
     judge_completer = TinkerMessageCompleter(
-        sampling_client=service.create_sampling_client(base_model=MODEL),
+        sampling_client=tinker.ServiceClient().create_sampling_client(base_model=MODEL),
         renderer=renderer,
         max_tokens=1024,
         usage_tracker=usage,
@@ -98,7 +98,7 @@ async def run():
         model_name=MODEL,
     )
     trained_completer = TinkerTokenCompleter(
-        sampling_client=service.create_sampling_client(base_model=MODEL),
+        sampling_client=tinker.ServiceClient().create_sampling_client(base_model=MODEL),
         max_tokens=2048,
         usage_tracker=usage,
         actor="trained",
@@ -119,10 +119,10 @@ async def run():
         metrics=mcq_debate_metrics(),
     )
 
-    print(f"Model: {MODEL}")
-    print(f"Prompts: {PROMPTS_REF}")
-    print(f"Trace: {TRACE_PATH}")
-    print()
+    print(f"Model: {MODEL}", flush=True)
+    print(f"Prompts: {PROMPTS_REF}", flush=True)
+    print(f"Trace: {TRACE_PATH}", flush=True)
+    print(flush=True)
 
     with logtree.init_trace(f"MCQ Debate Smoke: {PROMPTS_REF} / {MODEL}", path=TRACE_PATH):
         logtree.log_formatter(DebateTraceCSSInjector())
@@ -133,38 +133,46 @@ async def run():
         )
 
         builders = dataset.get_batch(0)
-        for i, builder in enumerate(builders):
+
+        # Run all problems in parallel (A1 scheduling fix).
+        async def _run_problem(builder):
+            envs = await builder.make_envs()
+            trajectories = await asyncio.gather(
+                *[do_single_rollout(trained_completer, env) for env in envs]
+            )
+            rewards_and_metrics = await builder.compute_group_rewards(trajectories, envs)
+            return envs, trajectories, rewards_and_metrics
+
+        with logtree.scope_disable():
+            results = await asyncio.gather(*[_run_problem(b) for b in builders])
+
+        # Log sequentially.
+        for i, (builder, (envs, trajectories, rewards_and_metrics)) in enumerate(
+            zip(builders, results)
+        ):
             with logtree.scope_header(
                 f"Problem {i}: {builder.task_prompt[:80]}...",
                 class_="lt-section db-group",
             ):
-                envs = await builder.make_envs()
-
-                with logtree.scope_disable():
-                    trajectories = await asyncio.gather(
-                        *[do_single_rollout(trained_completer, env) for env in envs]
-                    )
-
-                rewards_and_metrics = await builder.compute_group_rewards(trajectories, envs)
-
-                # Log HTML trace.
                 for env, traj, (reward, metrics) in zip(envs, trajectories, rewards_and_metrics):
                     assert isinstance(env, DebateEnv)
                     logtree.log_html(render_rollout_html(env, reward))
 
-                # Print metrics.
                 for env_idx, (env, (reward, metrics)) in enumerate(zip(envs, rewards_and_metrics)):
                     assert isinstance(env, DebateEnv)
-                    print(f"  Problem {i} / env {env_idx} ({env.role.value}): reward={reward:.1f}")
+                    print(
+                        f"  Problem {i} / env {env_idx} ({env.role.value}): reward={reward:.1f}",
+                        flush=True,
+                    )
                     for k, v in sorted(metrics.items()):
-                        print(f"    {k}: {v}")
-                    print()
+                        print(f"    {k}: {v}", flush=True)
+                    print(flush=True)
 
         with logtree.scope_header("Cost Report", class_="lt-section db-cost"):
             logtree.details(usage.format_cost_report(), summary="Tinker Usage", pre=True)
 
-    print(usage.format_cost_report())
-    print(f"Trace: {TRACE_PATH}")
+    print(usage.format_cost_report(), flush=True)
+    print(f"Trace: {TRACE_PATH}", flush=True)
 
 
 if __name__ == "__main__":

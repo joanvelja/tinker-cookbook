@@ -486,7 +486,7 @@ def test_mcq_debate_metrics_keys():
     assert "accuracy.debater_a" in metrics
     assert "truth_win_if_disagreement" in metrics
     assert "parse_success" in metrics
-    assert len(metrics) == 15
+    assert len(metrics) == 39
 
 
 def test_mcq_debate_metrics_callable():

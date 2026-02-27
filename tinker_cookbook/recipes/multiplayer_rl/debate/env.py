@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import random
+import threading
+import time
 import uuid
 import warnings
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Sequence
 
 import chz
@@ -26,7 +31,8 @@ from tinker_cookbook.rl.types import (
 from tinker_cookbook.completers import MessageCompleter, StopCondition
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
-from .scoring.metrics import MetricFn, mcq_debate_metrics
+from .scoring.metrics import MetricFn, _latest_think_answer, mcq_debate_metrics
+from .scoring.trajectory import final_answer
 from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
 from .prompts import check_ab_symmetry, resolve_prompts
 from .core.reducer import fork_state, get_current_slot
@@ -41,6 +47,58 @@ from .types import (
     TurnTicket,
 )
 from .core.visibility import build_generation_messages
+
+_EPISODE_LOG_LOCK = threading.Lock()
+
+IDENTITY_REMAP_BASES = [
+    "accuracy",
+    "stance_change",
+    "concession_correctness",
+    "debater_accuracy_delta",
+    "win_rate",
+    "loss_rate",
+    "correct_and_wins",
+    "correct_and_loses",
+    "wrong_and_wins",
+    "wrong_and_loses",
+    "parse_success",
+    "think_block_rate",
+    "think_answer_parse_rate",
+    "think_public_answer_match",
+    "think_correct_public_wrong",
+    "think_wrong_public_correct",
+]
+
+
+def _remap_to_identity(m: Metrics, trained_role: Role) -> Metrics:
+    """Remap seat-based metrics (debater_a/b) to identity-based (trained/opponent).
+
+    Returns a NEW dict with all original keys plus id/ prefixed identity keys.
+    """
+    result = dict(m)  # keep originals
+
+    is_a = trained_role == Role.DEBATER_A
+    result["id/trained_role_is_a"] = 1.0 if is_a else 0.0
+
+    for base in IDENTITY_REMAP_BASES:
+        a_key = f"{base}.debater_a"
+        b_key = f"{base}.debater_b"
+        trained_key = f"id/{base}.trained"
+        opponent_key = f"id/{base}.opponent"
+
+        if is_a:
+            if a_key in m:
+                result[trained_key] = m[a_key]
+            if b_key in m:
+                result[opponent_key] = m[b_key]
+        else:
+            if b_key in m:
+                result[trained_key] = m[b_key]
+            if a_key in m:
+                result[opponent_key] = m[a_key]
+
+    return result
+
 
 # (task_prompt, answer_a, answer_b) or (task_prompt, answer_a, answer_b, target)
 DebateProblem = tuple[str, str, str] | tuple[str, str, str, str]
@@ -57,6 +115,9 @@ class DebateEnv(Env):
     opponent_role: Role | None = None
     _ticket: TurnTicket | None = field(default=None, repr=False)
     _opponent_task: asyncio.Task | None = field(default=None, repr=False)
+    _last_initial_obs_wall_s: float = field(default=0.0, repr=False)
+
+    _opponent_wall_s_accum: float = field(default=0.0, repr=False)
 
     async def _opponent_submit(self) -> None:
         """Get visible messages for the opponent, call the completer, submit."""
@@ -65,7 +126,9 @@ class DebateEnv(Env):
         if ticket is None:
             return
         messages, _prefill = build_generation_messages(self.runtime.state, self.opponent_role)
+        t0 = time.monotonic()
         reply = await self.opponent_completer(list(messages))
+        self._opponent_wall_s_accum += time.monotonic() - t0
         text = format_content_as_string(reply["content"], separator="")
         token_count = len(self.renderer.tokenizer.encode(text))
         await self.runtime.submit(ticket, text, token_count)
@@ -100,18 +163,22 @@ class DebateEnv(Env):
             self._opponent_task = None
 
     async def initial_observation(self) -> tuple[Observation, StopCondition]:
+        t0 = time.monotonic()
         # If opponent goes first, drive them before returning our observation.
         await self._drive_opponent()
         self._ticket = await self.runtime.wait_for_turn(self.role)
         if self._ticket is None:
+            self._last_initial_obs_wall_s = time.monotonic() - t0
             return tinker.ModelInput.empty(), self.renderer.get_stop_sequences()
         messages, prefill = build_generation_messages(self.runtime.state, self.role)
+        self._last_initial_obs_wall_s = time.monotonic() - t0
         return (
             self.renderer.build_generation_prompt(list(messages), prefill=prefill),
             self.renderer.get_stop_sequences(),
         )
 
     async def step(self, action: Action) -> StepResult:
+        t0 = time.monotonic()
         transcript_len_before = len(self.runtime.state.transcript)
 
         msg, _ok = self.renderer.parse_response(action)
@@ -120,19 +187,20 @@ class DebateEnv(Env):
         result = await self.runtime.submit(self._ticket, text, len(action))
         # Await any background opponent task from a simultaneous slot.
         await self._await_opponent_task()
-        next_ob = self.renderer.build_generation_prompt(list(result.messages))
         episode_done = result.episode_done
         if not episode_done:
             # Drive opponent turns before waiting for our next turn.
             await self._drive_opponent()
             self._ticket = await self.runtime.wait_for_turn(self.role)
             if self._ticket is not None:
-                # Update observation with fresh messages after waiting.
                 messages, prefill = build_generation_messages(self.runtime.state, self.role)
                 next_ob = self.renderer.build_generation_prompt(list(messages), prefill=prefill)
             else:
                 # Episode ended while we were waiting for our next turn.
                 episode_done = True
+                next_ob = tinker.ModelInput.empty()
+        else:
+            next_ob = tinker.ModelInput.empty()
 
         # Enrich logs with opponent output tokens and verdict info.
         logs = dict(result.logs)
@@ -150,6 +218,11 @@ class DebateEnv(Env):
             logs["verdict"] = outcome.winner.value if outcome.winner else "tie"
             if outcome.verdict_text:
                 logs["verdict_text"] = outcome.verdict_text
+
+        logs["time/step_wall_s"] = time.monotonic() - t0
+        if self._opponent_wall_s_accum > 0:
+            logs["time/opponent_wall_s"] = self._opponent_wall_s_accum
+            self._opponent_wall_s_accum = 0.0
 
         return StepResult(
             reward=result.reward,
@@ -192,6 +265,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
     prompts_ref: str = "default"
     target: str | None = None
     metrics: dict[str, MetricFn] | None = field(default=None, repr=False)
+    episode_log_dir: str | None = None
 
     # Set after make_envs
     _runtime: DebateRuntime | None = field(default=None, repr=False)
@@ -202,6 +276,65 @@ class DebateGroupBuilder(EnvGroupBuilder):
         if not self.answer_a and not self.answer_b:
             return None
         return {Role.DEBATER_A: self.answer_a, Role.DEBATER_B: self.answer_b}
+
+    def on_group_complete(
+        self,
+        trajectories_G: list[Trajectory],
+        env_group: Sequence[Env],
+        rewards_and_metrics_G: list[tuple[float, Metrics]],
+    ) -> None:
+        if self.episode_log_dir is None:
+            return
+        if not self._runtimes:
+            return  # Only log in frozen-opponent mode
+
+        os.makedirs(self.episode_log_dir, exist_ok=True)
+        records: list[str] = []
+
+        for env, (reward, metrics) in zip(env_group, rewards_and_metrics_G, strict=True):
+            assert isinstance(env, DebateEnv)
+            state = env.runtime.state
+            trained_role = env.role
+            opponent_role = Role.DEBATER_B if trained_role == Role.DEBATER_A else Role.DEBATER_A
+
+            record = {
+                "schema_version": 1,
+                "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+                "debate_id": state.spec.debate_id,
+                "protocol_kind": state.spec.protocol_kind.value,
+                "prompts_ref": state.spec.prompts_ref,
+                "open_reasoning": state.spec.open_reasoning,
+                "trained_role": trained_role.value,
+                "target": state.spec.target,
+                "winner": (
+                    state.outcome.winner.value if state.outcome and state.outcome.winner else None
+                ),
+                "reward_trained": reward,
+                "answers": {
+                    "public_trained": final_answer(state, role=trained_role),
+                    "public_opponent": final_answer(state, role=opponent_role),
+                    "think_trained": _latest_think_answer(state, trained_role),
+                    "think_opponent": _latest_think_answer(state, opponent_role),
+                },
+                "signals": {k: v for k, v in metrics.items() if k.startswith("id/")},
+                "transcript": [
+                    {
+                        "role": utt.role.value,
+                        "phase": utt.phase.value,
+                        "round": utt.round_index,
+                        "text": utt.text,
+                        "identity": "trained" if utt.role == trained_role else "opponent",
+                    }
+                    for utt in state.transcript
+                ],
+                "verdict_text": state.outcome.verdict_text if state.outcome else None,
+            }
+            records.append(json.dumps(record) + "\n")
+
+        log_path = os.path.join(self.episode_log_dir, "episodes.jsonl")
+        with _EPISODE_LOG_LOCK:
+            with open(log_path, "a") as f:
+                f.writelines(records)
 
     async def make_envs(self) -> Sequence[Env]:
         # Eager validation: fail fast on bad prompts_ref.
@@ -328,7 +461,9 @@ class DebateGroupBuilder(EnvGroupBuilder):
                 results = []
                 for env in env_group:
                     assert isinstance(env, DebateEnv)
-                    results.append((0.0, self._compute_metrics(env.runtime.state)))
+                    m = self._compute_metrics(env.runtime.state)
+                    m = _remap_to_identity(m, env.role)
+                    results.append((0.0, m))
                 return results
             if self._runtime is not None:
                 m = self._compute_metrics(self._runtime.state)
@@ -341,6 +476,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
             for env in env_group:
                 assert isinstance(env, DebateEnv)
                 m = self._compute_metrics(env.runtime.state)
+                m = _remap_to_identity(m, env.role)
                 outcome = env.runtime.state.outcome
                 if outcome is None:
                     results.append((0.0, m))
@@ -445,6 +581,7 @@ class DebateDataset(RLDataset):
         randomize_position: bool = False,
         prompts_ref: str = "default",
         metrics: dict[str, MetricFn] | None = None,
+        episode_log_dir: str | None = None,
     ) -> None:
         self.problems = problems
         self.batch_size = batch_size
@@ -462,6 +599,7 @@ class DebateDataset(RLDataset):
         self.randomize_position = randomize_position
         self.prompts_ref = prompts_ref
         self.metrics = metrics
+        self.episode_log_dir = episode_log_dir
 
     @staticmethod
     def _unpack_problem(problem: DebateProblem) -> tuple[str, str, str, str | None]:
@@ -496,6 +634,7 @@ class DebateDataset(RLDataset):
                 prompts_ref=self.prompts_ref,
                 target=target,
                 metrics=self.metrics,
+                episode_log_dir=self.episode_log_dir,
             )
             for prompt, ans_a, ans_b, target in (self._unpack_problem(p) for p in batch_problems)
         ]

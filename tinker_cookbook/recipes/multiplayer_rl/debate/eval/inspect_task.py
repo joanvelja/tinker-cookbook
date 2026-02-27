@@ -217,12 +217,17 @@ async def _drive_turn(
     slot = state.spec.schedule[state.slot_index]
     async with span(f"{role.value}_{slot.phase.value}"):
         msgs, _prefill = build_generation_messages(state, role)
+
+        # Log full input prompt.
+        for i, msg in enumerate(msgs):
+            transcript().info(f"[INPUT {role.value} msg {i}] role={msg['role']}\n{msg['content']}")
+
         response = await completer(msgs)
         text = response["content"]
         token_count = getattr(completer, "_last_output_tokens", len(text.split()) * 4 // 3)
         result = await runtime.submit(ticket, text, token_count)
         transcript().info(
-            f"{role.value} round={slot.round_index}: "
+            f"[OUTPUT {role.value}] round={slot.round_index}: "
             f"tokens~{token_count}, answer={result.logs.get('field.answer', '?')}"
         )
         transcript().info(text)

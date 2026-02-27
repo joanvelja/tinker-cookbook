@@ -19,6 +19,7 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.usage import UsageTracker
 
 from ..env import DebateDataset, DebateProblem
+from ..eval.dataset_adapter import GPQAAdapter
 from ..eval.evaluator import DebateInspectEvaluatorBuilder
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from ..types import ProtocolKind
@@ -30,8 +31,9 @@ def _load_gpqa(
     seed: int = 42,
 ) -> tuple[list[dict], list[dict]]:
     ds = load_dataset("Idavidrein/gpqa", subset, split="train").shuffle(seed=seed)
-    n_test = max(1, int(len(ds) * test_fraction))
-    return list(ds[:-n_test]), list(ds[-n_test:])
+    rows = [ds[i] for i in range(len(ds))]
+    n_test = max(1, int(len(rows) * test_fraction))
+    return rows[:-n_test], rows[-n_test:]
 
 
 def _gpqa_to_problems(rows: list[dict], seed: int = 42) -> list[DebateProblem]:
@@ -66,38 +68,38 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     renderer_name: str
     opponent_model: str
     judge_model: str
-    opponent_max_tokens: int = 3072
-    judge_max_tokens: int = 1024
-    gpqa_subset: str = "gpqa_diamond"
+    opponent_max_tokens: int = 8192
+    judge_max_tokens: int = 4096
+    gpqa_subset: str = "gpqa_extended"
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     num_rounds: int = 2
-    batch_size: int = 4
-    group_size: int = 4
+    batch_size: int = 32
+    group_size: int = 8
     randomize_position: bool = True
     prompts_ref: str = "judge_exploit"
     open_reasoning: bool = False
     base_url: str | None = None
+    episode_log_dir: str | None = None
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
-        service_client = tinker.ServiceClient(base_url=self.base_url)
         renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
         tracker: UsageTracker | None = getattr(self, "_usage_tracker", None)
 
-        # Opponent completer (frozen model).
-        opponent_sampling = service_client.create_sampling_client(base_model=self.opponent_model)
+        # Separate ServiceClient per actor to avoid holder-level backoff coupling.
         opponent_completer = TinkerMessageCompleter(
-            sampling_client=opponent_sampling,
+            sampling_client=tinker.ServiceClient(base_url=self.base_url).create_sampling_client(
+                base_model=self.opponent_model
+            ),
             renderer=renderer,
             max_tokens=self.opponent_max_tokens,
             usage_tracker=tracker,
             actor="opponent",
             model_name=self.opponent_model,
         )
-
-        # Judge completer (frozen model).
-        judge_sampling = service_client.create_sampling_client(base_model=self.judge_model)
         judge_completer = TinkerMessageCompleter(
-            sampling_client=judge_sampling,
+            sampling_client=tinker.ServiceClient(base_url=self.base_url).create_sampling_client(
+                base_model=self.judge_model
+            ),
             renderer=renderer,
             max_tokens=self.judge_max_tokens,
             usage_tracker=tracker,
@@ -124,6 +126,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             group_size=self.group_size,
             randomize_position=self.randomize_position,
             prompts_ref=self.prompts_ref,
+            episode_log_dir=self.episode_log_dir,
         )
 
         test_ds: RLDataset | None = None
@@ -141,6 +144,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
                 group_size=self.group_size,
                 randomize_position=self.randomize_position,
                 prompts_ref=self.prompts_ref,
+                episode_log_dir=self.episode_log_dir,
             )
 
         return train_ds, test_ds
@@ -152,25 +156,26 @@ class CLIConfig:
     renderer_name: str | None = None
     opponent_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     judge_model: str = "Qwen/Qwen3-4B-Instruct-2507"
-    opponent_max_tokens: int = 3072
-    judge_max_tokens: int = 1024
-    gpqa_subset: str = "gpqa_diamond"
+    opponent_max_tokens: int = 8192
+    judge_max_tokens: int = 4096
+    gpqa_subset: str = "gpqa_extended"
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     num_rounds: int = 2
-    batch_size: int = 4
-    group_size: int = 4
+    batch_size: int = 32
+    group_size: int = 8
     learning_rate: float = 3e-5
-    max_tokens: int = 3072
+    max_tokens: int = 8192
     randomize_position: bool = True
     prompts_ref: str = "judge_exploit"
     open_reasoning: bool = False
     kl_penalty_coef: float = 0.0
     inspect_eval: DebateInspectEvaluatorBuilder | None = None
-    eval_every: int = 5
+    eval_every: int = 10
     save_every: int = 20
-    wandb_project: str | None = None
+    wandb_project: str | None = "debate-judge-exploitation"
     wandb_name: str | None = None
     log_path: str | None = None
+    episode_log_dir: str | None = None
     base_url: str | None = None
 
 
@@ -203,16 +208,33 @@ def build_config(cli: CLIConfig) -> train.Config:
         prompts_ref=cli.prompts_ref,
         open_reasoning=cli.open_reasoning,
         base_url=cli.base_url,
+        episode_log_dir=cli.episode_log_dir,
     )
 
-    evaluator_builders = []
     if cli.inspect_eval is not None:
         inspect_builder = chz.replace(
             cli.inspect_eval,
             renderer_name=cli.inspect_eval.renderer_name or renderer_name,
             model_name=cli.inspect_eval.model_name or model_name,
         )
-        evaluator_builders.append(inspect_builder)
+    else:
+        # Default: GPQA eval matching training config.
+        inspect_builder = DebateInspectEvaluatorBuilder(
+            adapter=GPQAAdapter(free_debate=True, limit=10),
+            prompts_ref=cli.prompts_ref,
+            num_rounds=cli.num_rounds,
+            protocol_kind=cli.protocol_kind,
+            open_reasoning=cli.open_reasoning,
+            randomize_position=cli.randomize_position,
+            opponent_model=cli.opponent_model,
+            judge_model=cli.judge_model,
+            opponent_max_tokens=cli.opponent_max_tokens,
+            judge_max_tokens=cli.judge_max_tokens,
+            renderer_name=renderer_name,
+            model_name=model_name,
+            base_url=cli.base_url,
+        )
+    evaluator_builders = [inspect_builder]
 
     return train.Config(
         model_name=model_name,
@@ -236,7 +258,7 @@ def main():
     cli_utils.check_log_dir(config.log_path, behavior_if_exists="ask")
     usage_tracker = UsageTracker()
     # Inject tracker into dataset builder for opponent/judge completers.
-    config.dataset_builder._usage_tracker = usage_tracker  # type: ignore[attr-defined]
+    object.__setattr__(config.dataset_builder, "_usage_tracker", usage_tracker)
     asyncio.run(train.main(config, usage_tracker=usage_tracker))
 
 

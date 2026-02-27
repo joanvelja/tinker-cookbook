@@ -51,9 +51,11 @@ def _wrap_opponent_turn(utt: Utterance, open_reasoning: bool) -> str:
 
 
 def _utterance_to_message(utt: Utterance, viewer: Role, open_reasoning: bool) -> Message:
-    """Convert utterance to Message. Own turns -> assistant (raw), opponent -> user (wrapped)."""
+    """Convert utterance to Message. Own turns -> assistant (stripped), opponent -> user (wrapped)."""
     if utt.role == viewer:
-        return Message(role="assistant", content=utt.text)
+        # Strip own prior thinking to save context budget; the public output
+        # already reflects those decisions.
+        return Message(role="assistant", content=_strip_reasoning(utt.text))
     else:
         return Message(role="user", content=_wrap_opponent_turn(utt, open_reasoning))
 

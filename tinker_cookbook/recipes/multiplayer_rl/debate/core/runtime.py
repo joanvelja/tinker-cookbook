@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
@@ -113,6 +114,7 @@ class DebateRuntime:
         the runtime.
         """
         async with self._condition:
+            _lock_t0 = time.monotonic()
             # Stale ticket check: slot_id must match current slot.
             # (Version check alone fails for simultaneous slots where buffering
             # changes version between the first and second arriver.)
@@ -190,6 +192,7 @@ class DebateRuntime:
                     reward = self._step_reward_fn(before, self._state, ticket.role, utt)
 
                 messages = self._get_messages(self._state, ticket.role)
+                base_logs["time/lock_held_s"] = time.monotonic() - _lock_t0
                 return SubmitResult(
                     reward=reward,
                     episode_done=self._state.done,
@@ -213,16 +216,21 @@ class DebateRuntime:
                     )
 
                 # Handle boundary: judge callback (before reward computation).
+                _judge_wall_s = 0.0
                 if result.boundary_reached and self._judge_callback is not None:
                     request = JudgeRequest(state=self._state, trigger="boundary")
+                    _jt0 = time.monotonic()
                     decision = await self._judge_callback.on_boundary(request)
+                    _judge_wall_s += time.monotonic() - _jt0
                     if decision is not None:
                         self._state = apply_judge_event(self._state, decision)
 
                 # Handle episode end: judge final callback.
                 if result.episode_done and self._judge_callback is not None:
                     request = JudgeRequest(state=self._state, trigger="final")
+                    _jt0 = time.monotonic()
                     outcome = await self._judge_callback.on_final(request)
+                    _judge_wall_s += time.monotonic() - _jt0
                     self._state = replace(self._state, outcome=outcome)
                     # Log judge verdict.
                     winner_str = outcome.winner.value if outcome.winner else "tie"
@@ -241,6 +249,13 @@ class DebateRuntime:
                     reward = self._step_reward_fn(before, self._state, ticket.role, utt)
 
                 messages = self._get_messages(self._state, ticket.role)
+
+                base_logs["time/lock_held_s"] = time.monotonic() - _lock_t0
+                if _judge_wall_s > 0:
+                    base_logs["time/judge_wall_s"] = _judge_wall_s
+                    completer_judge_s = getattr(self._judge_callback, "_last_judge_wall_s", None)
+                    if completer_judge_s is not None:
+                        base_logs["time/judge_sample_wall_s"] = completer_judge_s
             finally:
                 # Always notify — prevents lost wakeups if reward_fn or callback raises.
                 self._condition.notify_all()

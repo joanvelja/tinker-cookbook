@@ -114,6 +114,15 @@ class EnvGroupBuilder(ABC):
         """
         return [(0.0, {}) for _ in trajectory_group]
 
+    def on_group_complete(
+        self,
+        trajectories_G: list[Trajectory],
+        env_group: Sequence[Env],
+        rewards_and_metrics_G: list[tuple[float, Metrics]],
+    ) -> None:
+        """Hook called after compute_group_rewards. Override for logging."""
+        pass
+
     def logging_tags(self) -> list[str]:
         """
         This is just used for logging. We often want to aggregate metrics (like rewards

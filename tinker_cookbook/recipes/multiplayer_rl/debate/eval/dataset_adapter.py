@@ -29,10 +29,12 @@ class GPQAAdapter:
         subset: str = "gpqa_diamond",
         limit: int | None = None,
         seed: int = 42,
+        free_debate: bool = False,
     ) -> None:
         self._subset = subset
         self._limit = limit
         self._seed = seed
+        self._free_debate = free_debate
 
     def to_samples(self) -> list[Sample]:
         import datasets as hf_datasets
@@ -59,20 +61,24 @@ class GPQAAdapter:
             option_lines = "\n".join(f"{chr(ord('A') + i)}) {opt}" for i, opt in enumerate(options))
             task_prompt = f"{question}\n\n{option_lines}"
 
-            # Debater A gets correct, B gets random wrong.
-            wrong_label = rng.choice(
-                [chr(ord("A") + i) for i in range(4) if chr(ord("A") + i) != target_label]
-            )
+            if self._free_debate:
+                metadata = {"answer_a": "", "answer_b": "", "source": "gpqa_diamond"}
+            else:
+                # Debater A gets correct, B gets random wrong.
+                wrong_label = rng.choice(
+                    [chr(ord("A") + i) for i in range(4) if chr(ord("A") + i) != target_label]
+                )
+                metadata = {
+                    "answer_a": target_label,
+                    "answer_b": wrong_label,
+                    "source": "gpqa_diamond",
+                }
 
             samples.append(
                 Sample(
                     input=task_prompt,
                     target=target_label,
-                    metadata={
-                        "answer_a": target_label,
-                        "answer_b": wrong_label,
-                        "source": "gpqa_diamond",
-                    },
+                    metadata=metadata,
                 )
             )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from tinker_cookbook.completers import MessageCompleter
@@ -31,7 +32,9 @@ class LLMJudgeCallback:
     async def on_final(self, request: JudgeRequest) -> DebateOutcome:
         state = request.state
         messages, _prefill = build_generation_messages(state, Role.JUDGE, trigger="final")
+        t0 = time.monotonic()
         response = await self._completer(messages)
+        self._last_judge_wall_s = time.monotonic() - t0
         text = format_content_as_string(response["content"], separator="")
 
         # Schema-driven extraction if prompts define judge fields

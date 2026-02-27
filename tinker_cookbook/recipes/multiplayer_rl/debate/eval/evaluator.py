@@ -86,7 +86,8 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             model_name=cfg.model_name,
         )
 
-        # Opponent completer (debater B). Self-play if opponent_model is None.
+        # Opponent completer. Self-play shares the trained sampling_client
+        # (same fine-tuned weights). Separate model gets its own ServiceClient.
         if cfg.opponent_model is None:
             opponent_completer = TinkerMessageCompleter(
                 sampling_client=sampling_client,
@@ -97,9 +98,10 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
                 model_name=cfg.model_name,
             )
         else:
-            service = tinker.ServiceClient(base_url=cfg.base_url)
-            opp_client = service.create_sampling_client(base_model=cfg.opponent_model)
             opp_renderer = get_renderer(cfg.renderer_name, get_tokenizer(cfg.opponent_model))
+            opp_client = tinker.ServiceClient(base_url=cfg.base_url).create_sampling_client(
+                base_model=cfg.opponent_model
+            )
             opponent_completer = TinkerMessageCompleter(
                 sampling_client=opp_client,
                 renderer=opp_renderer,
@@ -109,11 +111,10 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
                 model_name=cfg.opponent_model,
             )
 
-        # Judge completer.
-        # NOTE: judge_model must be Tinker-compatible for now. External API
-        # routing (e.g. "openai/gpt-4o" -> OpenAI direct) is a future concern.
-        service = tinker.ServiceClient(base_url=cfg.base_url)
-        judge_client = service.create_sampling_client(base_model=cfg.judge_model)
+        # Judge completer — separate ServiceClient to avoid backoff coupling.
+        judge_client = tinker.ServiceClient(base_url=cfg.base_url).create_sampling_client(
+            base_model=cfg.judge_model
+        )
         judge_renderer = get_renderer(cfg.renderer_name, get_tokenizer(cfg.judge_model))
         judge_completer = TinkerMessageCompleter(
             sampling_client=judge_client,
