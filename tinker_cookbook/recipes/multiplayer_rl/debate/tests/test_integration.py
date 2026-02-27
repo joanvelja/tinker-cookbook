@@ -10,7 +10,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from dataclasses import replace
 
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
@@ -25,8 +24,6 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_sc
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.reducer import apply_action
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.trajectory import (
     answer_from_utterance,
-    answers_by_round,
-    final_answer,
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.metrics import (
     accuracy,
@@ -115,10 +112,30 @@ def _build_full_state(
     """Build a completed 2-round sequential debate state."""
     spec = _make_spec(target=target)
     transcript = (
-        _utt(Role.DEBATER_A, 0, Phase.PROPOSE, 0, "A proposes", answer=a_answers[0], reasoning="test"),
-        _utt(Role.DEBATER_B, 0, Phase.PROPOSE, 1, "B proposes", answer=b_answers[0], reasoning="test"),
-        _utt(Role.DEBATER_A, 1, Phase.CRITIQUE, 2, "A critiques", answer=a_answers[1], rebuttal="test"),
-        _utt(Role.DEBATER_B, 1, Phase.CRITIQUE, 3, "B critiques", answer=b_answers[1], rebuttal="test"),
+        _utt(
+            Role.DEBATER_A, 0, Phase.PROPOSE, 0, "A proposes", answer=a_answers[0], reasoning="test"
+        ),
+        _utt(
+            Role.DEBATER_B, 0, Phase.PROPOSE, 1, "B proposes", answer=b_answers[0], reasoning="test"
+        ),
+        _utt(
+            Role.DEBATER_A,
+            1,
+            Phase.CRITIQUE,
+            2,
+            "A critiques",
+            answer=a_answers[1],
+            rebuttal="test",
+        ),
+        _utt(
+            Role.DEBATER_B,
+            1,
+            Phase.CRITIQUE,
+            3,
+            "B critiques",
+            answer=b_answers[1],
+            rebuttal="test",
+        ),
     )
     outcome = None
     if include_outcome:
@@ -152,9 +169,7 @@ class TestFieldExtractionRoundtrip:
         specs = prompts.get_field_specs("debater_a", "propose")
         assert specs is not None
 
-        fields = extract_fields(
-            "<answer>C</answer><reasoning>because pi</reasoning>", specs
-        )
+        fields = extract_fields("<answer>C</answer><reasoning>because pi</reasoning>", specs)
         assert fields is not None
         assert fields["answer"] == "C"
         assert fields["reasoning"] == "because pi"
@@ -353,13 +368,17 @@ class TestFieldSymmetryCheck:
     def test_symmetric_fields_no_warnings(self):
         prompts = resolve_prompts("scientific_mcq")
         from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import check_ab_symmetry
+
         warnings = check_ab_symmetry(prompts)
         assert not any("fields" in w for w in warnings)
 
     def test_asymmetric_field_triggers_detected(self):
         """Synthetic test: asymmetric triggers should produce a warning."""
-        from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import check_ab_symmetry, DebatePrompts
-        from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.fields import FieldSpec
+        from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import (
+            check_ab_symmetry,
+            DebatePrompts,
+        )
+
         prompts = resolve_prompts("scientific_mcq")
         # Patch fields to create asymmetry (debater_b missing 'critique' trigger).
         asymmetric_fields = {
@@ -367,17 +386,26 @@ class TestFieldSymmetryCheck:
             "debater_b": {"propose": prompts.fields.get("debater_b", {}).get("propose", {})},
         }
         patched = DebatePrompts(
-            system=prompts.system, user=prompts.user, question=prompts.question,
-            think=prompts.think, prefill=prompts.prefill, fields=asymmetric_fields,
-            content_hash="test", source_ref="test",
+            system=prompts.system,
+            user=prompts.user,
+            question=prompts.question,
+            think=prompts.think,
+            prefill=prompts.prefill,
+            fields=asymmetric_fields,
+            content_hash="test",
+            source_ref="test",
         )
         warnings = check_ab_symmetry(patched)
         assert any("fields" in w and "trigger" in w for w in warnings)
 
     def test_asymmetric_field_names_detected(self):
         """Synthetic test: same triggers but different field names should warn."""
-        from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import check_ab_symmetry, DebatePrompts
+        from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import (
+            check_ab_symmetry,
+            DebatePrompts,
+        )
         from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.fields import FieldSpec
+
         prompts = resolve_prompts("scientific_mcq")
         # debater_b.propose has extra field
         b_propose = dict(prompts.fields.get("debater_b", {}).get("propose", {}))
@@ -387,9 +415,14 @@ class TestFieldSymmetryCheck:
             "debater_b": {**prompts.fields.get("debater_b", {}), "propose": b_propose},
         }
         patched = DebatePrompts(
-            system=prompts.system, user=prompts.user, question=prompts.question,
-            think=prompts.think, prefill=prompts.prefill, fields=patched_fields,
-            content_hash="test", source_ref="test",
+            system=prompts.system,
+            user=prompts.user,
+            question=prompts.question,
+            think=prompts.think,
+            prefill=prompts.prefill,
+            fields=patched_fields,
+            content_hash="test",
+            source_ref="test",
         )
         warnings = check_ab_symmetry(patched)
         assert any("fields.propose" in w for w in warnings)
@@ -419,6 +452,7 @@ class TestFrozenOpponentJudgeValidation:
             await builder.make_envs()
 
         import asyncio
+
         with pytest.raises(ValueError, match="include_judge_turns"):
             asyncio.get_event_loop().run_until_complete(_run())
 
@@ -431,11 +465,13 @@ class TestFrozenOpponentJudgeValidation:
 class TestPhaseToTriggerMapping:
     def test_judge_verdict_maps_to_final(self):
         from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import _PHASE_TO_TRIGGER
+
         assert _PHASE_TO_TRIGGER["judge_verdict"] == "final"
         assert _PHASE_TO_TRIGGER["judge_query"] == "boundary"
 
     def test_debater_phases_pass_through(self):
         from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import _PHASE_TO_TRIGGER
+
         # Debater phases should not be in the mapping (pass through as-is)
         assert "propose" not in _PHASE_TO_TRIGGER
         assert "critique" not in _PHASE_TO_TRIGGER

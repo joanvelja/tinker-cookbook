@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
@@ -415,9 +414,7 @@ def test_build_generation_messages_judge_all_wrapped():
     state = _make_state(spec, transcript=transcript, slot_index=2, rounds_completed=1)
     msgs, _prefill = build_generation_messages(state, Role.JUDGE, trigger="final")
     # Skip system(0) and question(1). Transcript may be consolidated into one user msg.
-    transcript_content = "\n".join(
-        str(m.get("content", "")) for m in msgs[2:]
-    )
+    transcript_content = "\n".join(str(m.get("content", "")) for m in msgs[2:])
     # Both debate turns must be wrapped (judge is never "self")
     assert transcript_content.count("<opponent_turn") == 2
     assert transcript_content.count("</opponent_turn>") == 2
@@ -489,5 +486,6 @@ prefill:
         assert prefill_b is None
     finally:
         import os
+
         os.unlink(f.name)
         _rp.cache_clear()

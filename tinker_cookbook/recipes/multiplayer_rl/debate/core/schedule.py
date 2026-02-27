@@ -26,67 +26,107 @@ def build_schedule(
 
         if kind == ProtocolKind.SEQUENTIAL:
             # A then B, sequential. B's slot is the boundary.
-            slots.append(TurnSlot(
-                slot_id=slot_id, round_index=round_idx, phase=phase,
-                actors=(Role.DEBATER_A,), boundary_after=False,
-                visibility_policy=VisibilityPolicy.ALL_PRIOR,
-            ))
+            slots.append(
+                TurnSlot(
+                    slot_id=slot_id,
+                    round_index=round_idx,
+                    phase=phase,
+                    actors=(Role.DEBATER_A,),
+                    boundary_after=False,
+                    visibility_policy=VisibilityPolicy.ALL_PRIOR,
+                )
+            )
             slot_id += 1
-            slots.append(TurnSlot(
-                slot_id=slot_id, round_index=round_idx, phase=phase,
-                actors=(Role.DEBATER_B,), boundary_after=True,
-                visibility_policy=VisibilityPolicy.ALL_PRIOR,
-            ))
+            slots.append(
+                TurnSlot(
+                    slot_id=slot_id,
+                    round_index=round_idx,
+                    phase=phase,
+                    actors=(Role.DEBATER_B,),
+                    boundary_after=True,
+                    visibility_policy=VisibilityPolicy.ALL_PRIOR,
+                )
+            )
             slot_id += 1
 
         elif kind == ProtocolKind.SIMULTANEOUS:
             # A and B simultaneously. Single slot is the boundary.
-            slots.append(TurnSlot(
-                slot_id=slot_id, round_index=round_idx, phase=phase,
-                actors=(Role.DEBATER_A, Role.DEBATER_B), boundary_after=True,
-                visibility_policy=VisibilityPolicy.COMPLETED_ROUNDS_ONLY,
-            ))
+            slots.append(
+                TurnSlot(
+                    slot_id=slot_id,
+                    round_index=round_idx,
+                    phase=phase,
+                    actors=(Role.DEBATER_A, Role.DEBATER_B),
+                    boundary_after=True,
+                    visibility_policy=VisibilityPolicy.COMPLETED_ROUNDS_ONLY,
+                )
+            )
             slot_id += 1
 
         elif kind == ProtocolKind.HYBRID:
             if round_idx == 0:
                 # First round: simultaneous proposals.
-                slots.append(TurnSlot(
-                    slot_id=slot_id, round_index=round_idx, phase=Phase.PROPOSE,
-                    actors=(Role.DEBATER_A, Role.DEBATER_B), boundary_after=True,
-                    visibility_policy=VisibilityPolicy.COMPLETED_ROUNDS_ONLY,
-                ))
+                slots.append(
+                    TurnSlot(
+                        slot_id=slot_id,
+                        round_index=round_idx,
+                        phase=Phase.PROPOSE,
+                        actors=(Role.DEBATER_A, Role.DEBATER_B),
+                        boundary_after=True,
+                        visibility_policy=VisibilityPolicy.COMPLETED_ROUNDS_ONLY,
+                    )
+                )
                 slot_id += 1
             else:
                 # Subsequent rounds: sequential critiques.
-                slots.append(TurnSlot(
-                    slot_id=slot_id, round_index=round_idx, phase=Phase.CRITIQUE,
-                    actors=(Role.DEBATER_A,), boundary_after=False,
-                    visibility_policy=VisibilityPolicy.ALL_PRIOR,
-                ))
+                slots.append(
+                    TurnSlot(
+                        slot_id=slot_id,
+                        round_index=round_idx,
+                        phase=Phase.CRITIQUE,
+                        actors=(Role.DEBATER_A,),
+                        boundary_after=False,
+                        visibility_policy=VisibilityPolicy.ALL_PRIOR,
+                    )
+                )
                 slot_id += 1
-                slots.append(TurnSlot(
-                    slot_id=slot_id, round_index=round_idx, phase=Phase.CRITIQUE,
-                    actors=(Role.DEBATER_B,), boundary_after=True,
-                    visibility_policy=VisibilityPolicy.ALL_PRIOR,
-                ))
+                slots.append(
+                    TurnSlot(
+                        slot_id=slot_id,
+                        round_index=round_idx,
+                        phase=Phase.CRITIQUE,
+                        actors=(Role.DEBATER_B,),
+                        boundary_after=True,
+                        visibility_policy=VisibilityPolicy.ALL_PRIOR,
+                    )
+                )
                 slot_id += 1
         else:
             raise ValueError(f"Unknown protocol kind: {kind}")
 
         # Optionally append judge turns after each boundary.
         if include_judge_turns:
-            slots.append(TurnSlot(
-                slot_id=slot_id, round_index=round_idx, phase=Phase.JUDGE_QUERY,
-                actors=(Role.JUDGE,), boundary_after=False,
-                visibility_policy=VisibilityPolicy.ALL_PRIOR,
-            ))
+            slots.append(
+                TurnSlot(
+                    slot_id=slot_id,
+                    round_index=round_idx,
+                    phase=Phase.JUDGE_QUERY,
+                    actors=(Role.JUDGE,),
+                    boundary_after=False,
+                    visibility_policy=VisibilityPolicy.ALL_PRIOR,
+                )
+            )
             slot_id += 1
-            slots.append(TurnSlot(
-                slot_id=slot_id, round_index=round_idx, phase=Phase.JUDGE_VERDICT,
-                actors=(Role.JUDGE,), boundary_after=False,
-                visibility_policy=VisibilityPolicy.ALL_PRIOR,
-            ))
+            slots.append(
+                TurnSlot(
+                    slot_id=slot_id,
+                    round_index=round_idx,
+                    phase=Phase.JUDGE_VERDICT,
+                    actors=(Role.JUDGE,),
+                    boundary_after=False,
+                    visibility_policy=VisibilityPolicy.ALL_PRIOR,
+                )
+            )
             slot_id += 1
 
     return tuple(slots)

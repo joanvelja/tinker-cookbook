@@ -7,11 +7,11 @@ import random
 import uuid
 import warnings
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
+from typing import Sequence
 
 import chz
 import tinker
-from tinker_cookbook.renderers import Renderer, get_renderer, get_text_content
+from tinker_cookbook.renderers import Renderer, format_content_as_string, get_renderer
 from tinker_cookbook.rl.types import (
     Action,
     Env,
@@ -26,7 +26,7 @@ from tinker_cookbook.rl.types import (
 from tinker_cookbook.completers import MessageCompleter, StopCondition
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
-from .scoring.metrics import MetricFn, MetricResult, mcq_debate_metrics
+from .scoring.metrics import MetricFn, mcq_debate_metrics
 from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
 from .prompts import check_ab_symmetry, resolve_prompts
 from .core.reducer import fork_state, get_current_slot
@@ -66,7 +66,7 @@ class DebateEnv(Env):
             return
         messages, _prefill = build_generation_messages(self.runtime.state, self.opponent_role)
         reply = await self.opponent_completer(list(messages))
-        text = get_text_content(reply)
+        text = format_content_as_string(reply["content"], separator="")
         token_count = len(self.renderer.tokenizer.encode(text))
         await self.runtime.submit(ticket, text, token_count)
 
@@ -115,7 +115,7 @@ class DebateEnv(Env):
         transcript_len_before = len(self.runtime.state.transcript)
 
         msg, _ok = self.renderer.parse_response(action)
-        text = get_text_content(msg)
+        text = format_content_as_string(msg["content"], separator="")
         assert self._ticket is not None
         result = await self.runtime.submit(self._ticket, text, len(action))
         # Await any background opponent task from a simultaneous slot.
@@ -261,13 +261,15 @@ class DebateGroupBuilder(EnvGroupBuilder):
                     judge_callback=self.judge_callback,
                 )
                 self._runtimes.append(runtime)
-                envs.append(DebateEnv(
-                    role=trained_role,
-                    runtime=runtime,
-                    renderer=self.renderer,
-                    opponent_completer=self.opponent_completer,
-                    opponent_role=opponent_role,
-                ))
+                envs.append(
+                    DebateEnv(
+                        role=trained_role,
+                        runtime=runtime,
+                        renderer=self.renderer,
+                        opponent_completer=self.opponent_completer,
+                        opponent_role=opponent_role,
+                    )
+                )
             return envs
 
         # Normal (multi-agent) mode.
@@ -472,8 +474,7 @@ class DebateDataset(RLDataset):
             return []
         start = (index * self.batch_size) % len(self.problems)
         batch_problems = [
-            self.problems[(start + i) % len(self.problems)]
-            for i in range(self.batch_size)
+            self.problems[(start + i) % len(self.problems)] for i in range(self.batch_size)
         ]
         return [
             DebateGroupBuilder(
@@ -496,9 +497,7 @@ class DebateDataset(RLDataset):
                 target=target,
                 metrics=self.metrics,
             )
-            for prompt, ans_a, ans_b, target in (
-                self._unpack_problem(p) for p in batch_problems
-            )
+            for prompt, ans_a, ans_b, target in (self._unpack_problem(p) for p in batch_problems)
         ]
 
     def __len__(self) -> int:

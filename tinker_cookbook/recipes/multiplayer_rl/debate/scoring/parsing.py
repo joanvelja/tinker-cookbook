@@ -68,9 +68,7 @@ def parse(text: str, schema: dict[str, type]) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
-def normalize_fields(
-    raw: dict[str, Any], specs: dict[str, FieldSpec]
-) -> dict[str, Any]:
+def normalize_fields(raw: dict[str, Any], specs: dict[str, FieldSpec]) -> dict[str, Any]:
     """Apply per-field normalizers from FieldSpecs to raw values."""
     result = dict(raw)
     for key, value in raw.items():

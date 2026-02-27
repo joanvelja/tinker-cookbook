@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import textwrap
 from dataclasses import replace
 
@@ -89,7 +88,7 @@ def dump_debate(
     answer_a: str = "discovered",
     answer_b: str = "invented",
 ) -> None:
-    prompts = resolve_prompts(prompts_ref)
+    resolve_prompts(prompts_ref)  # validate prompts_ref early
     schedule = build_schedule(protocol_kind, num_rounds)
 
     spec = DebateSpec(
@@ -117,7 +116,7 @@ def dump_debate(
     thin_sep = "-" * 100
 
     print(sep)
-    print(f"DEBATE I/O DUMP")
+    print("DEBATE I/O DUMP")
     print(f"  prompts_ref:    {prompts_ref}")
     print(f"  protocol:       {protocol_kind.value}")
     print(f"  num_rounds:     {num_rounds}")
@@ -142,8 +141,10 @@ def dump_debate(
             )
 
             print(sep)
-            print(f"TURN: slot={slot_idx} | round={slot.round_index} | "
-                  f"phase={slot.phase.value} | actor={actor.value}")
+            print(
+                f"TURN: slot={slot_idx} | round={slot.round_index} | "
+                f"phase={slot.phase.value} | actor={actor.value}"
+            )
             print(sep)
 
             # --- Observation (what get_visible_messages returns) ---
@@ -187,9 +188,7 @@ def dump_debate(
     print("JUDGE FINAL VERDICT")
     print(sep)
 
-    judge_msgs, judge_prefill = build_generation_messages(
-        final_state, Role.JUDGE, trigger="final"
-    )
+    judge_msgs, judge_prefill = build_generation_messages(final_state, Role.JUDGE, trigger="final")
     print(f"\n  GENERATION PROMPT ({len(judge_msgs)} messages, prefill={judge_prefill!r}):")
     print(thin_sep)
     for m in judge_msgs:
@@ -215,15 +214,17 @@ def dump_debate(
             )
             gen_msgs, prefill = build_generation_messages(cur, actor)
             utt = _fake_utt(actor, slot.round_index, slot.phase, slot.slot_id)
-            all_turns.append({
-                "slot": slot_idx,
-                "round": slot.round_index,
-                "phase": slot.phase.value,
-                "actor": actor.value,
-                "messages": [dict(m) for m in gen_msgs],
-                "prefill": prefill,
-                "response": utt.text,
-            })
+            all_turns.append(
+                {
+                    "slot": slot_idx,
+                    "round": slot.round_index,
+                    "phase": slot.phase.value,
+                    "actor": actor.value,
+                    "messages": [dict(m) for m in gen_msgs],
+                    "prefill": prefill,
+                    "response": utt.text,
+                }
+            )
             transcript_replay.append(utt)
         if slot.boundary_after:
             rounds_replay += 1
@@ -237,18 +238,21 @@ def dump_debate(
         done=True,
     )
     judge_msgs, judge_prefill = build_generation_messages(final, Role.JUDGE, trigger="final")
-    all_turns.append({
-        "slot": "final",
-        "round": "final",
-        "phase": "final",
-        "actor": "judge",
-        "messages": [dict(m) for m in judge_msgs],
-        "prefill": judge_prefill,
-        "response": None,
-    })
+    all_turns.append(
+        {
+            "slot": "final",
+            "round": "final",
+            "phase": "final",
+            "actor": "judge",
+            "messages": [dict(m) for m in judge_msgs],
+            "prefill": judge_prefill,
+            "response": None,
+        }
+    )
 
     json_path = "/tmp/tinker-examples/dump_io.json"
     import os
+
     os.makedirs(os.path.dirname(json_path), exist_ok=True)
     with open(json_path, "w") as f:
         json.dump(all_turns, f, indent=2)
@@ -257,8 +261,12 @@ def dump_debate(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Dump debate I/O verbatim")
-    parser.add_argument("--prompts", default="galaxy_brain", help="Prompts ref (default: galaxy_brain)")
-    parser.add_argument("--protocol", default="sequential", choices=["sequential", "simultaneous", "hybrid"])
+    parser.add_argument(
+        "--prompts", default="galaxy_brain", help="Prompts ref (default: galaxy_brain)"
+    )
+    parser.add_argument(
+        "--protocol", default="sequential", choices=["sequential", "simultaneous", "hybrid"]
+    )
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--open-reasoning", action="store_true")
     args = parser.parse_args()

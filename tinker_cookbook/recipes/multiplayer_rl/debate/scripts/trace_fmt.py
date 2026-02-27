@@ -16,7 +16,6 @@ import html as html_module
 from dataclasses import replace
 
 from tinker_cookbook.renderers import get_text_content
-from tinker_cookbook.utils.logtree import Formatter
 
 from ..prompts import resolve_prompts
 from ..types import Role
@@ -58,10 +57,14 @@ def render_rollout_html(env, reward: float) -> str:
 
     # -- Summary badges --
     p.append('<div class="db-summary">')
-    p.append(f'<span class="db-badge db-role" data-role="{env.role.value}">{_esc(env.role.value)}</span>')
+    p.append(
+        f'<span class="db-badge db-role" data-role="{env.role.value}">{_esc(env.role.value)}</span>'
+    )
     p.append('<span class="db-badge db-trained">TRAINED</span>')
     p.append(f'<span class="db-badge db-{result}">{result_label} {reward:+.1f}</span>')
-    p.append(f'<span class="db-meta">{n_turns} turns \u00b7 {total_tokens} tok \u00b7 verdict: {_esc(winner_str)}</span>')
+    p.append(
+        f'<span class="db-meta">{n_turns} turns \u00b7 {total_tokens} tok \u00b7 verdict: {_esc(winner_str)}</span>'
+    )
     p.append("</div>")
 
     # -- System prompts (collapsed) --
@@ -72,7 +75,9 @@ def render_rollout_html(env, reward: float) -> str:
         is_ours = role == env.role
         tag = ' <span class="db-badge db-trained">TRAINED</span>' if is_ours else ""
         p.append('<div class="db-sysprompt">')
-        p.append(f'<div class="db-sysprompt-hdr" data-role="{role.value}">{_esc(role.value)}{tag}</div>')
+        p.append(
+            f'<div class="db-sysprompt-hdr" data-role="{role.value}">{_esc(role.value)}{tag}</div>'
+        )
         p.append(f'<pre class="db-pre">{_esc(system_text)}</pre>')
         p.append("</div>")
     p.append("</details>")
@@ -89,9 +94,13 @@ def render_rollout_html(env, reward: float) -> str:
         # Turn header
         p.append('<div class="db-turn-hdr">')
         p.append(f'<span class="db-turn-num">Turn {i}</span>')
-        p.append(f'<span class="db-role-tag" data-role="{utt.role.value}">{_esc(utt.role.value)}</span>')
+        p.append(
+            f'<span class="db-role-tag" data-role="{utt.role.value}">{_esc(utt.role.value)}</span>'
+        )
         p.append(f'<span class="db-badge {badge_cls}">{badge_txt}</span>')
-        p.append(f'<span class="db-phase">{_esc(utt.phase.value)} \u00b7 round {utt.round_index} \u00b7 {utt.token_count} tok</span>')
+        p.append(
+            f'<span class="db-phase">{_esc(utt.phase.value)} \u00b7 round {utt.round_index} \u00b7 {utt.token_count} tok</span>'
+        )
         p.append("</div>")
 
         # Input — show full assembled prompt (including instructions)

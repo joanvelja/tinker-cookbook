@@ -7,7 +7,7 @@ import pytest
 from tinker_cookbook.completers import MessageCompleter
 from tinker_cookbook.renderers import Message
 
-from ..scoring.judge import LLMJudgeCallback, _extract_xml_fields, _parse_verdict, zero_sum_outcome_reward
+from ..scoring.judge import LLMJudgeCallback, _extract_xml_fields, zero_sum_outcome_reward
 from ..core.schedule import build_schedule
 from ..types import (
     DebateOutcome,
@@ -38,8 +38,22 @@ def _make_request() -> JudgeRequest:
         open_reasoning=False,
     )
     transcript = (
-        Utterance(role=Role.DEBATER_A, round_index=0, phase=schedule[0].phase, text="arg A", token_count=2, slot_id=schedule[0].slot_id),
-        Utterance(role=Role.DEBATER_B, round_index=0, phase=schedule[1].phase, text="arg B", token_count=2, slot_id=schedule[1].slot_id),
+        Utterance(
+            role=Role.DEBATER_A,
+            round_index=0,
+            phase=schedule[0].phase,
+            text="arg A",
+            token_count=2,
+            slot_id=schedule[0].slot_id,
+        ),
+        Utterance(
+            role=Role.DEBATER_B,
+            round_index=0,
+            phase=schedule[1].phase,
+            text="arg B",
+            token_count=2,
+            slot_id=schedule[1].slot_id,
+        ),
     )
     state = DebateState(
         spec=spec,

@@ -1,4 +1,5 @@
 """Transcript query helpers for debate state."""
+
 from __future__ import annotations
 
 from ..types import DebateState, Phase, Role, Utterance
@@ -41,9 +42,7 @@ def answer_at_round(
     return None
 
 
-def final_answer(
-    state: DebateState, *, role: Role, phase: Phase | None = None
-) -> Answer | None:
+def final_answer(state: DebateState, *, role: Role, phase: Phase | None = None) -> Answer | None:
     """Answer from the last utterance by role in the transcript."""
     for u in reversed(state.transcript):
         if u.role == role:

@@ -82,9 +82,9 @@ class DebatePrompts:
             return None
         if val is True:
             if state.spec.open_reasoning:
-                return "Use <think>...</think> tags for your reasoning. Note: all reasoning is visible to all participants."
+                return "Use <thinking>...</thinking> tags for your reasoning. Note: all reasoning is visible to all participants."
             else:
-                return "Use <think>...</think> tags for private reasoning that your opponent will NOT see."
+                return "Use <thinking>...</thinking> tags for private reasoning that your opponent will NOT see."
         # Custom template string
         assert isinstance(val, jinja2.Template)
         ctx = _build_context(state, viewer)
@@ -275,9 +275,7 @@ def _actual_values(state: DebateState, viewer: Role) -> dict[str, str]:
     }
 
 
-def _two_phase_render(
-    tmpl: jinja2.Template, ctx: dict, state: DebateState, viewer: Role
-) -> str:
+def _two_phase_render(tmpl: jinja2.Template, ctx: dict, state: DebateState, viewer: Role) -> str:
     """Render template in two phases to prevent template injection via user data."""
     # Phase 1: Jinja renders with sentinels standing in for user-supplied values.
     rendered = tmpl.render(ctx)
@@ -291,6 +289,7 @@ def _two_phase_render(
 # ---------------------------------------------------------------------------
 # Migration lint: detect removed V1 variables before compilation
 # ---------------------------------------------------------------------------
+
 
 def _check_migration_lint(d: dict) -> None:
     """Scan raw template strings for removed V1 variables before compilation."""
@@ -316,6 +315,7 @@ def _scan_block_for_removed_vars(block: object, section_name: str, path: str = "
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
 
 def _validate(d: dict) -> None:
     if d.get("version") != 2:

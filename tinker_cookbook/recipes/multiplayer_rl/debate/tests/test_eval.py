@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,7 +17,6 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
     _STORE_KEY,
     debate_scorer,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.metrics import MetricResult
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
     DebateSpec,
@@ -87,24 +85,36 @@ def _make_completed_state(
     spec = _make_spec(target=target, num_rounds=2)
     transcript = (
         _make_utterance(
-            Role.DEBATER_A, 0, Phase.PROPOSE,
+            Role.DEBATER_A,
+            0,
+            Phase.PROPOSE,
             "I argue for A because...",
-            answer=a_answer, slot_id=0,
+            answer=a_answer,
+            slot_id=0,
         ),
         _make_utterance(
-            Role.DEBATER_B, 0, Phase.PROPOSE,
+            Role.DEBATER_B,
+            0,
+            Phase.PROPOSE,
             "I argue for B because...",
-            answer=b_answer, slot_id=1,
+            answer=b_answer,
+            slot_id=1,
         ),
         _make_utterance(
-            Role.DEBATER_A, 1, Phase.CRITIQUE,
+            Role.DEBATER_A,
+            1,
+            Phase.CRITIQUE,
             "Responding to B's argument...",
-            answer=a_answer, slot_id=2,
+            answer=a_answer,
+            slot_id=2,
         ),
         _make_utterance(
-            Role.DEBATER_B, 1, Phase.CRITIQUE,
+            Role.DEBATER_B,
+            1,
+            Phase.CRITIQUE,
             "Responding to A's argument...",
-            answer=b_answer, slot_id=3,
+            answer=b_answer,
+            slot_id=3,
         ),
     )
     judge_trace = (
@@ -353,7 +363,11 @@ def _dummy_adapter() -> MagicMock:
 
     adapter = MagicMock(spec=DatasetAdapter)
     adapter.to_samples.return_value = [
-        Sample(input="test question", target="A", metadata={"answer_a": "A", "answer_b": "B", "source": "test"}),
+        Sample(
+            input="test question",
+            target="A",
+            metadata={"answer_a": "A", "answer_b": "B", "source": "test"},
+        ),
     ]
     return adapter
 

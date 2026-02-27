@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import logging
 import tempfile
-from pathlib import Path
 
 import pytest
 
 from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import (
-    DebatePrompts,
     check_ab_symmetry,
     resolve_prompts,
     _check_migration_lint,
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.fields import FieldSpec
-from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.parsing import generate_format_instructions
+from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.parsing import (
+    generate_format_instructions,
+)
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateSpec,
     DebateState,
@@ -30,6 +30,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _slot(slot_id: int, round_index: int, phase: Phase) -> TurnSlot:
     return TurnSlot(
@@ -49,11 +50,16 @@ def _make_schedule(num_rounds: int = 2) -> tuple[TurnSlot, ...]:
         phase = Phase.PROPOSE if r == 0 else Phase.CRITIQUE
         slots.append(_slot(sid, r, phase))
         sid += 1
-        slots.append(TurnSlot(
-            slot_id=sid, round_index=r, phase=phase,
-            actors=(Role.DEBATER_B,), boundary_after=True,
-            visibility_policy=VisibilityPolicy.ALL_PRIOR,
-        ))
+        slots.append(
+            TurnSlot(
+                slot_id=sid,
+                round_index=r,
+                phase=phase,
+                actors=(Role.DEBATER_B,),
+                boundary_after=True,
+                visibility_policy=VisibilityPolicy.ALL_PRIOR,
+            )
+        )
         sid += 1
     return tuple(slots)
 
@@ -151,6 +157,7 @@ question:
 # Fixture: clear LRU cache between tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     resolve_prompts.cache_clear()
@@ -158,6 +165,7 @@ def _clear_cache():
     resolve_prompts.cache_clear()
     # Clean up temp files
     import os
+
     while _tmp_files:
         try:
             os.unlink(_tmp_files.pop())
@@ -168,6 +176,7 @@ def _clear_cache():
 # ---------------------------------------------------------------------------
 # Loading & caching
 # ---------------------------------------------------------------------------
+
 
 def test_resolve_default():
     """Default prompts: system is persona-only, question has task+answer."""
@@ -222,6 +231,7 @@ def test_content_hash_deterministic():
 # Validation
 # ---------------------------------------------------------------------------
 
+
 def test_v1_rejected():
     """Version 1 YAML is rejected with a clear error."""
     path = _tmp_yaml("version: 1\nsystem:\n  judge:\n    default: hi\nuser: {}\n")
@@ -256,14 +266,18 @@ def test_unknown_keys_rejected():
 
 def test_invalid_field_tag_name():
     """Field name with spaces or special chars is rejected."""
-    path = _tmp_yaml(_v2_yaml(extra="""\
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
 fields:
   judge:
     final:
       "bad name!":
         type: str
         description: "oops"
-"""))
+"""
+        )
+    )
     with pytest.raises(ValueError, match="Invalid field tag name"):
         resolve_prompts(path)
 
@@ -299,9 +313,7 @@ question:
 def test_migration_lint_direct():
     """_check_migration_lint catches reasoning_instruction in nested blocks."""
     with pytest.raises(ValueError, match="reasoning_instruction"):
-        _check_migration_lint({
-            "user": {"debater_a": {"default": "{{ reasoning_instruction }}"}}
-        })
+        _check_migration_lint({"user": {"debater_a": {"default": "{{ reasoning_instruction }}"}}})
     # Clean block should not raise
     _check_migration_lint({"system": {"judge": {"default": "hello"}}})
 
@@ -309,6 +321,7 @@ def test_migration_lint_direct():
 # ---------------------------------------------------------------------------
 # Phase lookup & fallback
 # ---------------------------------------------------------------------------
+
 
 def test_phase_fallback():
     """Unknown phase falls back to 'default' template."""
@@ -337,6 +350,7 @@ def test_done_state_renders():
 # ---------------------------------------------------------------------------
 # Context keys
 # ---------------------------------------------------------------------------
+
 
 def test_judge_context():
     """Judge gets answer=='', answer_a/answer_b populated."""
@@ -372,10 +386,12 @@ def test_answer_by_role_none():
 
 def test_is_first_last_round():
     """is_first_round and is_last_round correct at boundaries."""
-    path = _tmp_yaml(_v2_yaml(
-        da_sys="first={{is_first_round}} last={{is_last_round}}",
-        db_sys="first={{is_first_round}} last={{is_last_round}}",
-    ))
+    path = _tmp_yaml(
+        _v2_yaml(
+            da_sys="first={{is_first_round}} last={{is_last_round}}",
+            db_sys="first={{is_first_round}} last={{is_last_round}}",
+        )
+    )
     p = resolve_prompts(path)
     spec = _make_spec(num_rounds=3)
 
@@ -393,6 +409,7 @@ def test_is_first_last_round():
 # ---------------------------------------------------------------------------
 # User templates
 # ---------------------------------------------------------------------------
+
 
 def test_user_template_empty_returns_none():
     """Empty user template returns None (skip message)."""
@@ -414,6 +431,7 @@ def test_user_template_with_content():
 # ---------------------------------------------------------------------------
 # Question rendering
 # ---------------------------------------------------------------------------
+
 
 def test_render_question_per_role():
     """render_question returns correct content per role."""
@@ -443,6 +461,7 @@ def test_render_question_absent_role():
 # ---------------------------------------------------------------------------
 # Think instruction
 # ---------------------------------------------------------------------------
+
 
 def test_think_true_closed():
     """think: true with closed reasoning -> private instruction."""
@@ -493,12 +512,16 @@ def test_think_absent():
 
 def test_think_falsy_normalization():
     """Per-phase think: {default: true, critique: false} -> critique returns None."""
-    path = _tmp_yaml(_v2_yaml(extra="""\
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
 think:
   debater_a:
     default: true
     critique: false
-"""))
+"""
+        )
+    )
     p = resolve_prompts(path)
     spec = _make_spec(num_rounds=2)
 
@@ -513,23 +536,29 @@ think:
 
 def test_render_user_empty_phase_but_think_true():
     """Empty phase template + think=true -> returns think instruction, NOT None."""
-    path = _tmp_yaml(_v2_yaml(extra="""\
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
 user:
   debater_a:
     default: ""
 think:
   debater_a: true
-"""))
+"""
+        )
+    )
     p = resolve_prompts(path)
     state = _make_state()
     result = p.render_user(state, Role.DEBATER_A)
     assert result is not None
-    assert "<think>" in result
+    assert "<thinking>" in result
 
 
 def test_render_user_all_three_parts():
     """render_user assembles phase + think + fields when all are present."""
-    path = _tmp_yaml(_v2_yaml(extra="""\
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
 user:
   judge:
     final: "Render your verdict."
@@ -545,7 +574,9 @@ fields:
         description: "debater_a or debater_b or tie"
 think:
   judge: true
-"""))
+"""
+        )
+    )
     p = resolve_prompts(path)
     state = _make_state()
     result = p.render_user(state, Role.JUDGE, trigger="final")
@@ -553,7 +584,7 @@ think:
     # Phase instruction present
     assert "Render your verdict." in result
     # Think instruction present
-    assert "<think>" in result
+    assert "<thinking>" in result
     # Field instruction present
     assert "<decision>" in result
     # Parts are separated by double-newlines
@@ -565,6 +596,7 @@ think:
 # Prefill rendering
 # ---------------------------------------------------------------------------
 
+
 def test_render_prefill_absent():
     """No prefill section -> None."""
     p = resolve_prompts("default")
@@ -574,11 +606,15 @@ def test_render_prefill_absent():
 
 def test_render_prefill_with_config():
     """Prefill section renders correctly."""
-    path = _tmp_yaml(_v2_yaml(extra="""\
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
 prefill:
   debater_a:
     default: "<think>"
-"""))
+"""
+        )
+    )
     p = resolve_prompts(path)
     state = _make_state()
     result = p.render_prefill(state, Role.DEBATER_A)
@@ -587,11 +623,15 @@ prefill:
 
 def test_render_prefill_empty_returns_none():
     """Prefill with empty string -> None."""
-    path = _tmp_yaml(_v2_yaml(extra="""\
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
 prefill:
   debater_a:
     default: "   "
-"""))
+"""
+        )
+    )
     p = resolve_prompts(path)
     state = _make_state()
     assert p.render_prefill(state, Role.DEBATER_A) is None
@@ -600,6 +640,7 @@ prefill:
 # ---------------------------------------------------------------------------
 # Fields
 # ---------------------------------------------------------------------------
+
 
 def test_field_instructions_generated():
     """Judge fields produce correct XML instructions."""
@@ -627,7 +668,9 @@ def test_field_names_none_for_missing():
 
 def test_debater_fields_generate_instructions():
     """Debater phase fields produce format instructions when defined."""
-    path = _tmp_yaml(_v2_yaml(extra="""\
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
 user:
   debater_a:
     default: "your turn"
@@ -644,7 +687,9 @@ fields:
       argument:
         type: str
         description: "your main argument"
-"""))
+"""
+        )
+    )
     p = resolve_prompts(path)
     fi = p.get_field_instructions("debater_a", "default")
     assert fi is not None
@@ -654,6 +699,7 @@ fields:
 # ---------------------------------------------------------------------------
 # Template injection prevention
 # ---------------------------------------------------------------------------
+
 
 def test_task_prompt_injection():
     """task_prompt containing {{ }} doesn't execute as Jinja."""
@@ -672,16 +718,21 @@ def test_task_prompt_injection():
 # A/B symmetry
 # ---------------------------------------------------------------------------
 
+
 def test_ab_symmetry_warning(caplog):
     """Warning emitted when debater_a and debater_b have asymmetric phase keys."""
-    path = _tmp_yaml(_v2_yaml(extra="""\
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
 user:
   debater_a:
     default: "a"
     critique: "a critique"
   debater_b:
     default: "b"
-"""))
+"""
+        )
+    )
     with caplog.at_level(logging.WARNING):
         p = resolve_prompts(path)
 
@@ -702,6 +753,7 @@ def test_ab_symmetry_clean():
 # generate_format_instructions standalone
 # ---------------------------------------------------------------------------
 
+
 def test_generate_field_instructions_format():
     """generate_format_instructions produces correct output."""
     fields = {
@@ -719,6 +771,7 @@ def test_generate_field_instructions_format():
 # ---------------------------------------------------------------------------
 # Think config validation
 # ---------------------------------------------------------------------------
+
 
 def test_think_invalid_type_rejected():
     """think with invalid type (list) is rejected."""

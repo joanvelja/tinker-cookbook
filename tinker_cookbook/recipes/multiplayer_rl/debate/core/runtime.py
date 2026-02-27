@@ -9,26 +9,27 @@ from typing import Any, Mapping
 from tinker_cookbook.renderers import Message
 from tinker_cookbook.utils import logtree
 
+from ..scoring.mcq import strip_think
 from ..scoring.parsing import extract_fields
 from ..plugins import JudgeCallback, StepRewardFn
 from ..prompts import resolve_prompts
-from ..types import Phase
+from ..types import (
+    DebateSnapshot,
+    DebateState,
+    JudgeRequest,
+    Phase,
+    ProtocolKind,
+    Role,
+    TurnTicket,
+)
+from .reducer import apply_action, apply_judge_event, get_current_slot, get_eligible_roles
+from .visibility import get_visible_messages
 
 # Map schedule phase values to YAML trigger keys where they differ.
 _PHASE_TO_TRIGGER: dict[str, str] = {
     Phase.JUDGE_VERDICT.value: "final",
     Phase.JUDGE_QUERY.value: "boundary",
 }
-from .reducer import apply_action, apply_judge_event, get_current_slot, get_eligible_roles
-from ..types import (
-    DebateSnapshot,
-    DebateState,
-    JudgeRequest,
-    ProtocolKind,
-    Role,
-    TurnTicket,
-)
-from .visibility import get_visible_messages
 
 # Type aliases matching tinker_cookbook.rl.types
 StopCondition = list[str] | list[int]
@@ -99,9 +100,7 @@ class DebateRuntime:
                 self._condition.notify_all()
                 raise
 
-    async def submit(
-        self, ticket: TurnTicket, text: str, token_count: int
-    ) -> SubmitResult:
+    async def submit(self, ticket: TurnTicket, text: str, token_count: int) -> SubmitResult:
         """Validate ticket, apply action, handle boundary/final callbacks.
 
         For simultaneous slots, the first arriver buffers and waits on the
@@ -134,7 +133,8 @@ class DebateRuntime:
             trigger = _PHASE_TO_TRIGGER.get(slot_phase, slot_phase)
             field_specs = prompts.get_field_specs(ticket.role.value, trigger)
             if field_specs:
-                fields = extract_fields(text, field_specs)
+                cleaned, _ = strip_think(text)
+                fields = extract_fields(cleaned, field_specs)
 
             before = self._state
             result = apply_action(self._state, ticket.role, text, token_count, fields=fields)
@@ -171,7 +171,8 @@ class DebateRuntime:
                     current = get_current_slot(self._state)
                     if current is not None and current.slot_id == slot_before:
                         rolled_back = {
-                            k: v for k, v in self._state.pending_simultaneous.items()
+                            k: v
+                            for k, v in self._state.pending_simultaneous.items()
                             if k != ticket.role
                         }
                         self._state = replace(self._state, pending_simultaneous=rolled_back)

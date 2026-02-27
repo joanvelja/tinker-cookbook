@@ -9,7 +9,7 @@ Pricing data from https://thinkingmachines.ai/tinker/ (USD per million tokens).
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)

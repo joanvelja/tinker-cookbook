@@ -11,6 +11,7 @@ from inspect_ai.dataset import Sample
 @runtime_checkable
 class DatasetAdapter(Protocol):
     """Converts an external dataset to Inspect Samples for debate eval."""
+
     def to_samples(self) -> list[Sample]: ...
 
 
@@ -55,9 +56,7 @@ class GPQAAdapter:
 
             # Format as MCQ prompt.
             question = row["Question"]
-            option_lines = "\n".join(
-                f"{chr(ord('A') + i)}) {opt}" for i, opt in enumerate(options)
-            )
+            option_lines = "\n".join(f"{chr(ord('A') + i)}) {opt}" for i, opt in enumerate(options))
             task_prompt = f"{question}\n\n{option_lines}"
 
             # Debater A gets correct, B gets random wrong.

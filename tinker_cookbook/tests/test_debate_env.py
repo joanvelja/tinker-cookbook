@@ -39,7 +39,6 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import DebateRun
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
-    DebateSnapshot,
     DebateSpec,
     DebateState,
     JudgeDecision,
@@ -853,7 +852,8 @@ class TestRuntime:
 
     @pytest.mark.asyncio
     async def test_step_reward(self):
-        fn = lambda b, a, role, utt: 1.0 if role == Role.DEBATER_A else -1.0
+        def fn(b, a, role, utt):
+            return 1.0 if role == Role.DEBATER_A else -1.0
         runtime = DebateRuntime(
             _make_state(kind=ProtocolKind.SEQUENTIAL, num_rounds=1),
             step_reward_fn=fn,

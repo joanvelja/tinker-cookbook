@@ -10,8 +10,8 @@ from .parsing import _XML_STRIP_RE
 # Think-tag stripping
 # ---------------------------------------------------------------------------
 
-THINK_RE = re.compile(r"<think[^>]*>(.*?)</think>", re.DOTALL | re.IGNORECASE)
-_THINK_UNCLOSED_RE = re.compile(r"<think[^>]*>(.*)$", re.DOTALL | re.IGNORECASE)
+THINK_RE = re.compile(r"<think(?:ing)?[^>]*>(.*?)</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+_THINK_UNCLOSED_RE = re.compile(r"<think(?:ing)?[^>]*>(.*)$", re.DOTALL | re.IGNORECASE)
 
 
 def strip_think(text: str) -> tuple[str, str | None]:
@@ -33,13 +33,9 @@ def strip_think(text: str) -> tuple[str, str | None]:
 # Pre-filter patterns (disqualify ambiguous/hedged responses)
 # ---------------------------------------------------------------------------
 
-_HEDGE_RE = re.compile(
-    r"(?i)\b(not sure|uncertain|cannot determine|i(?:'m| am) unsure)\b"
-)
+_HEDGE_RE = re.compile(r"(?i)\b(not sure|uncertain|cannot determine|i(?:'m| am) unsure)\b")
 _NEGATION_RE = re.compile(r"(?i)\b(?:is not|isn't|cannot be|not)\s+[A-E]\b")
-_MULTI_RE = re.compile(
-    r"(?i)\b(?:both|either|all of)\s+(?:the above|[A-E]\s+(?:and|or)\s+[A-E])\b"
-)
+_MULTI_RE = re.compile(r"(?i)\b(?:both|either|all of)\s+(?:the above|[A-E]\s+(?:and|or)\s+[A-E])\b")
 _HEDGE_RANK_RE = re.compile(
     r"(?i)\b(?:most likely|best answer is)\b.*\b(?:but|however|although)\b",
     re.DOTALL,
@@ -58,9 +54,7 @@ _ANSWER_FRAME_RE = re.compile(
     r"\s*(?:definitely|probably|clearly|obviously|likely|certainly)?"
     r"\s*\(?([A-Ea-e])\)?"
 )
-_CHOOSE_FRAME_RE = re.compile(
-    r"(?i)I\s+(?:choose|pick|select|go with)\s+\(?([A-Ea-e])\)?"
-)
+_CHOOSE_FRAME_RE = re.compile(r"(?i)I\s+(?:choose|pick|select|go with)\s+\(?([A-Ea-e])\)?")
 _OPTION_LABEL_RE = re.compile(r"(?i)\b(?:option|choice)\s+([A-Ea-e])\b")
 _FIRST_LINE_LETTER_RE = re.compile(r"\b([A-E])\b")
 _TERMINAL_LETTER_RE = re.compile(r"\b([A-E])\b")

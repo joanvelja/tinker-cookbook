@@ -17,7 +17,6 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateSpec,
     DebateState,
     JudgeDecision,
-    Phase,
     ProtocolKind,
     Role,
 )
@@ -61,6 +60,7 @@ def test_get_current_slot():
 def test_get_current_slot_exhausted():
     state = _make_state(num_rounds=1)
     from dataclasses import replace
+
     exhausted = replace(state, slot_index=len(state.spec.schedule))
     assert get_current_slot(exhausted) is None
 
@@ -80,6 +80,7 @@ def test_eligible_roles_simultaneous():
 
 def test_eligible_roles_done():
     from dataclasses import replace
+
     state = replace(_make_state(), done=True)
     assert get_eligible_roles(state) == frozenset()
 

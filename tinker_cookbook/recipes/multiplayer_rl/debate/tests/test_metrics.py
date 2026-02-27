@@ -26,7 +26,6 @@ from ..types import (
     DebateSpec,
     DebateState,
     Phase,
-    ProtocolKind,
     Role,
     TurnSlot,
     Utterance,
@@ -295,9 +294,7 @@ def test_disagreement_false():
 
 
 def test_disagreement_missing_answer():
-    transcript = (
-        _utt(Role.DEBATER_A, 0, Phase.PROPOSE, "no answer here"),
-    )
+    transcript = (_utt(Role.DEBATER_A, 0, Phase.PROPOSE, "no answer here"),)
     s = _state(transcript)
     assert disagreement()(s).value is None
 

@@ -6,8 +6,9 @@ import re
 from typing import Any
 
 from tinker_cookbook.completers import MessageCompleter
-from tinker_cookbook.renderers import Message
+from tinker_cookbook.renderers import format_content_as_string
 
+from .mcq import strip_think
 from .parsing import extract_fields
 from ..prompts import resolve_prompts
 from ..types import DebateOutcome, JudgeDecision, JudgeRequest, Role
@@ -16,6 +17,7 @@ from ..core.visibility import build_generation_messages
 _XML_TAG_RE = re.compile(r"<(\w+)>(.*?)</\1>", re.DOTALL)
 _VALID_DECISIONS = {"debater_a": Role.DEBATER_A, "debater_b": Role.DEBATER_B}
 _TIE_SCORES: dict[Role, float] = {Role.DEBATER_A: 0.0, Role.DEBATER_B: 0.0}
+
 
 class LLMJudgeCallback:
     """JudgeCallback that uses a frozen LLM to evaluate debates."""
@@ -30,13 +32,14 @@ class LLMJudgeCallback:
         state = request.state
         messages, _prefill = build_generation_messages(state, Role.JUDGE, trigger="final")
         response = await self._completer(messages)
-        text = response.get("content", "") or ""
+        text = format_content_as_string(response["content"], separator="")
 
         # Schema-driven extraction if prompts define judge fields
         prompts = resolve_prompts(state.spec.prompts_ref)
         specs = prompts.get_field_specs("judge", "final")
         if specs:
-            fields = extract_fields(text, specs)
+            cleaned, _ = strip_think(text)
+            fields = extract_fields(cleaned, specs)
         else:
             fields = None
 

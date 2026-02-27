@@ -26,7 +26,7 @@ def register(policy: VisibilityPolicy) -> Callable[[VisibilityFn], VisibilityFn]
     return decorator
 
 
-_THINK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL)
+_THINK_RE = re.compile(r"<think(?:ing)?[^>]*>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
 
 _ROLE_LABELS: dict[Role, str] = {
     Role.DEBATER_A: "Debater A",
@@ -47,11 +47,7 @@ def _system_message(state: DebateState, viewer: Role) -> Message:
 def _wrap_opponent_turn(utt: Utterance, open_reasoning: bool) -> str:
     label = _ROLE_LABELS[utt.role]
     text = utt.text if open_reasoning else _strip_reasoning(utt.text)
-    return (
-        f'<opponent_turn agent="{label}" phase="{utt.phase.value}">\n'
-        f"{text}\n"
-        f"</opponent_turn>"
-    )
+    return f'<opponent_turn agent="{label}" phase="{utt.phase.value}">\n{text}\n</opponent_turn>'
 
 
 def _utterance_to_message(utt: Utterance, viewer: Role, open_reasoning: bool) -> Message:

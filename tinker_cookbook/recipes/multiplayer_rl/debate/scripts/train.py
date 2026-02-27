@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import field
+import random
 from datetime import datetime
 
 import chz
@@ -11,17 +11,17 @@ import tinker
 from datasets import load_dataset
 
 from tinker_cookbook import cli_utils, model_info
-from tinker_cookbook.completers import MessageCompleter, TinkerMessageCompleter
+from tinker_cookbook.completers import TinkerMessageCompleter
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.rl import train
 from tinker_cookbook.rl.types import RLDataset, RLDatasetBuilder
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.usage import UsageTracker
 
-from ..env import DebateDataset
+from ..env import DebateDataset, DebateProblem
 from ..eval.evaluator import DebateInspectEvaluatorBuilder
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
-from ..types import ProtocolKind, Role
+from ..types import ProtocolKind
 
 
 def _load_gpqa(
@@ -34,14 +34,28 @@ def _load_gpqa(
     return list(ds[:-n_test]), list(ds[-n_test:])
 
 
-def _gpqa_to_problems(rows: list[dict]) -> list[tuple[str, str, str]]:
-    """Convert GPQA rows to (task_prompt, answer_a, answer_b) tuples.
+def _gpqa_to_problems(rows: list[dict], seed: int = 42) -> list[DebateProblem]:
+    """Convert GPQA rows to free-debate problems with shuffled MCQ options.
 
-    For free debate (answer_by_role=None), answer_a/answer_b are empty strings.
-    The DebateGroupBuilder will construct DebateSpec with answer_by_role=None
-    when the completer handles stance assignment.
+    Returns (task_prompt, "", "", target_label) tuples — empty answer strings
+    for free debate, with target_label tracking the ground truth for accuracy.
     """
-    return [(row["Question"], "", "") for row in rows]
+    rng = random.Random(seed)
+    problems: list[DebateProblem] = []
+    for row in rows:
+        correct = row["Correct Answer"]
+        wrong = [row[f"Incorrect Answer {i}"] for i in (1, 2, 3)]
+
+        # Shuffle into ABCD, track correct label.
+        options = [correct] + wrong
+        rng.shuffle(options)
+        target_label = chr(ord("A") + options.index(correct))
+
+        # Format as MCQ prompt.
+        option_lines = "\n".join(f"{chr(ord('A') + i)}) {opt}" for i, opt in enumerate(options))
+        task_prompt = f"{row['Question']}\n\n{option_lines}"
+        problems.append((task_prompt, "", "", target_label))
+    return problems
 
 
 @chz.chz
@@ -52,15 +66,16 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     renderer_name: str
     opponent_model: str
     judge_model: str
-    opponent_max_tokens: int = 1024
-    judge_max_tokens: int = 512
+    opponent_max_tokens: int = 3072
+    judge_max_tokens: int = 1024
     gpqa_subset: str = "gpqa_diamond"
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     num_rounds: int = 2
     batch_size: int = 4
     group_size: int = 4
     randomize_position: bool = True
-    prompts_ref: str = "default"
+    prompts_ref: str = "judge_exploit"
+    open_reasoning: bool = False
     base_url: str | None = None
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
@@ -102,6 +117,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             renderer=renderer,
             protocol_kind=self.protocol_kind,
             num_rounds=self.num_rounds,
+            open_reasoning=self.open_reasoning,
             judge_callback=judge_callback,
             outcome_reward_fn=zero_sum_outcome_reward,
             opponent_completer=opponent_completer,
@@ -118,6 +134,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
                 renderer=renderer,
                 protocol_kind=self.protocol_kind,
                 num_rounds=self.num_rounds,
+                open_reasoning=self.open_reasoning,
                 judge_callback=judge_callback,
                 outcome_reward_fn=zero_sum_outcome_reward,
                 opponent_completer=opponent_completer,
@@ -135,17 +152,18 @@ class CLIConfig:
     renderer_name: str | None = None
     opponent_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     judge_model: str = "Qwen/Qwen3-4B-Instruct-2507"
-    opponent_max_tokens: int = 1024
-    judge_max_tokens: int = 512
+    opponent_max_tokens: int = 3072
+    judge_max_tokens: int = 1024
     gpqa_subset: str = "gpqa_diamond"
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     num_rounds: int = 2
     batch_size: int = 4
     group_size: int = 4
     learning_rate: float = 3e-5
-    max_tokens: int = 1024
+    max_tokens: int = 3072
     randomize_position: bool = True
-    prompts_ref: str = "default"
+    prompts_ref: str = "judge_exploit"
+    open_reasoning: bool = False
     kl_penalty_coef: float = 0.0
     inspect_eval: DebateInspectEvaluatorBuilder | None = None
     eval_every: int = 5
@@ -183,6 +201,7 @@ def build_config(cli: CLIConfig) -> train.Config:
         group_size=cli.group_size,
         randomize_position=cli.randomize_position,
         prompts_ref=cli.prompts_ref,
+        open_reasoning=cli.open_reasoning,
         base_url=cli.base_url,
     )
 

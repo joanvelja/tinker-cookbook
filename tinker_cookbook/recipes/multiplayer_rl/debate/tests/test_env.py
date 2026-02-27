@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from typing import Mapping, Sequence
+from typing import Mapping
 from unittest.mock import MagicMock
 
 import pytest
@@ -98,7 +98,6 @@ def test_group_builder_compute_rewards_no_outcome_fn():
 
 def test_group_builder_compute_rewards_with_outcome_fn():
     """With outcome_reward_fn, returns mapped rewards."""
-    from dataclasses import replace
     from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateEnv
 
     def outcome_fn(outcome: DebateOutcome) -> Mapping[Role, float]:
@@ -232,7 +231,9 @@ class MockRenderer:
     def get_stop_sequences(self) -> list[str]:
         return ["<stop>"]
 
-    def build_generation_prompt(self, messages: list[Message], prefill: str | None = None) -> tinker.ModelInput:
+    def build_generation_prompt(
+        self, messages: list[Message], prefill: str | None = None
+    ) -> tinker.ModelInput:
         text = "".join(m.get("content", "") or "" for m in messages)
         if prefill:
             text += prefill
@@ -282,6 +283,7 @@ def _run(coro):
 
 def _rollout(env: DebateEnv) -> list:
     """Drive a single env to completion, returning step results."""
+
     async def _go():
         await env.initial_observation()
         results = []
@@ -292,6 +294,7 @@ def _rollout(env: DebateEnv) -> list:
             if result.episode_done:
                 break
         return results
+
     return _run(_go())
 
 
@@ -340,6 +343,7 @@ def test_frozen_opponent_b_first():
     # We bypass the builder to control role assignment.
     _run(builder.make_envs())  # triggers schedule build
     from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule as bs
+
     schedule = bs(ProtocolKind.SEQUENTIAL, 1)
     spec = DebateSpec(
         debate_id="test-b-first",
@@ -349,8 +353,14 @@ def test_frozen_opponent_b_first():
         open_reasoning=False,
     )
     state = DebateState(
-        spec=spec, slot_index=0, rounds_completed=0, transcript=(),
-        pending_simultaneous={}, judge_trace=(), done=False, outcome=None,
+        spec=spec,
+        slot_index=0,
+        rounds_completed=0,
+        transcript=(),
+        pending_simultaneous={},
+        judge_trace=(),
+        done=False,
+        outcome=None,
     )
     runtime = DebateRuntime(state)
     env = DebateEnv(
@@ -375,6 +385,7 @@ def test_frozen_opponent_hybrid():
 
     # Hybrid requires num_rounds >= 2
     from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule as bs
+
     schedule = bs(ProtocolKind.HYBRID, 2)
     spec = DebateSpec(
         debate_id="hybrid-frozen",
@@ -384,8 +395,14 @@ def test_frozen_opponent_hybrid():
         open_reasoning=False,
     )
     state = DebateState(
-        spec=spec, slot_index=0, rounds_completed=0, transcript=(),
-        pending_simultaneous={}, judge_trace=(), done=False, outcome=None,
+        spec=spec,
+        slot_index=0,
+        rounds_completed=0,
+        transcript=(),
+        pending_simultaneous={},
+        judge_trace=(),
+        done=False,
+        outcome=None,
     )
     runtime = DebateRuntime(state)
     env = DebateEnv(

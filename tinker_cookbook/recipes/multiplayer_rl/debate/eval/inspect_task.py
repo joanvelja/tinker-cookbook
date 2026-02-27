@@ -8,7 +8,6 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from inspect_ai import Task, task
-from inspect_ai.dataset import Sample
 from inspect_ai.log import transcript
 from inspect_ai.model import ChatMessageAssistant
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
@@ -21,7 +20,7 @@ from ..core.reducer import get_eligible_roles
 from ..core.schedule import build_schedule
 from ..core.visibility import build_generation_messages
 from ..scoring.judge import LLMJudgeCallback
-from ..scoring.metrics import MetricFn, MetricResult, mcq_debate_metrics
+from ..scoring.metrics import MetricFn, mcq_debate_metrics
 from ..types import (
     DebateOutcome,
     DebateSpec,
@@ -39,6 +38,7 @@ from .dataset_adapter import DatasetAdapter
 # ---------------------------------------------------------------------------
 # State serialization
 # ---------------------------------------------------------------------------
+
 
 def _state_to_json(state: DebateState) -> str:
     return json.dumps(_encode_state(state))

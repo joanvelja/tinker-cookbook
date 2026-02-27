@@ -52,16 +52,20 @@ def _advance(state: DebateState, slot: TurnSlot, committed: tuple[Utterance, ...
     )
 
 
-def apply_action(state: DebateState, role: Role, text: str, token_count: int, fields: Mapping[str, Any] | None = None) -> ActionResult:
+def apply_action(
+    state: DebateState,
+    role: Role,
+    text: str,
+    token_count: int,
+    fields: Mapping[str, Any] | None = None,
+) -> ActionResult:
     """Apply a single action. For sequential slots, commits immediately.
     For simultaneous slots, buffers until all actors have submitted."""
     slot = get_current_slot(state)
     if slot is None:
         raise ValueError("Schedule exhausted — no current slot.")
     if role not in get_eligible_roles(state):
-        raise ValueError(
-            f"{role} is not eligible. Eligible: {get_eligible_roles(state)}"
-        )
+        raise ValueError(f"{role} is not eligible. Eligible: {get_eligible_roles(state)}")
 
     utterance = Utterance(
         role=role,
@@ -100,16 +104,15 @@ def apply_action(state: DebateState, role: Role, text: str, token_count: int, fi
 
 
 def commit_slot_actions(
-    state: DebateState, actions_by_role: Mapping[Role, tuple[str, int] | tuple[str, int, Mapping[str, Any] | None]]
+    state: DebateState,
+    actions_by_role: Mapping[Role, tuple[str, int] | tuple[str, int, Mapping[str, Any] | None]],
 ) -> ActionResult:
     """Simultaneous slot: atomic commit in canonical order from TurnSlot.actors tuple."""
     slot = get_current_slot(state)
     if slot is None:
         raise ValueError("Schedule exhausted — no current slot.")
     if frozenset(actions_by_role) != frozenset(slot.actors):
-        raise ValueError(
-            f"Expected actions from {set(slot.actors)}, got {set(actions_by_role)}"
-        )
+        raise ValueError(f"Expected actions from {set(slot.actors)}, got {set(actions_by_role)}")
 
     committed = tuple(
         Utterance(

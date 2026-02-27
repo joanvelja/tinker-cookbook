@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 
 import pytest
 
@@ -17,8 +16,6 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     JudgeRequest,
     ProtocolKind,
     Role,
-    TurnTicket,
-    Utterance,
 )
 
 
@@ -87,9 +84,7 @@ async def test_simultaneous_barrier():
         result = await runtime.submit(ticket, f"{role.value} speaks", 2)
         return result
 
-    results = await asyncio.gather(
-        play(Role.DEBATER_A), play(Role.DEBATER_B)
-    )
+    results = await asyncio.gather(play(Role.DEBATER_A), play(Role.DEBATER_B))
     # Both should get episode_done=True
     assert all(r.episode_done for r in results)
     assert runtime.state.done

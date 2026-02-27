@@ -120,17 +120,15 @@ async def run():
         model_name=MODEL,
     )
 
-    print(f"Starting galaxy brain debate smoke test")
+    print("Starting galaxy brain debate smoke test")
     print(f"  Model: {MODEL}")
     print(f"  Prompts: {PROMPTS_REF}")
     print(f"  Problems: {len(PROBLEMS)}")
-    print(f"  Batches: 2")
+    print("  Batches: 2")
     print(f"  Trace: {TRACE_PATH}")
     print()
 
-    with logtree.init_trace(
-        f"Debate Smoke Test: {PROMPTS_REF} / {MODEL}", path=TRACE_PATH
-    ):
+    with logtree.init_trace(f"Debate Smoke Test: {PROMPTS_REF} / {MODEL}", path=TRACE_PATH):
         # Inject debate-specific CSS.
         logtree.log_formatter(DebateTraceCSSInjector())
 
@@ -140,9 +138,7 @@ async def run():
         )
 
         for batch_idx in range(2):
-            with logtree.scope_header(
-                f"Batch {batch_idx}", class_="lt-section db-batch"
-            ):
+            with logtree.scope_header(f"Batch {batch_idx}", class_="lt-section db-batch"):
                 builders = dataset.get_batch(batch_idx)
                 for i, builder in enumerate(builders):
                     with logtree.scope_header(
@@ -154,27 +150,20 @@ async def run():
                         # Suppress do_single_rollout's auto-scope logging.
                         with logtree.scope_disable():
                             trajectories = await asyncio.gather(
-                                *[
-                                    do_single_rollout(trained_completer, env)
-                                    for env in envs
-                                ]
+                                *[do_single_rollout(trained_completer, env) for env in envs]
                             )
 
                         rewards_and_metrics = await builder.compute_group_rewards(
                             trajectories, envs
                         )
 
-                        for env, traj, (reward, _) in zip(
-                            envs, trajectories, rewards_and_metrics
-                        ):
+                        for env, traj, (reward, _) in zip(envs, trajectories, rewards_and_metrics):
                             assert isinstance(env, DebateEnv)
                             logtree.log_html(render_rollout_html(env, reward))
 
         # Cost report.
         with logtree.scope_header("Cost Report", class_="lt-section db-cost"):
-            logtree.details(
-                usage_tracker.format_cost_report(), summary="Tinker Usage", pre=True
-            )
+            logtree.details(usage_tracker.format_cost_report(), summary="Tinker Usage", pre=True)
 
     print(usage_tracker.format_cost_report())
     print(f"Trace written to: {TRACE_PATH}")
