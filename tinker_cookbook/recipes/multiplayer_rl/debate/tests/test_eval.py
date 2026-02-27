@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,11 +13,14 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.eval.dataset_adapter import (
     GPQAAdapter,
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
+    _identity_metric_keys,
     _state_from_json,
     _state_to_json,
     _STORE_KEY,
+    _TRAINED_ROLE_KEY,
     debate_scorer,
 )
+from tinker_cookbook.recipes.multiplayer_rl.debate.env import IDENTITY_REMAP_BASES
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
     DebateSpec,
@@ -267,6 +271,19 @@ def test_debate_state_json_roundtrip_with_pending():
 # ---------------------------------------------------------------------------
 
 
+def _make_store_get(json_str: str, trained_role_str: str | None = None):
+    """Create a side_effect for store.get that dispatches by key."""
+
+    def _get(key, default=None):
+        if key == _STORE_KEY:
+            return json_str
+        if key == _TRAINED_ROLE_KEY:
+            return trained_role_str
+        return default
+
+    return _get
+
+
 @pytest.mark.asyncio
 async def test_debate_scorer_synthetic():
     """Scorer produces correct metrics for a completed debate with known answers."""
@@ -278,7 +295,7 @@ async def test_debate_scorer_synthetic():
 
     task_state = MagicMock(spec=TaskState)
     task_state.store = MagicMock()
-    task_state.store.get = MagicMock(return_value=json_str)
+    task_state.store.get = MagicMock(side_effect=_make_store_get(json_str))
 
     target = Target("A")
     scorer_fn = debate_scorer()
@@ -305,7 +322,13 @@ async def test_debate_scorer_synthetic():
 
 @pytest.mark.asyncio
 async def test_debate_scorer_handles_none_metrics():
-    """Scorer with target=None produces only non-None metric values."""
+    """Scorer with target=None: N/A metrics appear as NaN, not None or absent.
+
+    All keys are always present (for aggregation safety). Metrics that can't
+    compute (e.g. accuracy without target) have value NaN.
+    """
+    import math
+
     from inspect_ai.scorer import Target
     from inspect_ai.solver import TaskState
 
@@ -314,29 +337,43 @@ async def test_debate_scorer_handles_none_metrics():
 
     task_state = MagicMock(spec=TaskState)
     task_state.store = MagicMock()
-    task_state.store.get = MagicMock(return_value=json_str)
+    task_state.store.get = MagicMock(side_effect=_make_store_get(json_str))
 
     target = Target("")
     scorer_fn = debate_scorer()
     score = await scorer_fn(task_state, target)
 
     assert isinstance(score.value, dict)
-    # With target=None, accuracy/judge_quality/truth metrics should be absent
+    # No Python None values should appear
     for key, val in score.value.items():
         assert val is not None, f"Metric {key} should not be None in score dict"
-    # Metrics that require target should be absent
-    assert "accuracy.debater_a" not in score.value
-    assert "accuracy.debater_b" not in score.value
-    assert "judge_quality" not in score.value
-    assert "truth_win_if_disagreement" not in score.value
-    assert "truth_surfaced" not in score.value
+    # Metrics that require target should be NaN (present but not computable)
+    assert math.isnan(score.value["accuracy.debater_a"])
+    assert math.isnan(score.value["accuracy.debater_b"])
+    assert math.isnan(score.value["judge_quality"])
+    assert math.isnan(score.value["truth_win_if_disagreement"])
+    assert math.isnan(score.value["truth_surfaced"])
+    # Metrics that don't need target should have real values
+    assert score.value["disagreement"] == 1.0
+    assert score.value["draw_rate"] == 0.0
 
 
 @pytest.mark.asyncio
 async def test_debate_scorer_no_store_data():
-    """Scorer returns empty dict when no debate state in store."""
+    """Scorer returns NaN-filled dict when no debate state in store.
+
+    All _metric_aggs keys must be present (as NaN) so Inspect aggregation
+    doesn't fail on missing keys.
+    """
+    import math
+
     from inspect_ai.scorer import Target
     from inspect_ai.solver import TaskState
+
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
+        _identity_metric_keys,
+    )
+    from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.metrics import mcq_debate_metrics
 
     task_state = MagicMock(spec=TaskState)
     task_state.store = MagicMock()
@@ -346,7 +383,11 @@ async def test_debate_scorer_no_store_data():
     scorer_fn = debate_scorer()
     score = await scorer_fn(task_state, target)
 
-    assert score.value == {}
+    # All registered keys should be present as NaN
+    expected_keys = set(mcq_debate_metrics().keys()) | set(_identity_metric_keys())
+    assert set(score.value.keys()) == expected_keys
+    for val in score.value.values():
+        assert math.isnan(val), f"Expected NaN, got {val}"
     assert "No debate state" in score.explanation
 
 
@@ -414,25 +455,27 @@ async def test_evaluator_fast_path_routing():
 
     mock_sampling = MagicMock()
 
+    expected_log_dir = os.path.expanduser("~/inspect-logs")
+
     stack, mock_eval = _patch_evaluator_externals()
     with stack:
-        # Call 1: count=1, 1%3!=0 -> eval runs, no log
+        # Call 1: count=1, 1%3!=0 -> eval runs, tempdir (not the real log dir)
         await evaluator(mock_sampling)
         assert mock_eval.call_count == 1
         call_kwargs_1 = mock_eval.call_args_list[0][1]
-        assert call_kwargs_1.get("log_dir") is None
+        assert call_kwargs_1.get("log_dir") != expected_log_dir
 
-        # Call 2: count=2, 2%3!=0 -> eval runs, no log
+        # Call 2: count=2, 2%3!=0 -> eval runs, tempdir
         await evaluator(mock_sampling)
         assert mock_eval.call_count == 2
         call_kwargs_2 = mock_eval.call_args_list[1][1]
-        assert call_kwargs_2.get("log_dir") is None
+        assert call_kwargs_2.get("log_dir") != expected_log_dir
 
-        # Call 3: count=3, 3%3==0 -> eval runs, WITH log
+        # Call 3: count=3, 3%3==0 -> eval runs, WITH real log dir
         await evaluator(mock_sampling)
         assert mock_eval.call_count == 3
         call_kwargs_3 = mock_eval.call_args_list[2][1]
-        assert call_kwargs_3.get("log_dir") is not None
+        assert call_kwargs_3.get("log_dir") == expected_log_dir
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +597,7 @@ async def test_solver_scorer_pipeline():
     json_str = _state_to_json(completed_state)
     scorer_state = MagicMock(spec=TaskState)
     scorer_state.store = MagicMock()
-    scorer_state.store.get = MagicMock(return_value=json_str)
+    scorer_state.store.get = MagicMock(side_effect=_make_store_get(json_str))
 
     target = Target("A")
     scorer_fn = debate_scorer()
@@ -565,3 +608,220 @@ async def test_solver_scorer_pipeline():
     assert score.value["accuracy.debater_b"] == 0.0
     assert score.value["judge_quality"] == 1.0
     assert score.answer == "debater_a"
+
+
+# ---------------------------------------------------------------------------
+# 9. Wave 3 Gate: GPQAAdapter free_debate mode
+# ---------------------------------------------------------------------------
+
+
+def test_gpqa_adapter_free_debate():
+    """GPQAAdapter(free_debate=True) emits empty answer strings."""
+    adapter = GPQAAdapter(limit=3, seed=42, free_debate=True)
+    samples = adapter.to_samples()
+    assert len(samples) == 3
+    for s in samples:
+        assert s.metadata["answer_a"] == ""
+        assert s.metadata["answer_b"] == ""
+        assert s.metadata["source"] == "gpqa_diamond"
+        # target is still populated (correct answer label)
+        assert s.target in ("A", "B", "C", "D")
+
+
+# ---------------------------------------------------------------------------
+# 10. Wave 3 Gate: Evaluator default parity
+# ---------------------------------------------------------------------------
+
+
+def test_evaluator_builder_defaults():
+    """DebateInspectEvaluatorBuilder defaults match training config."""
+    import inspect
+
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+
+    sig = inspect.signature(DebateInspectEvaluatorBuilder)
+    defaults = {
+        name: param.default
+        for name, param in sig.parameters.items()
+        if param.default is not inspect.Parameter.empty
+    }
+    assert defaults["prompts_ref"] == "judge_exploit"
+    assert defaults["opponent_max_tokens"] == 8192
+    assert defaults["judge_max_tokens"] == 4096
+    assert defaults["open_reasoning"] is False
+    assert defaults["randomize_position"] is True
+
+
+# ---------------------------------------------------------------------------
+# 11. Wave 3 Gate: Metric extraction bug fix
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_metric_extraction_uses_metric_name():
+    """Evaluator extracts all metrics by metric_name, not score_result.name."""
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+
+    adapter = _dummy_adapter()
+    builder = DebateInspectEvaluatorBuilder(
+        adapter=adapter,
+        renderer_name="qwen3",
+        model_name="Qwen/Qwen3-4B-Instruct-2507",
+    )
+    evaluator = builder()
+    mock_sampling = MagicMock()
+
+    # Create mock score_result with 3 distinct metrics
+    mock_score_result = MagicMock()
+    mock_score_result.name = "debate_scorer"
+    mock_metric_a = MagicMock()
+    mock_metric_a.value = 0.8
+    mock_metric_b = MagicMock()
+    mock_metric_b.value = 0.6
+    mock_metric_c = MagicMock()
+    mock_metric_c.value = 0.9
+    mock_score_result.metrics = {
+        "accuracy.debater_a": mock_metric_a,
+        "judge_quality": mock_metric_b,
+        "truth_surfaced": mock_metric_c,
+    }
+
+    mock_task_result = MagicMock()
+    mock_task_result.results = MagicMock()
+    mock_task_result.results.scores = [mock_score_result]
+
+    stack, mock_eval = _patch_evaluator_externals()
+    mock_eval.return_value = [mock_task_result]
+    with stack:
+        metrics = await evaluator(mock_sampling)
+
+    # All 3 metrics should be present (bug was: only last metric survived)
+    assert "accuracy.debater_a" in metrics
+    assert "judge_quality" in metrics
+    assert "truth_surfaced" in metrics
+    assert metrics["accuracy.debater_a"] == 0.8
+    assert metrics["judge_quality"] == 0.6
+    assert metrics["truth_surfaced"] == 0.9
+
+
+# ---------------------------------------------------------------------------
+# 12. Wave 3 Gate: Identity-aware scorer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scorer_identity_remap_when_trained_role_set():
+    """Scorer produces id/ keys when trained_role is stored."""
+    from inspect_ai.scorer import Target
+    from inspect_ai.solver import TaskState
+
+    state = _make_completed_state(target="A", a_answer="A", b_answer="B", winner=Role.DEBATER_A)
+    json_str = _state_to_json(state)
+
+    task_state = MagicMock(spec=TaskState)
+    task_state.store = MagicMock()
+
+    def store_get(key, default=None):
+        if key == _STORE_KEY:
+            return json_str
+        if key == _TRAINED_ROLE_KEY:
+            return Role.DEBATER_A.value
+        return default
+
+    task_state.store.get = MagicMock(side_effect=store_get)
+
+    target = Target("A")
+    scorer_fn = debate_scorer()
+    score = await scorer_fn(task_state, target)
+
+    v = score.value
+    # Should have identity keys
+    assert "id/trained_role_is_a" in v
+    assert v["id/trained_role_is_a"] == 1.0
+
+    # When trained=A: id/accuracy.trained should equal accuracy.debater_a
+    assert v["id/accuracy.trained"] == v["accuracy.debater_a"]
+    assert v["id/accuracy.opponent"] == v["accuracy.debater_b"]
+
+
+@pytest.mark.asyncio
+async def test_scorer_identity_remap_trained_b():
+    """Identity remap when trained is debater_b."""
+    from inspect_ai.scorer import Target
+    from inspect_ai.solver import TaskState
+
+    state = _make_completed_state(target="A", a_answer="A", b_answer="B", winner=Role.DEBATER_A)
+    json_str = _state_to_json(state)
+
+    task_state = MagicMock(spec=TaskState)
+    task_state.store = MagicMock()
+
+    def store_get(key, default=None):
+        if key == _STORE_KEY:
+            return json_str
+        if key == _TRAINED_ROLE_KEY:
+            return Role.DEBATER_B.value
+        return default
+
+    task_state.store.get = MagicMock(side_effect=store_get)
+
+    target = Target("A")
+    scorer_fn = debate_scorer()
+    score = await scorer_fn(task_state, target)
+
+    v = score.value
+    assert v["id/trained_role_is_a"] == 0.0
+    # When trained=B: id/accuracy.trained should equal accuracy.debater_b
+    assert v["id/accuracy.trained"] == v["accuracy.debater_b"]
+    assert v["id/accuracy.opponent"] == v["accuracy.debater_a"]
+
+
+@pytest.mark.asyncio
+async def test_scorer_identity_nan_without_trained_role():
+    """Scorer fills identity keys with NaN when trained_role not in store.
+
+    This ensures Inspect aggregation doesn't fail on missing keys.
+    """
+    import math
+
+    from inspect_ai.scorer import Target
+    from inspect_ai.solver import TaskState
+
+    state = _make_completed_state(target="A", a_answer="A", b_answer="B", winner=Role.DEBATER_A)
+    json_str = _state_to_json(state)
+
+    task_state = MagicMock(spec=TaskState)
+    task_state.store = MagicMock()
+
+    def store_get(key, default=None):
+        if key == _STORE_KEY:
+            return json_str
+        return default
+
+    task_state.store.get = MagicMock(side_effect=store_get)
+
+    target = Target("A")
+    scorer_fn = debate_scorer()
+    score = await scorer_fn(task_state, target)
+
+    v = score.value
+    # Identity keys should be present as NaN (not absent)
+    assert "id/trained_role_is_a" in v
+    assert math.isnan(v["id/trained_role_is_a"])
+    assert "id/accuracy.trained" in v
+    assert math.isnan(v["id/accuracy.trained"])
+
+
+def test_identity_metric_keys_consistent_with_remap_bases():
+    """_identity_metric_keys produces keys consistent with IDENTITY_REMAP_BASES."""
+    keys = _identity_metric_keys()
+    assert "id/trained_role_is_a" in keys
+    for base in IDENTITY_REMAP_BASES:
+        assert f"id/{base}.trained" in keys
+        assert f"id/{base}.opponent" in keys
+    # 1 (trained_role_is_a) + 2 * len(IDENTITY_REMAP_BASES)
+    assert len(keys) == 1 + 2 * len(IDENTITY_REMAP_BASES)

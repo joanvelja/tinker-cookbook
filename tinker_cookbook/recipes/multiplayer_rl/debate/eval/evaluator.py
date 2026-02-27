@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
+from typing import TYPE_CHECKING
 
 import chz
 import tinker
@@ -13,6 +15,9 @@ from tinker_cookbook.completers import TinkerMessageCompleter
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.tokenizer_utils import get_tokenizer
+
+if TYPE_CHECKING:
+    from tinker_cookbook.usage import UsageTracker
 
 from ..types import ProtocolKind
 from .dataset_adapter import DatasetAdapter
@@ -26,14 +31,16 @@ class DebateInspectEvaluatorBuilder:
     """Config for debate evaluation via Inspect AI."""
 
     adapter: DatasetAdapter
-    prompts_ref: str = "scientific_mcq"
+    prompts_ref: str = "judge_exploit"
     num_rounds: int = 2
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
+    open_reasoning: bool = False
+    randomize_position: bool = True
 
     opponent_model: str | None = None  # None = self-play
     judge_model: str = "Qwen/Qwen3-4B-Instruct-2507"
-    opponent_max_tokens: int = 1024
-    judge_max_tokens: int = 512
+    opponent_max_tokens: int = 8192
+    judge_max_tokens: int = 4096
     renderer_name: str | None = None
     model_name: str | None = None
 
@@ -53,7 +60,12 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
         self._config = config
         self._call_count = 0
 
-    async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
+    async def __call__(
+        self,
+        sampling_client: tinker.SamplingClient,
+        *,
+        usage_tracker: UsageTracker | None = None,
+    ) -> dict[str, float]:
         cfg = self._config
         self._call_count += 1
 
@@ -69,6 +81,7 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             sampling_client=sampling_client,
             renderer=renderer,
             max_tokens=cfg.opponent_max_tokens,
+            usage_tracker=usage_tracker,
             actor="trained",
             model_name=cfg.model_name,
         )
@@ -79,6 +92,7 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
                 sampling_client=sampling_client,
                 renderer=renderer,
                 max_tokens=cfg.opponent_max_tokens,
+                usage_tracker=usage_tracker,
                 actor="opponent",
                 model_name=cfg.model_name,
             )
@@ -90,6 +104,7 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
                 sampling_client=opp_client,
                 renderer=opp_renderer,
                 max_tokens=cfg.opponent_max_tokens,
+                usage_tracker=usage_tracker,
                 actor="opponent",
                 model_name=cfg.opponent_model,
             )
@@ -104,6 +119,7 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             sampling_client=judge_client,
             renderer=judge_renderer,
             max_tokens=cfg.judge_max_tokens,
+            usage_tracker=usage_tracker,
             actor="judge",
             model_name=cfg.judge_model,
         )
@@ -116,21 +132,40 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             protocol_kind=cfg.protocol_kind,
             num_rounds=cfg.num_rounds,
             prompts_ref=cfg.prompts_ref,
+            open_reasoning=cfg.open_reasoning,
+            randomize_position=cfg.randomize_position,
         )
 
         log_dir = cfg.log_dir or os.path.expanduser("~/inspect-logs")
         should_log = (self._call_count % cfg.log_evals_every) == 0
 
-        results = await eval_async(
-            tasks=[task],
-            model=None,
-            limit=cfg.limit,
-            log_dir=log_dir if should_log else None,
-            fail_on_error=False,
-            retry_on_error=0,
-            log_level="WARNING",
-            log_realtime=False,
-        )
+        # Inspect AI always writes .eval files — log_dir=None falls through to
+        # ./logs/ default. Use a tempdir as a trash sink when we don't want logs.
+        if should_log:
+            results = await eval_async(
+                tasks=[task],
+                model=None,
+                limit=cfg.limit,
+                max_connections=512,
+                log_dir=log_dir,
+                fail_on_error=False,
+                retry_on_error=0,
+                log_level="WARNING",
+                log_realtime=False,
+            )
+        else:
+            with tempfile.TemporaryDirectory() as trash_dir:
+                results = await eval_async(
+                    tasks=[task],
+                    model=None,
+                    limit=cfg.limit,
+                    max_connections=512,
+                    log_dir=trash_dir,
+                    fail_on_error=False,
+                    retry_on_error=0,
+                    log_level="WARNING",
+                    log_realtime=False,
+                )
 
         # Extract metrics from results.
         metrics: dict[str, float] = {}
@@ -140,8 +175,8 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             for score_result in task_result.results.scores:
                 if score_result.name is None:
                     continue
-                for _metric_name, metric in score_result.metrics.items():
-                    metrics[score_result.name] = metric.value
+                for metric_name, metric in score_result.metrics.items():
+                    metrics[metric_name] = metric.value
 
         logger.info(f"Debate eval metrics (call #{self._call_count}): {metrics}")
         return metrics

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 from typing import Any, Mapping
 from uuid import uuid4
 
 from inspect_ai import Task, task
 from inspect_ai.log import transcript
-from inspect_ai.model import ChatMessageAssistant
+from inspect_ai.model import ModelOutput
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 from inspect_ai.util import span
@@ -33,6 +34,7 @@ from ..types import (
     Utterance,
     VisibilityPolicy,
 )
+from ..env import IDENTITY_REMAP_BASES, _remap_to_identity
 from .dataset_adapter import DatasetAdapter
 
 # ---------------------------------------------------------------------------
@@ -198,6 +200,7 @@ def _decode_outcome(d: dict[str, Any]) -> DebateOutcome:
 # ---------------------------------------------------------------------------
 
 _STORE_KEY = "debate_state_v1"
+_TRAINED_ROLE_KEY = "trained_role_v1"
 
 
 async def _drive_turn(
@@ -216,14 +219,13 @@ async def _drive_turn(
         msgs, _prefill = build_generation_messages(state, role)
         response = await completer(msgs)
         text = response["content"]
-        # Rough token estimate (MessageCompleter doesn't expose counts).
-        token_count = len(text.split()) * 4 // 3
+        token_count = getattr(completer, "_last_output_tokens", len(text.split()) * 4 // 3)
         result = await runtime.submit(ticket, text, token_count)
         transcript().info(
             f"{role.value} round={slot.round_index}: "
             f"tokens~{token_count}, answer={result.logs.get('field.answer', '?')}"
         )
-        transcript().info(text[:500])
+        transcript().info(text)
     return True
 
 
@@ -236,13 +238,25 @@ def debate_solver(
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL,
     num_rounds: int = 2,
     prompts_ref: str = "scientific_mcq",
+    open_reasoning: bool = False,
+    randomize_position: bool = True,
 ) -> Solver:
     """Solver that runs a full debate episode between two completers + judge."""
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         from ..core.runtime import DebateRuntime
 
-        # 1. Build spec.
+        # 1. Assign trained/opponent roles.
+        if randomize_position:
+            trained_role = random.choice([Role.DEBATER_A, Role.DEBATER_B])
+        else:
+            trained_role = Role.DEBATER_A
+        opponent_role = Role.DEBATER_B if trained_role == Role.DEBATER_A else Role.DEBATER_A
+
+        # Store trained_role for the scorer.
+        state.store.set(_TRAINED_ROLE_KEY, trained_role.value)
+
+        # 2. Build spec.
         debate_id = str(uuid4())
         schedule = build_schedule(protocol_kind, num_rounds)
 
@@ -261,7 +275,7 @@ def debate_solver(
             task_prompt=state.input_text,
             answer_by_role=answer_by_role,
             schedule=schedule,
-            open_reasoning=True,
+            open_reasoning=open_reasoning,
             protocol_kind=protocol_kind,
             prompts_ref=prompts_ref,
             target=target_text,
@@ -278,16 +292,16 @@ def debate_solver(
             outcome=None,
         )
 
-        # 2. Create runtime with judge callback.
+        # 3. Create runtime with judge callback.
         judge_cb = LLMJudgeCallback(judge_client)
         runtime = DebateRuntime(initial_state, judge_callback=judge_cb)
 
         completers = {
-            Role.DEBATER_A: sampling_client,
-            Role.DEBATER_B: opponent_client,
+            trained_role: sampling_client,
+            opponent_role: opponent_client,
         }
 
-        # 3. Drive episode.
+        # 4. Drive episode.
         async with span("debate_episode"):
             while not runtime.state.done:
                 eligible = get_eligible_roles(runtime.state)
@@ -304,14 +318,14 @@ def debate_solver(
                 else:
                     await _drive_turn(runtime, debater_roles[0], completers[debater_roles[0]])
 
-        # 4. Persist debate state for the scorer.
+        # 5. Persist debate state for the scorer.
         state.store.set(_STORE_KEY, _state_to_json(runtime.state))
 
-        # 5. Set output.
+        # 6. Set output.
         verdict = ""
         if runtime.state.outcome and runtime.state.outcome.verdict_text:
             verdict = runtime.state.outcome.verdict_text
-        state.output = ChatMessageAssistant(content=verdict)
+        state.output = ModelOutput.from_content(model="debate", content=verdict)
 
         return state
 
@@ -321,6 +335,15 @@ def debate_solver(
 # ---------------------------------------------------------------------------
 # Scorer
 # ---------------------------------------------------------------------------
+
+
+def _identity_metric_keys() -> list[str]:
+    """Compute all possible id/ metric keys from IDENTITY_REMAP_BASES."""
+    keys = ["id/trained_role_is_a"]
+    for base in IDENTITY_REMAP_BASES:
+        keys.append(f"id/{base}.trained")
+        keys.append(f"id/{base}.opponent")
+    return keys
 
 
 def debate_scorer(
@@ -335,20 +358,43 @@ def debate_scorer(
     resolved = metrics if metrics is not None else mcq_debate_metrics()
     # Build per-key metrics dict for @scorer: {metric_name: [mean()]}
     _metric_aggs = {name: [mean()] for name in resolved}
+    # Add identity-remapped metric keys for aggregation.
+    for key in _identity_metric_keys():
+        _metric_aggs[key] = [mean()]
 
     @scorer(metrics=_metric_aggs)
     def _scorer() -> Scorer:
         async def score(state: TaskState, target: Target) -> Score:
             raw = state.store.get(_STORE_KEY, None)
             if raw is None:
-                return Score(value={}, explanation="No debate state found in store")
+                # Fill all registered keys with NaN so aggregation doesn't
+                # fail on missing keys.
+                nan = float("nan")
+                empty_values = {name: nan for name in resolved}
+                for key in _identity_metric_keys():
+                    empty_values[key] = nan
+                return Score(
+                    value=empty_values,
+                    explanation="No debate state found in store",
+                )
 
             debate_state = _state_from_json(raw)
+            nan = float("nan")
             values: dict[str, float] = {}
             for name, fn in resolved.items():
                 result = fn(debate_state)
-                if result.value is not None:
-                    values[name] = result.value
+                values[name] = result.value if result.value is not None else nan
+
+            # Identity remap: translate seat-based to trained/opponent metrics.
+            trained_role_str = state.store.get(_TRAINED_ROLE_KEY, None)
+            if trained_role_str is not None:
+                trained_role = Role(trained_role_str)
+                values = _remap_to_identity(values, trained_role)
+            else:
+                # Fill identity keys with NaN so _metric_aggs aggregation
+                # doesn't fail on missing keys.
+                for key in _identity_metric_keys():
+                    values[key] = nan
 
             return Score(
                 value=values,
@@ -384,6 +430,8 @@ def debate_eval(
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL,
     num_rounds: int = 2,
     prompts_ref: str = "scientific_mcq",
+    open_reasoning: bool = False,
+    randomize_position: bool = True,
 ) -> Task:
     """Inspect AI task that runs debate eval end-to-end."""
     return Task(
@@ -395,6 +443,8 @@ def debate_eval(
             protocol_kind=protocol_kind,
             num_rounds=num_rounds,
             prompts_ref=prompts_ref,
+            open_reasoning=open_reasoning,
+            randomize_position=randomize_position,
         ),
         scorer=debate_scorer(),
     )
