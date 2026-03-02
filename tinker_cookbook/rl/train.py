@@ -14,6 +14,7 @@ import chz
 import numpy as np
 import tinker
 import torch
+from tinker.lib.public_interfaces.service_client import RetryConfig
 from tinker.types import LossFnType
 from tqdm import tqdm
 
@@ -361,6 +362,10 @@ class Config:
     stream_minibatch_config: StreamMinibatchConfig | None = None
     # Optional service base URL override (primarily internal/dev use).
     base_url: str | None = None
+    # RetryConfig.max_connections for sampler calls.
+    sampling_max_connections: int = 16
+    # RetryConfig.progress_timeout (seconds) for sampler calls.
+    sampling_progress_timeout: int = 900
 
     # -------------------------------------------------------------------------
     # Checkpoint retention and logging detail (advanced)
@@ -369,6 +374,13 @@ class Config:
     # before expiry (None = no expiry).
     ttl_seconds: int | None = 604800  # 7 days
     num_groups_to_log: int = 4  # Number of groups to log per iteration (0 = disable logging)
+
+
+def _sampling_retry_config_from_cfg(cfg: Config) -> RetryConfig:
+    return RetryConfig(
+        max_connections=cfg.sampling_max_connections,
+        progress_timeout=cfg.sampling_progress_timeout,
+    )
 
 
 @scope
@@ -437,7 +449,13 @@ async def do_sync_training_with_stream_minibatch(
     """
     # Initial sampling client
     sampling_client, _ = await save_checkpoint_and_get_sampling_client(
-        training_client, start_batch, cfg.log_path, cfg.save_every, start_batch, cfg.ttl_seconds
+        training_client,
+        start_batch,
+        cfg.log_path,
+        cfg.save_every,
+        start_batch,
+        cfg.ttl_seconds,
+        retry_config=_sampling_retry_config_from_cfg(cfg),
     )
 
     for i_batch in range(start_batch, end_batch):
@@ -580,7 +598,10 @@ async def do_async_training(
     )
 
     # This will be updated by the training loop
-    sampling_client = training_client.create_sampling_client(path_dict["sampler_path"])
+    sampling_client = training_client.create_sampling_client(
+        path_dict["sampler_path"],
+        retry_config=_sampling_retry_config_from_cfg(cfg),
+    )
     sampling_client_step = start_batch
     sampling_client_updated_event = asyncio.Event()
     sampling_client_updated_event.set()
@@ -822,6 +843,7 @@ async def save_checkpoint_and_get_sampling_client(
     save_every: int,
     start_batch: int = 0,
     ttl_seconds: int | None = None,
+    retry_config: RetryConfig | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     metrics = {}
     with timed("save_checkpoint", metrics):
@@ -834,9 +856,14 @@ async def save_checkpoint_and_get_sampling_client(
                 kind="both",
                 ttl_seconds=ttl_seconds,
             )
-            return training_client.create_sampling_client(path_dict["sampler_path"]), metrics
+            return training_client.create_sampling_client(
+                path_dict["sampler_path"],
+                retry_config=retry_config,
+            ), metrics
         else:
-            return await training_client.save_weights_and_get_sampling_client_async(), metrics
+            return await training_client.save_weights_and_get_sampling_client_async(
+                retry_config=retry_config,
+            ), metrics
 
 
 @scope
@@ -888,6 +915,7 @@ async def compute_full_batch_metrics_and_get_sampling_client(
     save_every: int,
     do_compute_post_kl: bool,
     ttl_seconds: int | None = None,
+    retry_config: RetryConfig | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     """
     At the end of the iteration, this will compute metrics for the full batch
@@ -905,7 +933,12 @@ async def compute_full_batch_metrics_and_get_sampling_client(
 
     # Get a sampling client using the new weights
     sampling_client, checkpoint_metrics = await save_checkpoint_and_get_sampling_client(
-        training_client, i_batch, log_path, save_every, ttl_seconds=ttl_seconds
+        training_client,
+        i_batch,
+        log_path,
+        save_every,
+        ttl_seconds=ttl_seconds,
+        retry_config=retry_config,
     )
     metrics.update(checkpoint_metrics)
 
@@ -1053,6 +1086,7 @@ async def do_train_step_streaming_and_get_sampling_client(
         cfg.save_every,
         cfg.compute_post_kl,
         cfg.ttl_seconds,
+        retry_config=_sampling_retry_config_from_cfg(cfg),
     )
     metrics.update(full_batch_metrics)
     return sampling_client, metrics
@@ -1113,6 +1147,7 @@ async def do_train_step_and_get_sampling_client(
         cfg.save_every,
         cfg.compute_post_kl,
         cfg.ttl_seconds,
+        retry_config=_sampling_retry_config_from_cfg(cfg),
     )
     metrics.update(full_batch_metrics)
 
@@ -1136,7 +1171,13 @@ async def do_sync_training(
     """Implements fully synchronous on-policy training"""
     # Initial sampling client
     sampling_client, _ = await save_checkpoint_and_get_sampling_client(
-        training_client, start_batch, cfg.log_path, cfg.save_every, start_batch, cfg.ttl_seconds
+        training_client,
+        start_batch,
+        cfg.log_path,
+        cfg.save_every,
+        start_batch,
+        cfg.ttl_seconds,
+        retry_config=_sampling_retry_config_from_cfg(cfg),
     )
 
     for i_batch in range(start_batch, end_batch):
@@ -1291,6 +1332,7 @@ async def main(
         kl_reference_client = service_client.create_sampling_client(
             base_model=cfg.kl_reference_config.base_model,
             model_path=cfg.kl_reference_config.load_checkpoint_path,
+            retry_config=_sampling_retry_config_from_cfg(cfg),
         )
     else:
         kl_reference_client = None
