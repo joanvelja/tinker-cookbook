@@ -1,9 +1,14 @@
+from __future__ import annotations
+
 import asyncio
 from dataclasses import replace
-from typing import Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 import numpy as np
 import tinker
+
+if TYPE_CHECKING:
+    from tinker_cookbook.usage import UsageTracker
 from tinker_cookbook.completers import TinkerMessageCompleter
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator
 from tinker_cookbook.preference.types import (
@@ -39,7 +44,7 @@ class ComparisonEvaluator(SamplingClientEvaluator):
         else:
             self.content_preprocessor = content_preprocessor
 
-    async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
+    async def __call__(self, sampling_client: tinker.SamplingClient, *, usage_tracker: UsageTracker | None = None) -> dict[str, float]:
         preference_model = self.preference_model_builder()
         policy = TinkerMessageCompleter(sampling_client, self.renderer, self.max_tokens)
 

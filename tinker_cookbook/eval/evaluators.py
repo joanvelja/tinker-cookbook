@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 import logging
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import tinker
+
+if TYPE_CHECKING:
+    from tinker_cookbook.usage import UsageTracker
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -21,7 +26,12 @@ class SamplingClientEvaluator:
     An evaluator that takes in a TokenCompleter
     """
 
-    async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
+    async def __call__(
+        self,
+        sampling_client: tinker.SamplingClient,
+        *,
+        usage_tracker: UsageTracker | None = None,
+    ) -> dict[str, float]:
         raise NotImplementedError
 
 

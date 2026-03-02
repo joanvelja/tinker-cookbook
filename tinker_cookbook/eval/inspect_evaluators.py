@@ -1,9 +1,14 @@
+from __future__ import annotations
+
 import logging
 import os
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import chz
 import tinker
+
+if TYPE_CHECKING:
+    from tinker_cookbook.usage import UsageTracker
 from inspect_ai import Tasks, eval_async
 from inspect_ai.model import GenerateConfig as InspectAIGenerateConfig
 from inspect_ai.model import Model as InspectAIModel
@@ -70,7 +75,7 @@ class InspectEvaluator(SamplingClientEvaluator):
         """
         self.config = config
 
-    async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
+    async def __call__(self, sampling_client: tinker.SamplingClient, *, usage_tracker: UsageTracker | None = None) -> dict[str, float]:
         """
         Run inspect evaluation on the given sampling client and return metrics.
         Args:

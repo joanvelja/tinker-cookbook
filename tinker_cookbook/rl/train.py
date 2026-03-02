@@ -372,7 +372,7 @@ class Config:
 
 
 @scope
-async def run_single_evaluation(evaluator, cfg, i_batch, sampling_client):
+async def run_single_evaluation(evaluator, cfg, i_batch, sampling_client, usage_tracker=None):
     ev_name = _get_evaluator_name(evaluator)
     with _get_logtree_scope(
         log_path=cfg.log_path,
@@ -380,7 +380,7 @@ async def run_single_evaluation(evaluator, cfg, i_batch, sampling_client):
         f_name=f"eval_{ev_name}_iteration_{i_batch:06d}",
         scope_name=f"Running evaluation {ev_name} {i_batch}",
     ):
-        eval_metrics = await evaluator(sampling_client)
+        eval_metrics = await evaluator(sampling_client, usage_tracker=usage_tracker)
         return eval_metrics
 
 
@@ -390,6 +390,7 @@ async def run_evaluations_parallel(
     sampling_client: tinker.SamplingClient,
     cfg: Config,
     i_batch: int,
+    usage_tracker: UsageTracker | None = None,
 ) -> dict[str, Any]:
     """Run all evaluators in parallel and return aggregated metrics."""
 
@@ -398,7 +399,7 @@ async def run_evaluations_parallel(
     for i, evaluator in enumerate(evaluators):
         ev_name = _get_evaluator_name(evaluator)
         task = asyncio.create_task(
-            run_single_evaluation(evaluator, cfg, i_batch, sampling_client),
+            run_single_evaluation(evaluator, cfg, i_batch, sampling_client, usage_tracker),
             name=f"eval_{ev_name or i}_iteration_{i_batch:06d}",
         )
         tasks.append(task)
@@ -451,7 +452,8 @@ async def do_sync_training_with_stream_minibatch(
         if (cfg.eval_every > 0 and i_batch % cfg.eval_every == 0) or i_batch == end_batch - 1:
             with timed("run_evals", metrics):
                 eval_metrics = await run_evaluations_parallel(
-                    evaluators, sampling_client, cfg, i_batch
+                    evaluators, sampling_client, cfg, i_batch,
+                    usage_tracker=usage_tracker,
                 )
                 metrics.update(eval_metrics)
 
@@ -762,7 +764,9 @@ async def do_async_training(
             if cfg.eval_every > 0 and sampling_client_eval_step % cfg.eval_every == 0:
                 with timed("run_evals", metrics):
                     for evaluator in evaluators:
-                        eval_metrics = await evaluator(sampling_client_eval)
+                        eval_metrics = await evaluator(
+                            sampling_client_eval, usage_tracker=usage_tracker,
+                        )
                         metrics.update({f"test/{k}": v for k, v in eval_metrics.items()})
                 metrics["time/evaluation_loop/total"] = time.time() - t_start
                 ml_logger.log_metrics(metrics, step=sampling_client_eval_step)
@@ -1147,7 +1151,8 @@ async def do_sync_training(
         if cfg.eval_every > 0 and i_batch % cfg.eval_every == 0:
             with timed("run_evals", metrics):
                 eval_metrics = await run_evaluations_parallel(
-                    evaluators, sampling_client, cfg, i_batch
+                    evaluators, sampling_client, cfg, i_batch,
+                    usage_tracker=usage_tracker,
                 )
                 metrics.update(eval_metrics)
 
@@ -1274,7 +1279,7 @@ async def main(
     dataset, maybe_test_dataset = await cfg.dataset_builder()
     evaluators = [evaluator() for evaluator in cfg.evaluator_builders]
     if maybe_test_dataset is not None:
-        evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens))
+        evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens, model_name=cfg.model_name))
 
     num_batches = len(dataset)
     logger.info(f"Will train on {num_batches} batches")

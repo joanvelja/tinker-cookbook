@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 import asyncio
 import logging
-from typing import TypedDict, Any, cast
+from typing import TYPE_CHECKING, TypedDict, Any, cast
 from PIL import Image
+
+if TYPE_CHECKING:
+    from tinker_cookbook.usage import UsageTracker
 
 import datasets
 import chz
@@ -164,7 +169,7 @@ class ClassifierEvaluator(SamplingClientEvaluator):
 
         return {"accuracy": float(predicted_class_name == class_label_name)}
 
-    async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
+    async def __call__(self, sampling_client: tinker.SamplingClient, *, usage_tracker: UsageTracker | None = None) -> dict[str, float]:
         """
         Evaluate a vision-language model as an image classifier.
 

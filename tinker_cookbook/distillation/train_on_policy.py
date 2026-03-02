@@ -423,7 +423,7 @@ async def main(
 
         # Add test dataset evaluator if present
         if maybe_test_dataset is not None:
-            evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens))
+            evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens, model_name=cfg.model_name))
 
         # Create teacher sampling client
         teacher_config = dataset_config.teacher_config

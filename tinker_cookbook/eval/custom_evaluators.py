@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 import asyncio
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import tinker
+
+if TYPE_CHECKING:
+    from tinker_cookbook.usage import UsageTracker
 from tinker import types
 from tinker_cookbook import renderers
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator
@@ -31,7 +36,7 @@ class CustomEvaluator(SamplingClientEvaluator):
         tokenizer = get_tokenizer(model_name)
         self.renderer = renderers.get_renderer(name=renderer_name, tokenizer=tokenizer)
 
-    async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
+    async def __call__(self, sampling_client: tinker.SamplingClient, *, usage_tracker: UsageTracker | None = None) -> dict[str, float]:
         """
         Run custom evaluation on the given sampling client and return metrics.
         Args:

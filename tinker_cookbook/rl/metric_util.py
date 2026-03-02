@@ -1,17 +1,21 @@
+from __future__ import annotations
+
 import asyncio
 import itertools
 from collections import defaultdict
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List
 
 import numpy as np
 import tinker
-from tinker_cookbook.completers import TinkerTokenCompleter
+from tinker_cookbook.completers import TinkerTokenCompleter, TokenCompleter
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator
 from tinker_cookbook.rl.rollouts import do_group_rollout
 from tinker_cookbook.rl.types import EnvGroupBuilder, RLDataset, TrajectoryGroup
 from tinker_cookbook.utils.misc_utils import all_same, dict_mean
 from tinker_cookbook.utils import logtree
-from tinker_cookbook.completers import TokenCompleter
+
+if TYPE_CHECKING:
+    from tinker_cookbook.usage import UsageTracker
 
 
 def _compute_by_group_metrics(trajectory_groups_P: List[TrajectoryGroup], good_thresh: float = 0.5):
@@ -110,11 +114,13 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
         max_tokens: int,
         name: str = "test",
         num_groups_to_log: int = 4,
+        model_name: str = "",
     ):
         self.env_group_builders_P = dataset_to_env_group_builders(dataset)
         self.max_tokens = max_tokens
         self.name = name
         self.num_groups_to_log = num_groups_to_log
+        self.model_name = model_name
 
     async def eval_token_completer(self, policy: TokenCompleter) -> dict[str, float]:
         async def run_group_rollout(builder, i):
@@ -131,6 +137,17 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
         metrics = {f"{self.name}/{k}": v for k, v in metrics.items()}
         return metrics
 
-    async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
-        policy = TinkerTokenCompleter(sampling_client, max_tokens=self.max_tokens)
+    async def __call__(
+        self,
+        sampling_client: tinker.SamplingClient,
+        *,
+        usage_tracker: UsageTracker | None = None,
+    ) -> dict[str, float]:
+        policy = TinkerTokenCompleter(
+            sampling_client,
+            max_tokens=self.max_tokens,
+            usage_tracker=usage_tracker,
+            actor="trained",
+            model_name=self.model_name,
+        )
         return await self.eval_token_completer(policy)
