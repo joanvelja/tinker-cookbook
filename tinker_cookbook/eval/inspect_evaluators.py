@@ -75,7 +75,9 @@ class InspectEvaluator(SamplingClientEvaluator):
         """
         self.config = config
 
-    async def __call__(self, sampling_client: tinker.SamplingClient, *, usage_tracker: UsageTracker | None = None) -> dict[str, float]:
+    async def __call__(
+        self, sampling_client: tinker.SamplingClient, *, usage_tracker: UsageTracker | None = None
+    ) -> dict[str, float]:
         """
         Run inspect evaluation on the given sampling client and return metrics.
         Args:

@@ -25,6 +25,7 @@ from ..eval.evaluator import DebateInspectEvaluatorBuilder
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from ..types import ProtocolKind
 
+
 def _recommended_max_connections(batch_size: int, group_size: int) -> int:
     # For the user's target config batch_size=32, group_size=8 this yields 256.
     return max(16, batch_size * group_size)

@@ -44,7 +44,9 @@ class ComparisonEvaluator(SamplingClientEvaluator):
         else:
             self.content_preprocessor = content_preprocessor
 
-    async def __call__(self, sampling_client: tinker.SamplingClient, *, usage_tracker: UsageTracker | None = None) -> dict[str, float]:
+    async def __call__(
+        self, sampling_client: tinker.SamplingClient, *, usage_tracker: UsageTracker | None = None
+    ) -> dict[str, float]:
         preference_model = self.preference_model_builder()
         policy = TinkerMessageCompleter(sampling_client, self.renderer, self.max_tokens)
 

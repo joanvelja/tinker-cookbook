@@ -470,7 +470,10 @@ async def do_sync_training_with_stream_minibatch(
         if (cfg.eval_every > 0 and i_batch % cfg.eval_every == 0) or i_batch == end_batch - 1:
             with timed("run_evals", metrics):
                 eval_metrics = await run_evaluations_parallel(
-                    evaluators, sampling_client, cfg, i_batch,
+                    evaluators,
+                    sampling_client,
+                    cfg,
+                    i_batch,
                     usage_tracker=usage_tracker,
                 )
                 metrics.update(eval_metrics)
@@ -786,7 +789,8 @@ async def do_async_training(
                 with timed("run_evals", metrics):
                     for evaluator in evaluators:
                         eval_metrics = await evaluator(
-                            sampling_client_eval, usage_tracker=usage_tracker,
+                            sampling_client_eval,
+                            usage_tracker=usage_tracker,
                         )
                         metrics.update({f"test/{k}": v for k, v in eval_metrics.items()})
                 metrics["time/evaluation_loop/total"] = time.time() - t_start
@@ -1024,13 +1028,15 @@ async def do_train_step_streaming_and_get_sampling_client(
 
             if usage_tracker is not None:
                 train_tokens = sum(d.model_input.length for d in data_D)
-                usage_tracker.record(UsageEvent(
-                    actor="training",
-                    model_name=cfg.model_name,
-                    input_tokens=train_tokens,
-                    output_tokens=0,
-                    call_type="train",
-                ))
+                usage_tracker.record(
+                    UsageEvent(
+                        actor="training",
+                        model_name=cfg.model_name,
+                        input_tokens=train_tokens,
+                        output_tokens=0,
+                        call_type="train",
+                    )
+                )
 
             # Enqueue forward-backward (we'll await results after all minibatches are enqueued)
             with timed(f"train/fwd_bwd_substep_{i_substep}_mb_{i_minibatch}_enqueue", metrics):
@@ -1118,13 +1124,15 @@ async def do_train_step_and_get_sampling_client(
 
     if usage_tracker is not None:
         train_tokens = sum(d.model_input.length for d in data_D)
-        usage_tracker.record(UsageEvent(
-            actor="training",
-            model_name=cfg.model_name,
-            input_tokens=train_tokens,
-            output_tokens=0,
-            call_type="train",
-        ))
+        usage_tracker.record(
+            UsageEvent(
+                actor="training",
+                model_name=cfg.model_name,
+                input_tokens=train_tokens,
+                output_tokens=0,
+                call_type="train",
+            )
+        )
 
     with timed("train", metrics):
         training_logprobs_D = await train_step(
@@ -1192,7 +1200,10 @@ async def do_sync_training(
         if cfg.eval_every > 0 and i_batch % cfg.eval_every == 0:
             with timed("run_evals", metrics):
                 eval_metrics = await run_evaluations_parallel(
-                    evaluators, sampling_client, cfg, i_batch,
+                    evaluators,
+                    sampling_client,
+                    cfg,
+                    i_batch,
                     usage_tracker=usage_tracker,
                 )
                 metrics.update(eval_metrics)
@@ -1320,7 +1331,11 @@ async def main(
     dataset, maybe_test_dataset = await cfg.dataset_builder()
     evaluators = [evaluator() for evaluator in cfg.evaluator_builders]
     if maybe_test_dataset is not None:
-        evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens, model_name=cfg.model_name))
+        evaluators.append(
+            RLTestSetEvaluator(
+                maybe_test_dataset, max_tokens=cfg.max_tokens, model_name=cfg.model_name
+            )
+        )
 
     num_batches = len(dataset)
     logger.info(f"Will train on {num_batches} batches")

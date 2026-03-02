@@ -169,7 +169,9 @@ class ClassifierEvaluator(SamplingClientEvaluator):
 
         return {"accuracy": float(predicted_class_name == class_label_name)}
 
-    async def __call__(self, sampling_client: tinker.SamplingClient, *, usage_tracker: UsageTracker | None = None) -> dict[str, float]:
+    async def __call__(
+        self, sampling_client: tinker.SamplingClient, *, usage_tracker: UsageTracker | None = None
+    ) -> dict[str, float]:
         """
         Evaluate a vision-language model as an image classifier.
 

@@ -230,7 +230,9 @@ class TestDriveTurnStructuredContent:
             return_value={"role": "assistant", "content": structured_content}
         )
 
-        with patch("tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task.span") as mock_span:
+        with patch(
+            "tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task.span"
+        ) as mock_span:
             mock_span.return_value.__aenter__ = AsyncMock()
             mock_span.return_value.__aexit__ = AsyncMock()
             with patch(
@@ -271,7 +273,9 @@ class TestDriveTurnStructuredContent:
             return_value={"role": "assistant", "content": "I argue for answer A."}
         )
 
-        with patch("tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task.span") as mock_span:
+        with patch(
+            "tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task.span"
+        ) as mock_span:
             mock_span.return_value.__aenter__ = AsyncMock()
             mock_span.return_value.__aexit__ = AsyncMock()
             with patch(
