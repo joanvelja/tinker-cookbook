@@ -526,6 +526,77 @@ def test_frozen_opponent_compute_group_rewards():
         assert reward == expected
 
 
+def test_frozen_opponent_uses_opponent_renderer_tokenizer():
+    """When opponent_renderer is set, _opponent_submit counts tokens with its tokenizer."""
+
+    class _WordTokenizer:
+        """Tokenizer that splits on whitespace (1 token per word)."""
+
+        def encode(self, text: str) -> list[int]:
+            return list(range(len(text.split())))
+
+        def decode(self, tokens: list[int]) -> str:
+            return " ".join(str(t) for t in tokens)
+
+    class WordRenderer(MockRenderer):
+        def __init__(self) -> None:
+            self.tokenizer = _WordTokenizer()
+
+    # trained renderer: char-per-token (e.g. "hello" = 5 tokens)
+    trained_renderer = MockRenderer()
+    # opponent renderer: word-per-token (e.g. "opponent turn 1" = 3 tokens)
+    opponent_renderer = WordRenderer()
+    completer = MockCompleter()
+
+    builder = DebateGroupBuilder(
+        task_prompt="Q",
+        answer_a="A",
+        answer_b="B",
+        renderer=trained_renderer,
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=1,
+        opponent_completer=completer,
+        opponent_renderer=opponent_renderer,
+        group_size=1,
+    )
+    envs = _run(builder.make_envs())
+    env = envs[0]
+    assert isinstance(env, DebateEnv)
+    _rollout(env)
+
+    # The opponent said "opponent turn 1" (MockCompleter). With the word tokenizer
+    # that's 3 tokens. With the char tokenizer it would be 15 tokens.
+    opponent_utterances = [u for u in env.runtime.state.transcript if u.role != env.role]
+    assert len(opponent_utterances) == 1
+    assert opponent_utterances[0].token_count == 3  # word tokenizer, not char
+
+
+def test_frozen_opponent_fallback_to_trained_renderer():
+    """Without opponent_renderer, token count uses trained renderer's tokenizer."""
+    renderer = MockRenderer()
+    completer = MockCompleter()
+
+    builder = DebateGroupBuilder(
+        task_prompt="Q",
+        answer_a="A",
+        answer_b="B",
+        renderer=renderer,
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=1,
+        opponent_completer=completer,
+        group_size=1,
+    )
+    envs = _run(builder.make_envs())
+    env = envs[0]
+    assert isinstance(env, DebateEnv)
+    _rollout(env)
+
+    opponent_utterances = [u for u in env.runtime.state.transcript if u.role != env.role]
+    assert len(opponent_utterances) == 1
+    # "opponent turn 1" = 15 chars = 15 tokens with MockRenderer's char tokenizer
+    assert opponent_utterances[0].token_count == len("opponent turn 1")
+
+
 def test_frozen_opponent_simultaneous():
     """Pure SIMULTANEOUS works with frozen opponent via ensure_future barrier."""
     renderer = MockRenderer()

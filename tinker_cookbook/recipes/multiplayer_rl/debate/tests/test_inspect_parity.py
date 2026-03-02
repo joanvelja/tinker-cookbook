@@ -190,6 +190,103 @@ class TestGPQAAdapterFreeDebate:
 
 
 # ===================================================================
+# 1b. _drive_turn structured content handling
+# ===================================================================
+
+
+class TestDriveTurnStructuredContent:
+    """Regression test: _drive_turn must handle list[ContentPart] responses."""
+
+    @pytest.mark.asyncio
+    async def test_drive_turn_handles_structured_content(self):
+        """Completer returning list[ContentPart] (thinking model) should not crash.
+
+        Before the fix, `response["content"]` was a list passed directly to
+        `runtime.submit()` which calls `strip_think(text)` expecting str.
+        """
+        from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import DebateRuntime
+        from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import _drive_turn
+
+        spec = _make_spec(num_rounds=1)
+        initial_state = DebateState(
+            spec=spec,
+            slot_index=0,
+            rounds_completed=0,
+            transcript=(),
+            pending_simultaneous={},
+            judge_trace=(),
+            done=False,
+            outcome=None,
+        )
+
+        runtime = DebateRuntime(initial_state, judge_callback=AsyncMock())
+
+        # Simulate a thinking-model response: content is list[ContentPart]
+        structured_content = [
+            {"type": "thinking", "thinking": "Let me reason about this..."},
+            {"type": "text", "text": "I argue for answer A."},
+        ]
+        mock_completer = AsyncMock(
+            return_value={"role": "assistant", "content": structured_content}
+        )
+
+        with patch("tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task.span") as mock_span:
+            mock_span.return_value.__aenter__ = AsyncMock()
+            mock_span.return_value.__aexit__ = AsyncMock()
+            with patch(
+                "tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task.transcript"
+            ) as mock_transcript:
+                mock_transcript.return_value.info = MagicMock()
+                result = await _drive_turn(runtime, Role.DEBATER_A, mock_completer)
+
+        assert result is True
+        # The text stored in the utterance should be a string, not a list
+        assert len(runtime.state.transcript) == 1
+        utt = runtime.state.transcript[0]
+        assert isinstance(utt.text, str)
+        assert "<think>" in utt.text
+        assert "I argue for answer A." in utt.text
+
+    @pytest.mark.asyncio
+    async def test_drive_turn_handles_plain_string_content(self):
+        """Plain string content (non-thinking model) should still work."""
+        from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import DebateRuntime
+        from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import _drive_turn
+
+        spec = _make_spec(num_rounds=1)
+        initial_state = DebateState(
+            spec=spec,
+            slot_index=0,
+            rounds_completed=0,
+            transcript=(),
+            pending_simultaneous={},
+            judge_trace=(),
+            done=False,
+            outcome=None,
+        )
+
+        runtime = DebateRuntime(initial_state, judge_callback=AsyncMock())
+
+        mock_completer = AsyncMock(
+            return_value={"role": "assistant", "content": "I argue for answer A."}
+        )
+
+        with patch("tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task.span") as mock_span:
+            mock_span.return_value.__aenter__ = AsyncMock()
+            mock_span.return_value.__aexit__ = AsyncMock()
+            with patch(
+                "tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task.transcript"
+            ) as mock_transcript:
+                mock_transcript.return_value.info = MagicMock()
+                result = await _drive_turn(runtime, Role.DEBATER_A, mock_completer)
+
+        assert result is True
+        utt = runtime.state.transcript[0]
+        assert isinstance(utt.text, str)
+        assert utt.text == "I argue for answer A."
+
+
+# ===================================================================
 # 2. Metric extraction bug fix
 # ===================================================================
 

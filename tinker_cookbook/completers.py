@@ -8,6 +8,7 @@ Evals and other code should use the appropriate interface.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -69,6 +70,7 @@ class TinkerTokenCompleter(TokenCompleter):
     ) -> TokensWithLogprobs:
         """Sample an action from the policy given an observation."""
         # Sample from the model
+        t0 = time.monotonic()
         sample_result = await self.sampling_client.sample_async(
             prompt=model_input,
             num_samples=1,
@@ -78,11 +80,15 @@ class TinkerTokenCompleter(TokenCompleter):
                 temperature=self.temperature,
             ),
         )
+        self._last_sample_wall_s = time.monotonic() - t0
 
         # Extract tokens and logprobs from the first (and only) sample
         sampled_tokens = sample_result.sequences[0].tokens
         sampled_logprobs = sample_result.sequences[0].logprobs
         assert sampled_logprobs is not None
+
+        self._last_input_tokens = model_input.length
+        self._last_output_tokens = len(sampled_tokens)
 
         if self.usage_tracker is not None:
             from tinker_cookbook.usage import UsageEvent
@@ -130,6 +136,7 @@ class TinkerMessageCompleter(MessageCompleter):
         model_input = self.renderer.build_generation_prompt(messages)
 
         # Sample from the model
+        t0 = time.monotonic()
         response = await self.sampling_client.sample_async(
             model_input,
             num_samples=1,
@@ -139,8 +146,12 @@ class TinkerMessageCompleter(MessageCompleter):
                 stop=self.stop_condition,
             ),
         )
+        self._last_sample_wall_s = time.monotonic() - t0
 
         output_tokens = response.sequences[0].tokens
+
+        self._last_input_tokens = model_input.length
+        self._last_output_tokens = len(output_tokens)
 
         if self.usage_tracker is not None:
             from tinker_cookbook.usage import UsageEvent
