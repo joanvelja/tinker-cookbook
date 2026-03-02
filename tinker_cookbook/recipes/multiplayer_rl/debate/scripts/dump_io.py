@@ -5,7 +5,7 @@ the exact messages each role would see at each turn boundary. Use this to
 verify V2 message assembly is correct.
 
 Usage:
-    python -m tinker_cookbook.recipes.multiplayer_rl.debate.dump_io [--prompts galaxy_brain]
+    python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.dump_io [--prompts galaxy_brain]
 """
 
 from __future__ import annotations
