@@ -70,7 +70,6 @@ debate/
   scripts/
     train.py       Training loop (REINFORCE+IS, frozen opponent, LLM judge)
     smoke_mcq.py   Smoke test: 2 GPQA problems, HTML trace
-    smoke_galaxy.py  Smoke test: open-ended debate
     dump_io.py     Debug: print assembled prompts for each role/phase
     trace_fmt.py   HTML trace renderer
 
