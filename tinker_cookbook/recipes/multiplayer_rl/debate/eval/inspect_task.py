@@ -16,6 +16,7 @@ from inspect_ai.solver import Generate, Solver, TaskState, solver
 from inspect_ai.util import span
 
 from tinker_cookbook.completers import MessageCompleter
+from tinker_cookbook.renderers import format_content_as_string
 
 from ..core.reducer import get_eligible_roles
 from ..core.schedule import build_schedule
@@ -223,7 +224,7 @@ async def _drive_turn(
             transcript().info(f"[INPUT {role.value} msg {i}] role={msg['role']}\n{msg['content']}")
 
         response = await completer(msgs)
-        text = response["content"]
+        text = format_content_as_string(response["content"], separator="")
         token_count = getattr(completer, "_last_output_tokens", len(text.split()) * 4 // 3)
         result = await runtime.submit(ticket, text, token_count)
         transcript().info(
