@@ -134,8 +134,12 @@ def get_recommended_renderer_names(model_name: str) -> list[str]:
         raise ValueError(f"Unknown model: {model_name}")
 
 
-def get_recommended_renderer_name(model_name: str) -> str:
+def get_recommended_renderer_name(model_name: str, *, reasoning_effort: str | None = None) -> str:
     """
     Return the most recommended renderer for the model.
     """
+    if reasoning_effort is not None:
+        attrs = get_model_attributes(model_name)
+        if attrs.organization == "openai":
+            return f"gpt_oss_{reasoning_effort}_reasoning"
     return get_recommended_renderer_names(model_name)[0]

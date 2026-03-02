@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING
 import chz
 import tinker
 from inspect_ai import eval_async
+from tinker.lib.public_interfaces.service_client import RetryConfig
 
+from tinker_cookbook import model_info
 from tinker_cookbook.completers import TinkerMessageCompleter
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator
 from tinker_cookbook.renderers import get_renderer
@@ -42,12 +44,15 @@ class DebateInspectEvaluatorBuilder:
     opponent_max_tokens: int = 8192
     judge_max_tokens: int = 4096
     renderer_name: str | None = None
+    reasoning_effort: str | None = None
     model_name: str | None = None
 
     log_dir: str | None = None
     log_evals_every: int = 1
     limit: int | None = None
     base_url: str | None = None
+    max_connections: int = 256
+    progress_timeout_s: int = 900
 
     def __call__(self) -> DebateInspectEvaluator:
         return DebateInspectEvaluator(self)
@@ -68,39 +73,52 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
     ) -> dict[str, float]:
         cfg = self._config
         self._call_count += 1
+        retry_config = RetryConfig(
+            max_connections=cfg.max_connections,
+            progress_timeout=cfg.progress_timeout_s,
+        )
 
         if cfg.model_name is None:
             raise ValueError("model_name must be set on DebateInspectEvaluatorBuilder")
-        if cfg.renderer_name is None:
-            raise ValueError("renderer_name must be set on DebateInspectEvaluatorBuilder")
 
-        renderer = get_renderer(cfg.renderer_name, get_tokenizer(cfg.model_name))
+        # Per-role renderer construction.
+        trained_name = cfg.renderer_name or model_info.get_recommended_renderer_name(
+            cfg.model_name, reasoning_effort=cfg.reasoning_effort
+        )
+        trained_renderer = get_renderer(trained_name, get_tokenizer(cfg.model_name))
 
         # Trained model completer (debater A).
         trained_completer = TinkerMessageCompleter(
             sampling_client=sampling_client,
-            renderer=renderer,
+            renderer=trained_renderer,
             max_tokens=cfg.opponent_max_tokens,
             usage_tracker=usage_tracker,
             actor="trained",
             model_name=cfg.model_name,
         )
 
+        # Separate ServiceClient for non-trained actors.
+        service = tinker.ServiceClient(base_url=cfg.base_url)
+
         # Opponent completer. Self-play shares the trained sampling_client
-        # (same fine-tuned weights). Separate model gets its own ServiceClient.
+        # (same fine-tuned weights). Separate model gets its own client.
         if cfg.opponent_model is None:
             opponent_completer = TinkerMessageCompleter(
                 sampling_client=sampling_client,
-                renderer=renderer,
+                renderer=trained_renderer,
                 max_tokens=cfg.opponent_max_tokens,
                 usage_tracker=usage_tracker,
                 actor="opponent",
                 model_name=cfg.model_name,
             )
         else:
-            opp_renderer = get_renderer(cfg.renderer_name, get_tokenizer(cfg.opponent_model))
-            opp_client = tinker.ServiceClient(base_url=cfg.base_url).create_sampling_client(
-                base_model=cfg.opponent_model
+            opp_name = model_info.get_recommended_renderer_name(
+                cfg.opponent_model, reasoning_effort=cfg.reasoning_effort
+            )
+            opp_renderer = get_renderer(opp_name, get_tokenizer(cfg.opponent_model))
+            opp_client = service.create_sampling_client(
+                base_model=cfg.opponent_model,
+                retry_config=retry_config,
             )
             opponent_completer = TinkerMessageCompleter(
                 sampling_client=opp_client,
@@ -111,11 +129,15 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
                 model_name=cfg.opponent_model,
             )
 
-        # Judge completer — separate ServiceClient to avoid backoff coupling.
-        judge_client = tinker.ServiceClient(base_url=cfg.base_url).create_sampling_client(
-            base_model=cfg.judge_model
+        # Judge completer — always gets its own sampling client.
+        judge_name = model_info.get_recommended_renderer_name(
+            cfg.judge_model, reasoning_effort=cfg.reasoning_effort
         )
-        judge_renderer = get_renderer(cfg.renderer_name, get_tokenizer(cfg.judge_model))
+        judge_renderer = get_renderer(judge_name, get_tokenizer(cfg.judge_model))
+        judge_client = service.create_sampling_client(
+            base_model=cfg.judge_model,
+            retry_config=retry_config,
+        )
         judge_completer = TinkerMessageCompleter(
             sampling_client=judge_client,
             renderer=judge_renderer,
@@ -147,7 +169,7 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
                 tasks=[task],
                 model=None,
                 limit=cfg.limit,
-                max_connections=512,
+                max_connections=cfg.max_connections,
                 log_dir=log_dir,
                 fail_on_error=False,
                 retry_on_error=0,
@@ -160,7 +182,7 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
                     tasks=[task],
                     model=None,
                     limit=cfg.limit,
-                    max_connections=512,
+                    max_connections=cfg.max_connections,
                     log_dir=trash_dir,
                     fail_on_error=False,
                     retry_on_error=0,

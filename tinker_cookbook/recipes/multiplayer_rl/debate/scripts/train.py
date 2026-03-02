@@ -9,6 +9,7 @@ from datetime import datetime
 import chz
 import tinker
 from datasets import load_dataset
+from tinker.lib.public_interfaces.service_client import RetryConfig
 
 from tinker_cookbook import cli_utils, model_info
 from tinker_cookbook.completers import TinkerMessageCompleter
@@ -23,6 +24,10 @@ from ..eval.dataset_adapter import GPQAAdapter
 from ..eval.evaluator import DebateInspectEvaluatorBuilder
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from ..types import ProtocolKind
+
+def _recommended_max_connections(batch_size: int, group_size: int) -> int:
+    # For the user's target config batch_size=32, group_size=8 this yields 256.
+    return max(16, batch_size * group_size)
 
 
 def _load_gpqa(
@@ -65,7 +70,8 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     """Builds debate RL datasets with opponent completer and LLM judge."""
 
     model_name: str
-    renderer_name: str
+    renderer_name: str | None = None
+    reasoning_effort: str | None = None
     opponent_model: str
     judge_model: str
     opponent_max_tokens: int = 8192
@@ -80,27 +86,52 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     open_reasoning: bool = False
     base_url: str | None = None
     episode_log_dir: str | None = None
+    max_connections: int = 256
+    progress_timeout_s: int = 900
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
-        renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
-        tracker: UsageTracker | None = getattr(self, "_usage_tracker", None)
+        # Per-role renderer construction: each actor gets its own model-appropriate renderer.
+        trained_name = self.renderer_name or model_info.get_recommended_renderer_name(
+            self.model_name, reasoning_effort=self.reasoning_effort
+        )
+        trained_renderer = get_renderer(trained_name, get_tokenizer(self.model_name))
 
-        # Separate ServiceClient per actor to avoid holder-level backoff coupling.
+        opp_name = model_info.get_recommended_renderer_name(
+            self.opponent_model, reasoning_effort=self.reasoning_effort
+        )
+        opponent_renderer = get_renderer(opp_name, get_tokenizer(self.opponent_model))
+
+        judge_name = model_info.get_recommended_renderer_name(
+            self.judge_model, reasoning_effort=self.reasoning_effort
+        )
+        judge_renderer = get_renderer(judge_name, get_tokenizer(self.judge_model))
+
+        tracker: UsageTracker | None = getattr(self, "_usage_tracker", None)
+        retry_config = RetryConfig(
+            max_connections=self.max_connections,
+            progress_timeout=self.progress_timeout_s,
+        )
+        service = tinker.ServiceClient(base_url=self.base_url)
+        opponent_sampling = service.create_sampling_client(
+            base_model=self.opponent_model,
+            retry_config=retry_config,
+        )
+        judge_sampling = service.create_sampling_client(
+            base_model=self.judge_model,
+            retry_config=retry_config,
+        )
+
         opponent_completer = TinkerMessageCompleter(
-            sampling_client=tinker.ServiceClient(base_url=self.base_url).create_sampling_client(
-                base_model=self.opponent_model
-            ),
-            renderer=renderer,
+            sampling_client=opponent_sampling,
+            renderer=opponent_renderer,
             max_tokens=self.opponent_max_tokens,
             usage_tracker=tracker,
             actor="opponent",
             model_name=self.opponent_model,
         )
         judge_completer = TinkerMessageCompleter(
-            sampling_client=tinker.ServiceClient(base_url=self.base_url).create_sampling_client(
-                base_model=self.judge_model
-            ),
-            renderer=renderer,
+            sampling_client=judge_sampling,
+            renderer=judge_renderer,
             max_tokens=self.judge_max_tokens,
             usage_tracker=tracker,
             actor="judge",
@@ -116,13 +147,14 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
         train_ds = DebateDataset(
             problems=train_problems,
             batch_size=self.batch_size,
-            renderer=renderer,
+            renderer=trained_renderer,
             protocol_kind=self.protocol_kind,
             num_rounds=self.num_rounds,
             open_reasoning=self.open_reasoning,
             judge_callback=judge_callback,
             outcome_reward_fn=zero_sum_outcome_reward,
             opponent_completer=opponent_completer,
+            opponent_renderer=opponent_renderer,
             group_size=self.group_size,
             randomize_position=self.randomize_position,
             prompts_ref=self.prompts_ref,
@@ -134,13 +166,14 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             test_ds = DebateDataset(
                 problems=test_problems,
                 batch_size=len(test_problems),
-                renderer=renderer,
+                renderer=trained_renderer,
                 protocol_kind=self.protocol_kind,
                 num_rounds=self.num_rounds,
                 open_reasoning=self.open_reasoning,
                 judge_callback=judge_callback,
                 outcome_reward_fn=zero_sum_outcome_reward,
                 opponent_completer=opponent_completer,
+                opponent_renderer=opponent_renderer,
                 group_size=self.group_size,
                 randomize_position=self.randomize_position,
                 prompts_ref=self.prompts_ref,
@@ -154,6 +187,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
 class CLIConfig:
     model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
     renderer_name: str | None = None
+    reasoning_effort: str | None = None
     opponent_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     judge_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     opponent_max_tokens: int = 8192
@@ -177,11 +211,15 @@ class CLIConfig:
     log_path: str | None = None
     episode_log_dir: str | None = None
     base_url: str | None = None
+    max_connections: int | None = None
+    progress_timeout_s: int = 900
 
 
 def build_config(cli: CLIConfig) -> train.Config:
     model_name = cli.model_name
-    renderer_name = cli.renderer_name or model_info.get_recommended_renderer_name(model_name)
+    max_connections = cli.max_connections or _recommended_max_connections(
+        cli.batch_size, cli.group_size
+    )
 
     date_and_time = datetime.now().strftime("%Y-%m-%d-%H-%M")
     run_name = (
@@ -194,7 +232,8 @@ def build_config(cli: CLIConfig) -> train.Config:
 
     dataset_builder = DebateRLDatasetBuilder(
         model_name=model_name,
-        renderer_name=renderer_name,
+        renderer_name=cli.renderer_name,
+        reasoning_effort=cli.reasoning_effort,
         opponent_model=cli.opponent_model,
         judge_model=cli.judge_model,
         opponent_max_tokens=cli.opponent_max_tokens,
@@ -209,13 +248,23 @@ def build_config(cli: CLIConfig) -> train.Config:
         open_reasoning=cli.open_reasoning,
         base_url=cli.base_url,
         episode_log_dir=cli.episode_log_dir,
+        max_connections=max_connections,
+        progress_timeout_s=cli.progress_timeout_s,
+    )
+
+    # Resolve renderer name for eval builder (eval still takes a concrete name).
+    eval_renderer_name = cli.renderer_name or model_info.get_recommended_renderer_name(
+        model_name, reasoning_effort=cli.reasoning_effort
     )
 
     if cli.inspect_eval is not None:
         inspect_builder = chz.replace(
             cli.inspect_eval,
-            renderer_name=cli.inspect_eval.renderer_name or renderer_name,
+            renderer_name=cli.inspect_eval.renderer_name or eval_renderer_name,
             model_name=cli.inspect_eval.model_name or model_name,
+            reasoning_effort=cli.reasoning_effort,
+            max_connections=max_connections,
+            progress_timeout_s=cli.progress_timeout_s,
         )
     else:
         # Default: GPQA eval matching training config.
@@ -230,9 +279,12 @@ def build_config(cli: CLIConfig) -> train.Config:
             judge_model=cli.judge_model,
             opponent_max_tokens=cli.opponent_max_tokens,
             judge_max_tokens=cli.judge_max_tokens,
-            renderer_name=renderer_name,
+            renderer_name=eval_renderer_name,
+            reasoning_effort=cli.reasoning_effort,
             model_name=model_name,
             base_url=cli.base_url,
+            max_connections=max_connections,
+            progress_timeout_s=cli.progress_timeout_s,
         )
     evaluator_builders = [inspect_builder]
 
@@ -249,6 +301,8 @@ def build_config(cli: CLIConfig) -> train.Config:
         wandb_project=cli.wandb_project,
         wandb_name=wandb_name,
         base_url=cli.base_url,
+        sampling_max_connections=max_connections,
+        sampling_progress_timeout=cli.progress_timeout_s,
     )
 
 

@@ -112,6 +112,7 @@ class DebateEnv(Env):
     runtime: DebateRuntime
     renderer: Renderer
     opponent_completer: MessageCompleter | None = field(default=None, repr=False)
+    opponent_renderer: Renderer | None = field(default=None, repr=False)
     opponent_role: Role | None = None
     _ticket: TurnTicket | None = field(default=None, repr=False)
     _opponent_task: asyncio.Task | None = field(default=None, repr=False)
@@ -130,7 +131,8 @@ class DebateEnv(Env):
         reply = await self.opponent_completer(list(messages))
         self._opponent_wall_s_accum += time.monotonic() - t0
         text = format_content_as_string(reply["content"], separator="")
-        token_count = len(self.renderer.tokenizer.encode(text))
+        tokenizer = (self.opponent_renderer or self.renderer).tokenizer
+        token_count = len(tokenizer.encode(text))
         await self.runtime.submit(ticket, text, token_count)
 
     async def _drive_opponent(self) -> None:
@@ -261,6 +263,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
     include_roles: tuple[Role, ...] = (Role.DEBATER_A, Role.DEBATER_B)
     group_size: int = 1
     opponent_completer: MessageCompleter | None = None
+    opponent_renderer: Renderer | None = None
     randomize_position: bool = False
     prompts_ref: str = "default"
     target: str | None = None
@@ -400,6 +403,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
                         runtime=runtime,
                         renderer=self.renderer,
                         opponent_completer=self.opponent_completer,
+                        opponent_renderer=self.opponent_renderer,
                         opponent_role=opponent_role,
                     )
                 )
@@ -578,6 +582,7 @@ class DebateDataset(RLDataset):
         include_roles: tuple[Role, ...] = (Role.DEBATER_A, Role.DEBATER_B),
         group_size: int = 1,
         opponent_completer: MessageCompleter | None = None,
+        opponent_renderer: Renderer | None = None,
         randomize_position: bool = False,
         prompts_ref: str = "default",
         metrics: dict[str, MetricFn] | None = None,
@@ -596,6 +601,7 @@ class DebateDataset(RLDataset):
         self.include_roles = include_roles
         self.group_size = group_size
         self.opponent_completer = opponent_completer
+        self.opponent_renderer = opponent_renderer
         self.randomize_position = randomize_position
         self.prompts_ref = prompts_ref
         self.metrics = metrics
@@ -630,6 +636,7 @@ class DebateDataset(RLDataset):
                 include_roles=self.include_roles,
                 group_size=self.group_size,
                 opponent_completer=self.opponent_completer,
+                opponent_renderer=self.opponent_renderer,
                 randomize_position=self.randomize_position,
                 prompts_ref=self.prompts_ref,
                 target=target,
