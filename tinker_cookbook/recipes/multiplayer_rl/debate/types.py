@@ -21,6 +21,13 @@ class Phase(StrEnum):
     JUDGE_VERDICT = "judge_verdict"
 
 
+# Prompt-lookup keys that extend Phase values.  Single source of truth —
+# used by prompts/, core/runtime.py, and core/visibility.py.
+PHASE_DONE: str = "done"
+TRIGGER_FINAL: str = "final"
+TRIGGER_BOUNDARY: str = "boundary"
+
+
 class ProtocolKind(StrEnum):
     SEQUENTIAL = "sequential"
     SIMULTANEOUS = "simultaneous"
@@ -121,6 +128,14 @@ class DebateState:
     @property
     def version(self) -> int:
         return len(self.transcript) + len(self.pending_simultaneous)
+
+
+def current_phase(state: DebateState) -> str:
+    """Current phase string — Phase value or PHASE_DONE if schedule exhausted."""
+    schedule = state.spec.schedule
+    if state.slot_index < len(schedule):
+        return schedule[state.slot_index].phase.value
+    return PHASE_DONE
 
 
 @dataclass(frozen=True)

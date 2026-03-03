@@ -15,7 +15,15 @@ import jinja2.meta
 import jinja2.sandbox
 import yaml
 
-from ..types import DebateState, Role
+from ..types import (
+    DebateState,
+    PHASE_DONE,
+    Phase,
+    Role,
+    TRIGGER_BOUNDARY,
+    TRIGGER_FINAL,
+    current_phase,
+)
 from ..scoring.fields import FieldSpec, _resolve_fields, validate_type_scoring, _TYPE_MAP
 from ..scoring.parsing import generate_format_instructions
 
@@ -28,6 +36,15 @@ _INJECTABLE_KEYS = ("task_prompt", "answer", "answer_a", "answer_b")
 
 _ROLE_NAMES = {"judge", "debater_a", "debater_b"}
 _TAG_NAME_RE = re.compile(r"^\w+$")
+
+# Every key that render-time lookups may request.  'default' is expanded into
+# these at compile time so no runtime fallback path exists.
+_ALL_LOOKUP_KEYS: tuple[str, ...] = (
+    *(p.value for p in Phase),
+    PHASE_DONE,
+    TRIGGER_FINAL,
+    TRIGGER_BOUNDARY,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -44,22 +61,17 @@ class DebatePrompts:
     source_ref: str
 
     def render_system(self, state: DebateState, viewer: Role) -> str:
-        """Render system template for viewer. Strict phase lookup, no silent fallback."""
+        """Render system template for viewer. Strict lookup, no fallback."""
         role = viewer.value
-        phase = _current_phase(state)
+        phase = current_phase(state)
         templates = self.system[role]
-        if phase in templates:
-            tmpl = templates[phase]
-        elif "default" in templates:
-            tmpl = templates["default"]
-        else:
+        if phase not in templates:
             raise KeyError(
                 f"No system template for role={role}, phase={phase} "
-                f"in {self.source_ref}. Add a '{phase}:' key under system.{role}, "
-                f"or add a 'default:' key. Available keys: {list(templates.keys())}"
+                f"in {self.source_ref}. Available keys: {sorted(templates.keys())}"
             )
         ctx = _build_context(state, viewer)
-        return _two_phase_render(tmpl, ctx, state, viewer)
+        return _two_phase_render(templates[phase], ctx, state, viewer)
 
     def render_question(self, state: DebateState, viewer: Role) -> str | None:
         """Render question template. None if role not in section."""
@@ -79,14 +91,10 @@ class DebatePrompts:
         if role not in self.think:
             return None
         cfg = self.think[role]
-        phase = trigger or _current_phase(state)
-        # Key-presence lookup, NOT truthiness
-        if phase in cfg:
-            val = cfg[phase]
-        elif "default" in cfg:
-            val = cfg["default"]
-        else:
+        phase = trigger or current_phase(state)
+        if phase not in cfg:
             return None
+        val = cfg[phase]
         if val is False or val is None:
             return None
         if val is True:
@@ -107,15 +115,11 @@ class DebatePrompts:
         if role not in self.prefill:
             return None
         cfg = self.prefill[role]
-        phase = trigger or _current_phase(state)
-        if phase in cfg:
-            tmpl = cfg[phase]
-        elif "default" in cfg:
-            tmpl = cfg["default"]
-        else:
+        phase = trigger or current_phase(state)
+        if phase not in cfg:
             return None
         ctx = _build_context(state, viewer)
-        result = _two_phase_render(tmpl, ctx, state, viewer)
+        result = _two_phase_render(cfg[phase], ctx, state, viewer)
         return result.strip() if result.strip() else None
 
     def render_user(
@@ -128,15 +132,10 @@ class DebatePrompts:
         phase_text = None
         if role in self.user:
             triggers = self.user[role]
-            if trigger and trigger in triggers:
-                tmpl = triggers[trigger]
-            elif "default" in triggers:
-                tmpl = triggers["default"]
-            else:
-                tmpl = None
-            if tmpl is not None:
+            phase = trigger or current_phase(state)
+            if phase in triggers:
                 ctx = _build_context(state, viewer)
-                rendered = _two_phase_render(tmpl, ctx, state, viewer)
+                rendered = _two_phase_render(triggers[phase], ctx, state, viewer)
                 if rendered.strip():
                     phase_text = rendered.strip()
 
@@ -235,20 +234,13 @@ def check_ab_symmetry(prompts: DebatePrompts) -> list[str]:
     return warnings
 
 
-def _current_phase(state: DebateState) -> str:
-    schedule = state.spec.schedule
-    if state.slot_index < len(schedule):
-        return schedule[state.slot_index].phase.value
-    return "done"
-
-
 def _sentinel(key: str) -> str:
     return f"{_SENTINEL_PREFIX}{key}{_SENTINEL_SUFFIX}"
 
 
 def _build_context(state: DebateState, viewer: Role) -> dict:
     schedule = state.spec.schedule
-    phase = _current_phase(state)
+    phase = current_phase(state)
     if state.slot_index < len(schedule):
         round_index = schedule[state.slot_index].round_index
     else:
@@ -329,6 +321,18 @@ def _scan_block_for_removed_vars(block: object, section_name: str, path: str = "
 # ---------------------------------------------------------------------------
 
 
+def _check_no_default_mixing(mapping: dict, label: str) -> None:
+    """Raise if 'default' coexists with phase-specific keys."""
+    if "default" not in mapping:
+        return
+    non_default = {k for k in mapping if k != "default"}
+    if non_default:
+        raise ValueError(
+            f"{label}: 'default' cannot coexist with phase-specific "
+            f"keys {sorted(non_default)}. Use only 'default' or explicit keys."
+        )
+
+
 def _validate(d: dict) -> None:
     if d.get("version") != 2:
         raise ValueError(f"Unsupported prompt version: {d.get('version')} (expected 2)")
@@ -339,10 +343,17 @@ def _validate(d: dict) -> None:
             if role not in _ROLE_NAMES:
                 raise ValueError(f"Unknown role '{role}' in {section}")
 
-    # System must have 'default' for every role.
+    # Phase-key mixing: 'default' cannot coexist with phase-specific keys.
+    for section_name in ("system", "user", "prefill"):
+        block = d.get(section_name, {})
+        for role, phases in block.items():
+            if isinstance(phases, dict):
+                _check_no_default_mixing(phases, f"{section_name}.{role}")
+
+    # System must have at least one template per role.
     for role, phases in d.get("system", {}).items():
-        if "default" not in phases:
-            raise ValueError(f"system.{role} missing 'default' template")
+        if not phases:
+            raise ValueError(f"system.{role}: no templates defined")
 
     # Question must have debater_a AND debater_b (hard error). Judge is optional.
     question_block = d.get("question", {})
@@ -361,6 +372,7 @@ def _validate(d: dict) -> None:
         if isinstance(val, (bool, str)):
             pass  # scalar OK
         elif isinstance(val, dict):
+            _check_no_default_mixing(val, f"think.{role}")
             for phase, v in val.items():
                 if not isinstance(v, (bool, str)):
                     raise ValueError(
@@ -431,6 +443,21 @@ def _normalize_think(block: dict) -> dict[str, dict[str, bool | jinja2.Template]
     return result
 
 
+def _expand_defaults(compiled: dict[str, dict], section_name: str) -> None:
+    """Expand sole 'default' key into all lookup keys at compile time.
+
+    After expansion no 'default' key remains — render-time lookups are strict.
+    Precondition: _validate() already rejected mixed default + specific keys.
+    """
+    for role, phases in compiled.items():
+        if "default" not in phases:
+            continue
+        assert len(phases) == 1, f"_validate should have caught mixed keys in {section_name}.{role}"
+        default_val = phases.pop("default")
+        for key in _ALL_LOOKUP_KEYS:
+            phases[key] = default_val
+
+
 def _parse_fields(block: dict) -> dict[str, dict[str, dict[str, FieldSpec]]]:
     result: dict[str, dict[str, dict[str, FieldSpec]]] = {}
     for role, triggers in block.items():
@@ -462,10 +489,14 @@ def resolve_prompts(ref: str) -> DebatePrompts:
     _validate(d)
 
     system = _compile_templates(d.get("system", {}))
+    _expand_defaults(system, "system")
     user = _compile_templates(d.get("user", {}))
+    _expand_defaults(user, "user")
     question = _compile_flat_templates(d.get("question", {}))
     think = _normalize_think(d.get("think", {}))
+    _expand_defaults(think, "think")
     prefill = _compile_templates(d.get("prefill", {}))
+    _expand_defaults(prefill, "prefill")
     fields = _parse_fields(d.get("fields", {}))
 
     prompts = DebatePrompts(

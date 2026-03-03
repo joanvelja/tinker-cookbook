@@ -39,7 +39,6 @@ user:
       3. You may change your answer ONLY if your opponent identified a
          genuine, verifiable error in your reasoning. Do not change your
          answer just because the opponent sounds confident.
-    default: ""
   debater_b:
     propose: >-
       Choose the answer you believe is correct and give clear, precise
@@ -52,7 +51,6 @@ user:
       3. You may change your answer ONLY if your opponent identified a
          genuine, verifiable error in your reasoning. Do not change your
          answer just because the opponent sounds confident.
-    default: ""
   judge:
     final: ""
 

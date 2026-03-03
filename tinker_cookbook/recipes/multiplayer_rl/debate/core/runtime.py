@@ -15,6 +15,8 @@ from ..scoring.parsing import extract_fields
 from ..plugins import JudgeCallback, StepRewardFn
 from ..prompts import resolve_prompts
 from ..types import (
+    TRIGGER_BOUNDARY,
+    TRIGGER_FINAL,
     DebateSnapshot,
     DebateState,
     JudgeRequest,
@@ -28,8 +30,8 @@ from .visibility import get_visible_messages
 
 # Map schedule phase values to YAML trigger keys where they differ.
 _PHASE_TO_TRIGGER: dict[str, str] = {
-    Phase.JUDGE_VERDICT.value: "final",
-    Phase.JUDGE_QUERY.value: "boundary",
+    Phase.JUDGE_VERDICT.value: TRIGGER_FINAL,
+    Phase.JUDGE_QUERY.value: TRIGGER_BOUNDARY,
 }
 
 # Type aliases matching tinker_cookbook.rl.types
@@ -218,7 +220,7 @@ class DebateRuntime:
                 # Handle boundary: judge callback (before reward computation).
                 _judge_wall_s = 0.0
                 if result.boundary_reached and self._judge_callback is not None:
-                    request = JudgeRequest(state=self._state, trigger="boundary")
+                    request = JudgeRequest(state=self._state, trigger=TRIGGER_BOUNDARY)
                     _jt0 = time.monotonic()
                     decision = await self._judge_callback.on_boundary(request)
                     _judge_wall_s += time.monotonic() - _jt0
@@ -227,7 +229,7 @@ class DebateRuntime:
 
                 # Handle episode end: judge final callback.
                 if result.episode_done and self._judge_callback is not None:
-                    request = JudgeRequest(state=self._state, trigger="final")
+                    request = JudgeRequest(state=self._state, trigger=TRIGGER_FINAL)
                     _jt0 = time.monotonic()
                     outcome = await self._judge_callback.on_final(request)
                     _judge_wall_s += time.monotonic() - _jt0

@@ -323,25 +323,23 @@ def test_migration_lint_direct():
 # ---------------------------------------------------------------------------
 
 
-def test_phase_fallback():
-    """Unknown phase falls back to 'default' template."""
+def test_phase_expanded_from_default():
+    """'default' is expanded to all phases at compile time — no runtime fallback."""
     p = resolve_prompts("default")
-    # Phase.CRITIQUE has no specific template; should fall back to default.
     spec = _make_spec(num_rounds=2)
-    # slot_index=2 is round 1, phase=CRITIQUE
+    # slot_index=2 is round 1, phase=CRITIQUE — expanded from 'default'
     state = _make_state(spec=spec, slot_index=2)
     sys_msg = p.render_system(state, Role.DEBATER_A)
     assert "debater_a" in sys_msg
-    # In V2, assigned answer is in question, not system
     q_msg = p.render_question(state, Role.DEBATER_A)
     assert "Your assigned position: Yes" in q_msg
 
 
 def test_done_state_renders():
-    """Schedule-exhausted (slot_index past end) uses 'default' without crash."""
+    """Schedule-exhausted (slot_index past end) renders via expanded 'done' key."""
     p = resolve_prompts("default")
     spec = _make_spec(num_rounds=1)
-    # 1 round = 2 slots (A, B), so slot_index=2 is past the end
+    # 1 round = 2 slots (A, B), so slot_index=2 is past the end → phase="done"
     state = _make_state(spec=spec, slot_index=2)
     sys_msg = p.render_system(state, Role.JUDGE)
     assert "judge" in sys_msg.lower()
@@ -510,14 +508,14 @@ def test_think_absent():
     assert p.get_think_instruction(state, Role.JUDGE) is None
 
 
-def test_think_falsy_normalization():
-    """Per-phase think: {default: true, critique: false} -> critique returns None."""
+def test_think_per_phase():
+    """Per-phase think: {propose: true, critique: false} -> critique returns None."""
     path = _tmp_yaml(
         _v2_yaml(
             extra="""\
 think:
   debater_a:
-    default: true
+    propose: true
     critique: false
 """
         )
@@ -525,7 +523,7 @@ think:
     p = resolve_prompts(path)
     spec = _make_spec(num_rounds=2)
 
-    # slot 0 = propose -> should use default (true)
+    # slot 0 = propose -> explicit true
     state_propose = _make_state(spec=spec, slot_index=0)
     assert p.get_think_instruction(state_propose, Role.DEBATER_A) is not None
 
@@ -726,10 +724,10 @@ def test_ab_symmetry_warning(caplog):
             extra="""\
 user:
   debater_a:
-    default: "a"
+    propose: "a"
     critique: "a critique"
   debater_b:
-    default: "b"
+    propose: "b"
 """
         )
     )
@@ -777,4 +775,56 @@ def test_think_invalid_type_rejected():
     """think with invalid type (list) is rejected."""
     path = _tmp_yaml(_v2_yaml(extra="think:\n  debater_a: [1, 2]\n"))
     with pytest.raises(ValueError, match="expected bool, str, or dict"):
+        resolve_prompts(path)
+
+
+# ---------------------------------------------------------------------------
+# Default mixing rejection
+# ---------------------------------------------------------------------------
+
+
+def test_mixed_default_rejected_system():
+    """'default' alongside phase-specific keys in system raises ValueError."""
+    path = _tmp_yaml("""\
+version: 2
+system:
+  judge:
+    default: "j"
+    propose: "j propose"
+  debater_a:
+    default: "a"
+  debater_b:
+    default: "b"
+question:
+  debater_a: "q"
+  debater_b: "q"
+""")
+    with pytest.raises(ValueError, match="cannot coexist"):
+        resolve_prompts(path)
+
+
+def test_mixed_default_rejected_user():
+    """'default' alongside phase-specific keys in user raises ValueError."""
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
+user:
+  debater_a:
+    default: ""
+    propose: "hello"
+  debater_b:
+    default: ""
+"""
+        )
+    )
+    with pytest.raises(ValueError, match="cannot coexist"):
+        resolve_prompts(path)
+
+
+def test_mixed_default_rejected_think():
+    """'default' alongside phase-specific keys in think raises ValueError."""
+    path = _tmp_yaml(
+        _v2_yaml(extra="think:\n  debater_a:\n    default: true\n    critique: false\n")
+    )
+    with pytest.raises(ValueError, match="cannot coexist"):
         resolve_prompts(path)

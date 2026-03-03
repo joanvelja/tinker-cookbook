@@ -10,7 +10,7 @@ from collections.abc import Callable
 from tinker_cookbook.renderers import Message
 
 from ..prompts import resolve_prompts
-from ..types import DebateState, Role, TurnSlot, Utterance, VisibilityPolicy
+from ..types import DebateState, Role, TurnSlot, Utterance, VisibilityPolicy, current_phase
 
 VisibilityFn = Callable[[DebateState, Role], list[Utterance]]
 REGISTRY: dict[VisibilityPolicy, VisibilityFn] = {}
@@ -166,14 +166,6 @@ def get_visible_messages(state: DebateState, viewer: Role) -> tuple[Message, ...
     return tuple(msgs)
 
 
-def _current_phase(state: DebateState) -> str:
-    """Get current phase string for the state."""
-    schedule = state.spec.schedule
-    if state.slot_index < len(schedule):
-        return schedule[state.slot_index].phase.value
-    return "done"
-
-
 def build_generation_messages(
     state: DebateState,
     viewer: Role,
@@ -203,7 +195,7 @@ def build_generation_messages(
 
     # 3. Resolve trigger
     if trigger is None:
-        trigger = _current_phase(state)
+        trigger = current_phase(state)
 
     # 4. Append instruction (phase + think + fields)
     user_content = prompts.render_user(state, viewer, trigger=trigger)

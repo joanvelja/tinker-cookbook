@@ -19,11 +19,9 @@ user:
   debater_a:
     propose: "Present your opening argument. Open with a bold thesis statement. Be clear. Make the Arbiter take notice."
     critique: "Your opponent has spoken. Dismantle their argument point by point. Find the weakest link and strike there. Be devastating but fair -- never strawman."
-    default: ""
   debater_b:
     propose: "Present your opening argument. Start with a surprising angle no one expects. Make it unforgettable."
     critique: "Your opponent's argument is on the table. Run experiments on it -- find the assumptions, test them to destruction, propose the devastating counterexample."
-    default: ""
 
 fields:
   judge:
