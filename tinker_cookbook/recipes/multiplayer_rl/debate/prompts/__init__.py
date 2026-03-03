@@ -44,11 +44,20 @@ class DebatePrompts:
     source_ref: str
 
     def render_system(self, state: DebateState, viewer: Role) -> str:
-        """Render system template for viewer. Phase lookup with fallback to 'default'."""
+        """Render system template for viewer. Strict phase lookup, no silent fallback."""
         role = viewer.value
         phase = _current_phase(state)
         templates = self.system[role]
-        tmpl = templates.get(phase) or templates["default"]
+        if phase in templates:
+            tmpl = templates[phase]
+        elif "default" in templates:
+            tmpl = templates["default"]
+        else:
+            raise KeyError(
+                f"No system template for role={role}, phase={phase} "
+                f"in {self.source_ref}. Add a '{phase}:' key under system.{role}, "
+                f"or add a 'default:' key. Available keys: {list(templates.keys())}"
+            )
         ctx = _build_context(state, viewer)
         return _two_phase_render(tmpl, ctx, state, viewer)
 
@@ -99,8 +108,11 @@ class DebatePrompts:
             return None
         cfg = self.prefill[role]
         phase = trigger or _current_phase(state)
-        tmpl = cfg.get(phase) or cfg.get("default")
-        if tmpl is None:
+        if phase in cfg:
+            tmpl = cfg[phase]
+        elif "default" in cfg:
+            tmpl = cfg["default"]
+        else:
             return None
         ctx = _build_context(state, viewer)
         result = _two_phase_render(tmpl, ctx, state, viewer)

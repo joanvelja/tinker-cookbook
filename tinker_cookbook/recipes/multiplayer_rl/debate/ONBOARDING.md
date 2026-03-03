@@ -122,7 +122,7 @@ resolve_prompts(ref)           prompts/__init__.py:432
     │  LRU-cached YAML load + Jinja2 compile
     ▼
 DebatePrompts.render_system(role, phase, ctx)
-    │  lookup: cfg.get(phase) or cfg.get("default")  ← SILENT FALLBACK
+    │  lookup: phase key, then "default" key, else KeyError
     ▼
 build_generation_messages(state, role, trigger)     core/visibility.py:177
     │  system + question + visible transcript + phase instruction + prefill
@@ -166,7 +166,7 @@ This script uses `argparse` (not `chz`), so it takes `--flag value` syntax.
 
 3. **Frozen-opponent constraint** (`env.py:356-365`): validates `all_schedule_roles ⊆ {DEBATER_A, DEBATER_B}`. Judge turns are callbacks, not schedule slots. Your protocol must not add judge turns to the schedule.
 
-4. **`prompts/*.yaml`** -- Add phase entries for your protocol's phases. **GOTCHA**: if a phase key is missing from your YAML, `render_system` silently falls back to the `default` key. This means you won't get an error -- you'll get the wrong prompt. Verify with:
+4. **`prompts/*.yaml`** -- Add phase entries for your protocol's phases. `render_system` raises `KeyError` if neither the phase key nor a `default` key exists. If your protocol uses phases that existing YAML configs don't cover, you'll get a clear error. Verify prompt wiring with:
    ```bash
    uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.dump_io \
      --prompts your_template --protocol your_protocol
