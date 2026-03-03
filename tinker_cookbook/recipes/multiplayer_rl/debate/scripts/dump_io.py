@@ -264,22 +264,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prompts", default="galaxy_brain", help="Prompts ref (default: galaxy_brain)"
     )
-    parser.add_argument(
-        "--protocol", default="sequential", choices=["sequential", "simultaneous", "hybrid"]
-    )
+    parser.add_argument("--protocol", default="sequential", choices=[k.value for k in ProtocolKind])
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--open-reasoning", action="store_true")
     args = parser.parse_args()
 
-    protocol = {
-        "sequential": ProtocolKind.SEQUENTIAL,
-        "simultaneous": ProtocolKind.SIMULTANEOUS,
-        "hybrid": ProtocolKind.HYBRID,
-    }[args.protocol]
-
     dump_debate(
         prompts_ref=args.prompts,
-        protocol_kind=protocol,
+        protocol_kind=ProtocolKind(args.protocol),
         num_rounds=args.rounds,
         open_reasoning=args.open_reasoning,
     )

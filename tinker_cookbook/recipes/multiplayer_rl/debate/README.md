@@ -17,12 +17,12 @@ uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train
 
 # Train with custom config (chz entrypoint)
 uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train \
-  --model_name Qwen/Qwen3-8B \
-  --batch_size 8 \
-  --group_size 4 \
-  --learning_rate 3e-5 \
-  --num_rounds 2 \
-  --prompts_ref scientific_mcq
+  model_name=Qwen/Qwen3-8B \
+  batch_size=8 \
+  group_size=4 \
+  learning_rate=3e-5 \
+  num_rounds=2 \
+  prompts_ref=scientific_mcq
 
 # Run tests (offline, no API needed)
 uv run pytest tinker_cookbook/recipes/multiplayer_rl/debate/ -x -q
