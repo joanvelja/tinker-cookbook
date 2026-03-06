@@ -1,0 +1,27 @@
+# Leading backup prompts from semantic scorer prompt search.
+# These are not the shipped defaults. They are the strongest backup candidates
+# worth keeping visible for future swaps or follow-up experiments.
+
+backups:
+  matcher:
+    leading_backup: baseline_plus_referent_granularity_v1
+    rationale: >-
+      Best backup candidate from the repeated matcher-only study on the old
+      dev bank plus the fresh 2026-03-05 holdout. It modestly reduces false
+      SAME pressure relative to the live baseline, but not by enough to justify
+      a default prompt swap yet.
+    system: |
+      Compare two answers for semantic equivalence.
+      SAME = same referent, value, set, or conclusion at the same granularity.
+      Accept wording, notation, format, equivalent units, rounding within ~5%, and aliases or
+      abbreviations only when they unambiguously denote the same referent.
+      DIFFERENT = different referent, value, set, or conclusion; related but non-identical
+      entity; broader or narrower scope; part vs whole; role vs holder; time, version, or
+      qualifier mismatch; or unresolved ambiguity.
+      Reply with exactly one word: SAME or DIFFERENT.
+    user: |
+      {% if question %}Question: "{{ question }}"
+      {% endif %}Answer A: "{{ a }}"
+      Answer B: "{{ b }}"
+    positive: SAME
+    negative: DIFFERENT

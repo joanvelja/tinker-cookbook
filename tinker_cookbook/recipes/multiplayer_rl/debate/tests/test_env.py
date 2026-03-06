@@ -26,6 +26,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     JudgeRequest,
     ProtocolKind,
     Role,
+    ScoringMode,
 )
 from tinker_cookbook.renderers import Message
 
@@ -113,14 +114,14 @@ def test_group_builder_compute_rewards_with_outcome_fn():
         outcome_reward_fn=outcome_fn,
     )
     envs = asyncio.get_event_loop().run_until_complete(builder.make_envs())
-    assert builder._runtime is not None
+    assert len(builder._runtimes) == 1
 
     # Set outcome on state.
     outcome = DebateOutcome(
         winner=Role.DEBATER_A,
         scores_by_role={Role.DEBATER_A: 1.0, Role.DEBATER_B: -1.0},
     )
-    builder._runtime._state = replace(builder._runtime._state, outcome=outcome)
+    builder._runtimes[0]._state = replace(builder._runtimes[0]._state, outcome=outcome)
 
     fake_trajs = [MagicMock() for _ in envs]
     rewards = asyncio.get_event_loop().run_until_complete(
@@ -188,6 +189,7 @@ def test_debate_dataset_len():
         renderer=MagicMock(),
         protocol_kind=ProtocolKind.SEQUENTIAL,
         num_rounds=1,
+        scoring_mode=ScoringMode.MCQ,
     )
     assert len(ds) == 2  # ceil(3/2)
 
@@ -200,6 +202,7 @@ def test_debate_dataset_get_batch():
         renderer=MagicMock(),
         protocol_kind=ProtocolKind.SEQUENTIAL,
         num_rounds=1,
+        scoring_mode=ScoringMode.MCQ,
     )
     batch = ds.get_batch(0)
     assert len(batch) == 2
@@ -621,3 +624,149 @@ def test_frozen_opponent_simultaneous():
     assert env.runtime.state.done
     assert len(env.runtime.state.transcript) == 4  # 2 rounds x 2 debaters
     assert completer.call_count == 2
+
+
+# --- Self-play tests ---
+
+
+def test_selfplay_make_envs():
+    """Self-play with group_size=3 creates 6 envs (3 runtimes x 2 roles), pairs share runtime."""
+    renderer = MockRenderer()
+    builder = DebateGroupBuilder(
+        task_prompt="Q",
+        answer_a="A",
+        answer_b="B",
+        renderer=renderer,
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=1,
+        group_size=3,
+    )
+    envs = _run(builder.make_envs())
+    assert len(envs) == 6  # 3 runtimes x 2 roles
+    assert len(builder._runtimes) == 3
+
+    # Each pair of envs shares a runtime.
+    for i in range(3):
+        env_a = envs[2 * i]
+        env_b = envs[2 * i + 1]
+        assert isinstance(env_a, DebateEnv)
+        assert isinstance(env_b, DebateEnv)
+        assert env_a.runtime is env_b.runtime
+        assert {env_a.role, env_b.role} == {Role.DEBATER_A, Role.DEBATER_B}
+
+    # All runtimes are distinct.
+    runtimes = [e.runtime for e in envs if isinstance(e, DebateEnv)]
+    runtime_ids = [id(runtimes[0]), id(runtimes[2]), id(runtimes[4])]
+    assert len(set(runtime_ids)) == 3
+
+
+def test_selfplay_rollout():
+    """Self-play rollout: both agents take turns concurrently via gather."""
+    renderer = MockRenderer()
+    builder = DebateGroupBuilder(
+        task_prompt="Q",
+        answer_a="A",
+        answer_b="B",
+        renderer=renderer,
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=1,
+        group_size=1,
+        judge_callback=MockJudge(),
+    )
+    envs = _run(builder.make_envs())
+    assert len(envs) == 2
+    env_a, env_b = envs
+    assert isinstance(env_a, DebateEnv)
+    assert isinstance(env_b, DebateEnv)
+    assert env_a.runtime is env_b.runtime
+
+    async def _drive(env: DebateEnv) -> list:
+        await env.initial_observation()
+        results = []
+        while True:
+            tokens = [ord(c) for c in f"I am {env.role.value}"]
+            result = await env.step(tokens)
+            results.append(result)
+            if result.episode_done:
+                break
+        return results
+
+    async def _run_both():
+        return await asyncio.gather(_drive(env_a), _drive(env_b))
+
+    results_a, results_b = _run(_run_both())
+    assert results_a[-1].episode_done
+    assert results_b[-1].episode_done
+    runtime = env_a.runtime
+    assert runtime.state.done
+    # Sequential 1-round: A then B = 2 utterances.
+    assert len(runtime.state.transcript) == 2
+    assert runtime.state.transcript[0].role == Role.DEBATER_A
+    assert runtime.state.transcript[1].role == Role.DEBATER_B
+
+
+def test_selfplay_compute_group_rewards():
+    """Self-play rewards are zero-sum pairs, no identity remapping."""
+    renderer = MockRenderer()
+
+    def outcome_fn(outcome: DebateOutcome) -> Mapping[Role, float]:
+        return outcome.scores_by_role
+
+    builder = DebateGroupBuilder(
+        task_prompt="Q",
+        answer_a="A",
+        answer_b="B",
+        renderer=renderer,
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=1,
+        group_size=2,
+        outcome_reward_fn=outcome_fn,
+        judge_callback=MockJudge(),
+    )
+    envs = _run(builder.make_envs())
+    assert len(envs) == 4  # 2 runtimes x 2 roles
+
+    async def _drive(env: DebateEnv) -> None:
+        await env.initial_observation()
+        while True:
+            tokens = [ord(c) for c in f"I am {env.role.value}"]
+            result = await env.step(tokens)
+            if result.episode_done:
+                break
+
+    async def _run_all():
+        # Gather per-runtime pairs concurrently.
+        tasks = []
+        for i in range(0, len(envs), 2):
+            tasks.append(asyncio.gather(_drive(envs[i]), _drive(envs[i + 1])))
+        await asyncio.gather(*tasks)
+
+    _run(_run_all())
+
+    fake_trajs = [MagicMock() for _ in envs]
+    rewards = _run(builder.compute_group_rewards(fake_trajs, envs))
+
+    # MockJudge: A wins with {A: 1.0, B: 0.0}.
+    for env, (reward, metrics) in zip(envs, rewards):
+        assert isinstance(env, DebateEnv)
+        expected = 1.0 if env.role == Role.DEBATER_A else 0.0
+        assert reward == expected
+        # Self-play mode: no identity remap (opponent_completer is None).
+        assert not any(k.startswith("id/") for k in metrics)
+
+
+def test_selfplay_randomize_position_guard():
+    """randomize_position=True raises ValueError in self-play mode."""
+    renderer = MockRenderer()
+    builder = DebateGroupBuilder(
+        task_prompt="Q",
+        answer_a="A",
+        answer_b="B",
+        renderer=renderer,
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=1,
+        randomize_position=True,
+        # No opponent_completer → self-play mode.
+    )
+    with pytest.raises(ValueError, match="randomize_position"):
+        _run(builder.make_envs())

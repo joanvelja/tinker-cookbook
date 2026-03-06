@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +12,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_sc
 from tinker_cookbook.recipes.multiplayer_rl.debate.eval.dataset_adapter import (
     DatasetAdapter,
     GPQAAdapter,
+    GPQAOpenEndedAdapter,
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
     _identity_metric_keys,
@@ -18,9 +20,11 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
     _state_to_json,
     _STORE_KEY,
     _TRAINED_ROLE_KEY,
+    debate_eval,
     debate_scorer,
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.env import IDENTITY_REMAP_BASES
+from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.providers import DebateScorerBuilder
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
     DebateSpec,
@@ -29,6 +33,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     Utterance,
 )
 
@@ -177,6 +182,88 @@ def test_gpqa_adapter_samples():
         assert s.metadata["answer_b"] in ("A", "B", "C", "D")
         assert s.metadata["answer_a"] != s.metadata["answer_b"]
         assert s.metadata["source"] == "gpqa_diamond"
+
+
+def test_gpqa_open_ended_adapter_samples(monkeypatch):
+    rows = [
+        {
+            "question": "What causes tides?",
+            "answer": "The Moon's gravitational pull.",
+            "record_id": "rec-b",
+            "domain": "physics",
+            "subdomain": "mechanics",
+            "writer_difficulty": "hard",
+            "expert_accuracy": 0.8,
+            "non_expert_accuracy": 0.2,
+            "conversion_type": "rewrite",
+            "flag": "",
+        },
+        {
+            "question": "Why is the sky blue?",
+            "answer": "Rayleigh scattering.",
+            "record_id": "rec-a",
+            "domain": "physics",
+            "subdomain": "optics",
+            "writer_difficulty": "medium",
+            "expert_accuracy": 0.9,
+            "non_expert_accuracy": 0.3,
+            "conversion_type": "rewrite",
+            "flag": "",
+        },
+    ]
+
+    def _fake_load_dataset(dataset_name: str, subset: str, split: str):
+        assert dataset_name == "joanvelja/gpqa-open-ended"
+        assert subset == "extended"
+        assert split == "train"
+        return rows
+
+    monkeypatch.setattr("datasets.load_dataset", _fake_load_dataset)
+
+    adapter = GPQAOpenEndedAdapter(
+        subset="extended",
+        split="train",
+        record_ids=["rec-a", "rec-b"],
+    )
+    samples = adapter.to_samples()
+
+    assert [sample.metadata["record_id"] for sample in samples] == ["rec-a", "rec-b"]
+    assert [sample.input for sample in samples] == ["Why is the sky blue?", "What causes tides?"]
+    assert [sample.target for sample in samples] == [
+        "Rayleigh scattering.",
+        "The Moon's gravitational pull.",
+    ]
+    for sample in samples:
+        assert sample.metadata["answer_a"] == ""
+        assert sample.metadata["answer_b"] == ""
+        assert sample.metadata["source"] == "gpqa_open_ended"
+    assert adapter.resolve_scoring_mode() == ScoringMode.OPEN_ENDED
+
+
+def test_gpqa_open_ended_adapter_missing_record_id(monkeypatch):
+    rows = [
+        {
+            "question": "Q",
+            "answer": "A",
+            "record_id": "rec-present",
+            "domain": "physics",
+            "subdomain": "optics",
+            "writer_difficulty": "medium",
+            "expert_accuracy": 0.9,
+            "non_expert_accuracy": 0.3,
+            "conversion_type": "rewrite",
+            "flag": "",
+        }
+    ]
+
+    monkeypatch.setattr(
+        "datasets.load_dataset",
+        lambda dataset_name, subset, split: rows,
+    )
+
+    adapter = GPQAOpenEndedAdapter(record_ids=["rec-missing"])
+    with pytest.raises(ValueError, match="could not find requested record_ids"):
+        adapter.to_samples()
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +497,23 @@ def _dummy_adapter() -> MagicMock:
             metadata={"answer_a": "A", "answer_b": "B", "source": "test"},
         ),
     ]
+    adapter.resolve_scoring_mode.return_value = ScoringMode.MCQ
+    return adapter
+
+
+def _dummy_open_ended_adapter() -> MagicMock:
+    """Adapter mock for OPEN_ENDED eval validation."""
+    from inspect_ai.dataset import Sample
+
+    adapter = MagicMock(spec=DatasetAdapter)
+    adapter.to_samples.return_value = [
+        Sample(
+            input="Explain why water freezes.",
+            target="At 0C under standard pressure.",
+            metadata={"answer_a": "", "answer_b": "", "source": "test"},
+        ),
+    ]
+    adapter.resolve_scoring_mode.return_value = ScoringMode.OPEN_ENDED
     return adapter
 
 
@@ -432,6 +536,159 @@ def _patch_evaluator_externals():
     stack.enter_context(patch(f"{_EVAL_MODULE}.tinker.ServiceClient", return_value=MagicMock()))
 
     return stack, mock_eval
+
+
+@pytest.mark.asyncio
+async def test_run_eval_routes_gpqa_open_ended_to_adapter(monkeypatch):
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval import run_eval
+
+    fake_service = MagicMock()
+    fake_service.create_sampling_client.return_value = MagicMock()
+    monkeypatch.setattr(run_eval.tinker, "ServiceClient", lambda base_url=None: fake_service)
+    renderer_calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        run_eval.model_info,
+        "get_recommended_renderer_name",
+        lambda model_name, reasoning_effort=None: (
+            renderer_calls.append((model_name, reasoning_effort)) or "gpt_oss_high_reasoning"
+        ),
+    )
+
+    captured: dict[str, object] = {}
+
+    class _FakeBuilder:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __call__(self):
+            async def _evaluator(_sampling_client):
+                return {"accuracy.debater_a": 1.0}
+
+            return _evaluator
+
+    monkeypatch.setattr(run_eval, "DebateInspectEvaluatorBuilder", _FakeBuilder)
+
+    config = run_eval.Config(
+        model_name="openai/gpt-oss-120b",
+        dataset="gpqa_open_ended",
+        dataset_subset="extended",
+        dataset_split="train",
+        record_ids=["rec-test-1", "rec-test-2"],
+        prompts_ref="default",
+        artifacts_dir="artifacts/debate/test-open-ended",
+        debater_reasoning_effort="high",
+        judge_reasoning_effort="medium",
+    )
+
+    await run_eval.main(config)
+
+    adapter = captured["adapter"]
+    assert isinstance(adapter, GPQAOpenEndedAdapter)
+    assert adapter.resolve_scoring_mode() == ScoringMode.OPEN_ENDED
+    assert captured["log_dir"] == "artifacts/debate/test-open-ended"
+    assert captured["debater_reasoning_effort"] == "high"
+    assert captured["judge_reasoning_effort"] == "medium"
+    assert renderer_calls == [("openai/gpt-oss-120b", "high")]
+
+
+@pytest.mark.asyncio
+async def test_evaluator_uses_actor_specific_reasoning_effort(monkeypatch):
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+
+    adapter = _dummy_adapter()
+    renderer_calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        "tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator.model_info.get_recommended_renderer_name",
+        lambda model_name, reasoning_effort=None: (
+            renderer_calls.append((model_name, reasoning_effort)) or "gpt_oss_reasoning"
+        ),
+    )
+
+    builder = DebateInspectEvaluatorBuilder(
+        adapter=adapter,
+        model_name="openai/gpt-oss-120b",
+        judge_model="openai/gpt-oss-20b",
+        debater_reasoning_effort="high",
+        judge_reasoning_effort="medium",
+        log_evals_every=1,
+    )
+    evaluator = builder()
+
+    stack, _mock_eval = _patch_evaluator_externals()
+    with stack:
+        await evaluator(MagicMock())
+
+    assert renderer_calls == [
+        ("openai/gpt-oss-120b", "high"),
+        ("openai/gpt-oss-20b", "medium"),
+    ]
+
+
+def test_smoke_gpqa_open_ended_passes_explicit_open_ended_mode(monkeypatch):
+    from inspect_ai.dataset import Sample
+
+    from tinker_cookbook.recipes.multiplayer_rl.debate.scripts import smoke_gpqa_open_ended
+
+    class _FakeAdapter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def to_samples(self):
+            return [
+                Sample(
+                    input="Which city is nicknamed the Big Apple?",
+                    target="New York City",
+                    metadata={"record_id": "rec-test-1"},
+                )
+            ]
+
+        def resolve_scoring_mode(self):
+            return ScoringMode.OPEN_ENDED
+
+    captured: dict[str, object] = {}
+
+    def _fake_dataset(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after dataset construction")
+
+    monkeypatch.setattr(smoke_gpqa_open_ended, "GPQAOpenEndedAdapter", _FakeAdapter)
+    monkeypatch.setattr(smoke_gpqa_open_ended, "DebateDataset", _fake_dataset)
+    monkeypatch.setattr(smoke_gpqa_open_ended.tinker, "ServiceClient", lambda base_url=None: MagicMock(create_sampling_client=lambda **kwargs: MagicMock()))
+    monkeypatch.setattr(
+        smoke_gpqa_open_ended,
+        "get_recommended_renderer_name",
+        lambda model_name, reasoning_effort=None: "gpt_oss_reasoning",
+    )
+    monkeypatch.setattr(smoke_gpqa_open_ended, "get_renderer", lambda *_args, **_kwargs: MagicMock())
+    monkeypatch.setattr(smoke_gpqa_open_ended, "get_tokenizer", lambda *_args, **_kwargs: MagicMock())
+    monkeypatch.setattr(smoke_gpqa_open_ended, "TinkerTokenCompleter", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(smoke_gpqa_open_ended, "TinkerMessageCompleter", lambda **_kwargs: MagicMock())
+
+    class _FakeScorerBuilder:
+        def __init__(self, **_kwargs):
+            pass
+
+        def build(self, *, usage_tracker=None):
+            return MagicMock()
+
+    monkeypatch.setattr(smoke_gpqa_open_ended, "DebateScorerBuilder", _FakeScorerBuilder)
+    monkeypatch.setattr(smoke_gpqa_open_ended, "RecordingAnswerJudgeClient", lambda inner: inner)
+
+    args = smoke_gpqa_open_ended.parse_args(
+        [
+            "--record-id",
+            "rec-test-1",
+            "--artifacts-dir",
+            "artifacts/debate/test-smoke-open-ended",
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="stop after dataset construction"):
+        asyncio.run(smoke_gpqa_open_ended.run(args))
+
+    assert captured["scoring_mode"] == ScoringMode.OPEN_ENDED
 
 
 @pytest.mark.asyncio
@@ -825,3 +1082,152 @@ def test_identity_metric_keys_consistent_with_remap_bases():
         assert f"id/{base}.opponent" in keys
     # 1 (trained_role_is_a) + 2 * len(IDENTITY_REMAP_BASES)
     assert len(keys) == 1 + 2 * len(IDENTITY_REMAP_BASES)
+
+
+# ---------------------------------------------------------------------------
+# 14. Self-play eval wiring in build_config
+# ---------------------------------------------------------------------------
+
+
+def test_build_config_selfplay_sets_eval_opponent_none():
+    """build_config with self_play=True sets opponent_model=None on default eval builder."""
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+    from tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train import (
+        CLIConfig,
+        build_config,
+    )
+
+    cli = CLIConfig(self_play=True, opponent_model="Qwen/Qwen3-4B-Instruct-2507")
+    config = build_config(cli)
+
+    eval_builder = config.evaluator_builders[0]
+    assert isinstance(eval_builder, DebateInspectEvaluatorBuilder)
+    assert eval_builder.opponent_model is None
+    assert eval_builder.randomize_position is False
+
+
+def test_build_config_frozen_opp_keeps_eval_opponent():
+    """build_config with self_play=False passes opponent_model through to eval builder."""
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+    from tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train import (
+        CLIConfig,
+        build_config,
+    )
+
+    cli = CLIConfig(self_play=False, opponent_model="Qwen/Qwen3-4B-Instruct-2507")
+    config = build_config(cli)
+
+    eval_builder = config.evaluator_builders[0]
+    assert isinstance(eval_builder, DebateInspectEvaluatorBuilder)
+    assert eval_builder.opponent_model == "Qwen/Qwen3-4B-Instruct-2507"
+
+
+def test_build_config_custom_eval_respected_in_selfplay():
+    """User-provided inspect_eval is respected even during self-play training."""
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+    from tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train import (
+        CLIConfig,
+        build_config,
+    )
+
+    custom_eval = DebateInspectEvaluatorBuilder(
+        adapter=GPQAAdapter(free_debate=True, limit=5),
+        opponent_model="some/frozen-model",
+    )
+    cli = CLIConfig(self_play=True, inspect_eval=custom_eval)
+    config = build_config(cli)
+
+    eval_builder = config.evaluator_builders[0]
+    assert isinstance(eval_builder, DebateInspectEvaluatorBuilder)
+    # Custom eval keeps its own opponent_model (user wants frozen-opp eval for comparison).
+    assert eval_builder.opponent_model == "some/frozen-model"
+
+
+def test_debate_eval_open_ended_requires_scorer_client():
+    adapter = _dummy_open_ended_adapter()
+
+    with pytest.raises(ValueError, match="requires a scorer_client"):
+        debate_eval(
+            adapter=adapter,
+            sampling_client=MagicMock(),
+            opponent_client=MagicMock(),
+            judge_client=MagicMock(),
+            prompts_ref=(
+                "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/semantic_prompts.yaml"
+            ),
+            scorer_client=None,
+        )
+
+
+def test_debate_eval_open_ended_requires_binary_prompt_blocks():
+    adapter = _dummy_open_ended_adapter()
+
+    with pytest.raises(ValueError, match="requires _grader"):
+        debate_eval(
+            adapter=adapter,
+            sampling_client=MagicMock(),
+            opponent_client=MagicMock(),
+            judge_client=MagicMock(),
+            prompts_ref=(
+                "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/"
+                "semantic_prompts_missing_grader.yaml"
+            ),
+            scorer_client=MagicMock(),
+        )
+
+
+def test_build_config_scorer_parallelism_defaults_to_scorer_builder_connections():
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+    from tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train import (
+        CLIConfig,
+        build_config,
+    )
+
+    cli = CLIConfig(
+        scorer_builder=DebateScorerBuilder(
+            provider="openai_compatible",
+            model="gpt-5-mini",
+            max_connections=17,
+        )
+    )
+    config = build_config(cli)
+
+    eval_builder = config.evaluator_builders[0]
+    assert isinstance(eval_builder, DebateInspectEvaluatorBuilder)
+    assert eval_builder.scorer_parallelism == 17
+
+
+def test_build_config_preserves_explicit_inspect_eval_scorer_parallelism_override():
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+    from tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train import (
+        CLIConfig,
+        build_config,
+    )
+
+    custom_eval = DebateInspectEvaluatorBuilder(
+        adapter=GPQAAdapter(free_debate=True, limit=5),
+        scorer_parallelism=9,
+    )
+    cli = CLIConfig(
+        scorer_builder=DebateScorerBuilder(
+            provider="openai_compatible",
+            model="gpt-5-mini",
+            max_connections=17,
+        ),
+        inspect_eval=custom_eval,
+    )
+    config = build_config(cli)
+
+    eval_builder = config.evaluator_builders[0]
+    assert isinstance(eval_builder, DebateInspectEvaluatorBuilder)
+    assert eval_builder.scorer_parallelism == 9

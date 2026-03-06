@@ -10,6 +10,7 @@ from .env import (
 )
 from .scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from .scoring.metrics import MetricFn, MetricResult, mcq_debate_metrics
+from .scoring.providers import DebateScorerBuilder
 from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
 from .prompts import DebatePrompts, resolve_prompts
 from .scoring.fields import FieldSpec
@@ -26,6 +27,7 @@ from .types import (
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     TurnSlot,
     VisibilityPolicy,
     TurnTicket,
@@ -38,6 +40,7 @@ __all__ = [
     "Phase",
     "ProtocolKind",
     "Role",
+    "ScoringMode",
     "VisibilityPolicy",
     # Frozen dataclasses
     "ActionResult",
@@ -71,6 +74,7 @@ __all__ = [
     # Concrete implementations
     "LLMJudgeCallback",
     "zero_sum_outcome_reward",
+    "DebateScorerBuilder",
     # Prompts
     "DebatePrompts",
     "FieldSpec",

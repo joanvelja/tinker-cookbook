@@ -23,12 +23,15 @@ from ..env import DebateDataset, DebateProblem
 from ..eval.dataset_adapter import GPQAAdapter
 from ..eval.evaluator import DebateInspectEvaluatorBuilder
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
+from ..scoring.providers import DebateScorerBuilder
 from ..types import ProtocolKind
 
 
-def _recommended_max_connections(batch_size: int, group_size: int) -> int:
+def _recommended_max_connections(batch_size: int, group_size: int, self_play: bool = False) -> int:
     # For the user's target config batch_size=32, group_size=8 this yields 256.
-    return max(16, batch_size * group_size)
+    # Self-play has 2 trained agents per game, so double the connections.
+    agents_per_game = 2 if self_play else 1
+    return max(16, batch_size * group_size * agents_per_game)
 
 
 def _load_gpqa(
@@ -85,10 +88,12 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     randomize_position: bool = True
     prompts_ref: str = "judge_exploit"
     open_reasoning: bool = False
+    self_play: bool = False
     base_url: str | None = None
     episode_log_dir: str | None = None
     max_connections: int = 256
     progress_timeout_s: int = 900
+    scorer_builder: DebateScorerBuilder | None = None
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
         # Per-role renderer construction: each actor gets its own model-appropriate renderer.
@@ -97,38 +102,41 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
         )
         trained_renderer = get_renderer(trained_name, get_tokenizer(self.model_name))
 
-        opp_name = model_info.get_recommended_renderer_name(
-            self.opponent_model, reasoning_effort=self.reasoning_effort
-        )
-        opponent_renderer = get_renderer(opp_name, get_tokenizer(self.opponent_model))
-
-        judge_name = model_info.get_recommended_renderer_name(
-            self.judge_model, reasoning_effort=self.reasoning_effort
-        )
-        judge_renderer = get_renderer(judge_name, get_tokenizer(self.judge_model))
-
         tracker: UsageTracker | None = getattr(self, "_usage_tracker", None)
         retry_config = RetryConfig(
             max_connections=self.max_connections,
             progress_timeout=self.progress_timeout_s,
         )
         service = tinker.ServiceClient(base_url=self.base_url)
-        opponent_sampling = service.create_sampling_client(
-            base_model=self.opponent_model,
-            retry_config=retry_config,
+
+        if not self.self_play:
+            opp_name = model_info.get_recommended_renderer_name(
+                self.opponent_model, reasoning_effort=self.reasoning_effort
+            )
+            opponent_renderer = get_renderer(opp_name, get_tokenizer(self.opponent_model))
+            opponent_sampling = service.create_sampling_client(
+                base_model=self.opponent_model,
+                retry_config=retry_config,
+            )
+            opponent_completer = TinkerMessageCompleter(
+                sampling_client=opponent_sampling,
+                renderer=opponent_renderer,
+                max_tokens=self.opponent_max_tokens,
+                usage_tracker=tracker,
+                actor="opponent",
+                model_name=self.opponent_model,
+            )
+        else:
+            opponent_completer = None
+            opponent_renderer = None
+
+        judge_name = model_info.get_recommended_renderer_name(
+            self.judge_model, reasoning_effort=self.reasoning_effort
         )
+        judge_renderer = get_renderer(judge_name, get_tokenizer(self.judge_model))
         judge_sampling = service.create_sampling_client(
             base_model=self.judge_model,
             retry_config=retry_config,
-        )
-
-        opponent_completer = TinkerMessageCompleter(
-            sampling_client=opponent_sampling,
-            renderer=opponent_renderer,
-            max_tokens=self.opponent_max_tokens,
-            usage_tracker=tracker,
-            actor="opponent",
-            model_name=self.opponent_model,
         )
         judge_completer = TinkerMessageCompleter(
             sampling_client=judge_sampling,
@@ -139,6 +147,16 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             model_name=self.judge_model,
         )
         judge_callback = LLMJudgeCallback(judge_completer)
+        scorer_client = (
+            self.scorer_builder.build(usage_tracker=tracker)
+            if self.scorer_builder is not None
+            else None
+        )
+        scorer_parallelism = (
+            self.scorer_builder.max_connections
+            if self.scorer_builder is not None
+            else self.max_connections
+        )
 
         # Load GPQA.
         train_rows, test_rows = _load_gpqa(self.gpqa_subset)
@@ -159,6 +177,8 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             group_size=self.group_size,
             randomize_position=self.randomize_position,
             prompts_ref=self.prompts_ref,
+            scorer=scorer_client,
+            scorer_parallelism=scorer_parallelism,
             episode_log_dir=self.episode_log_dir,
         )
 
@@ -178,6 +198,8 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
                 group_size=self.group_size,
                 randomize_position=self.randomize_position,
                 prompts_ref=self.prompts_ref,
+                scorer=scorer_client,
+                scorer_parallelism=scorer_parallelism,
                 episode_log_dir=self.episode_log_dir,
             )
 
@@ -201,11 +223,13 @@ class CLIConfig:
     learning_rate: float = 3e-5
     max_tokens: int = 8192
     randomize_position: bool = True
+    self_play: bool = False
     prompts_ref: str = "judge_exploit"
     open_reasoning: bool = False
     kl_penalty_coef: float = 0.0
     inspect_eval: DebateInspectEvaluatorBuilder | None = None
     eval_every: int = 10
+    eval_on_start: bool = True
     save_every: int = 20
     wandb_project: str | None = "debate-judge-exploitation"
     wandb_name: str | None = None
@@ -214,13 +238,20 @@ class CLIConfig:
     base_url: str | None = None
     max_connections: int | None = None
     progress_timeout_s: int = 900
+    scorer_builder: DebateScorerBuilder | None = None
 
 
 def build_config(cli: CLIConfig) -> train.Config:
     model_name = cli.model_name
     max_connections = cli.max_connections or _recommended_max_connections(
-        cli.batch_size, cli.group_size
+        cli.batch_size, cli.group_size, self_play=cli.self_play
     )
+    scorer_parallelism = (
+        cli.scorer_builder.max_connections if cli.scorer_builder is not None else max_connections
+    )
+
+    # Self-play: both agents share the same policy, so randomize_position is meaningless.
+    randomize_position = False if cli.self_play else cli.randomize_position
 
     date_and_time = datetime.now().strftime("%Y-%m-%d-%H-%M")
     run_name = (
@@ -244,13 +275,15 @@ def build_config(cli: CLIConfig) -> train.Config:
         num_rounds=cli.num_rounds,
         batch_size=cli.batch_size,
         group_size=cli.group_size,
-        randomize_position=cli.randomize_position,
+        randomize_position=randomize_position,
+        self_play=cli.self_play,
         prompts_ref=cli.prompts_ref,
         open_reasoning=cli.open_reasoning,
         base_url=cli.base_url,
         episode_log_dir=cli.episode_log_dir,
         max_connections=max_connections,
         progress_timeout_s=cli.progress_timeout_s,
+        scorer_builder=cli.scorer_builder,
     )
 
     # Resolve renderer name for eval builder (eval still takes a concrete name).
@@ -266,17 +299,25 @@ def build_config(cli: CLIConfig) -> train.Config:
             reasoning_effort=cli.reasoning_effort,
             max_connections=max_connections,
             progress_timeout_s=cli.progress_timeout_s,
+            scorer_builder=cli.inspect_eval.scorer_builder or cli.scorer_builder,
+            scorer_parallelism=(
+                cli.inspect_eval.scorer_parallelism
+                if cli.inspect_eval.scorer_parallelism is not None
+                else scorer_parallelism
+            ),
         )
     else:
         # Default: GPQA eval matching training config.
+        # Self-play training → self-play eval (opponent_model=None triggers
+        # same-weights opponent in DebateInspectEvaluator).
         inspect_builder = DebateInspectEvaluatorBuilder(
             adapter=GPQAAdapter(free_debate=True, limit=10),
             prompts_ref=cli.prompts_ref,
             num_rounds=cli.num_rounds,
             protocol_kind=cli.protocol_kind,
             open_reasoning=cli.open_reasoning,
-            randomize_position=cli.randomize_position,
-            opponent_model=cli.opponent_model,
+            randomize_position=randomize_position,
+            opponent_model=None if cli.self_play else cli.opponent_model,
             judge_model=cli.judge_model,
             opponent_max_tokens=cli.opponent_max_tokens,
             judge_max_tokens=cli.judge_max_tokens,
@@ -286,6 +327,8 @@ def build_config(cli: CLIConfig) -> train.Config:
             base_url=cli.base_url,
             max_connections=max_connections,
             progress_timeout_s=cli.progress_timeout_s,
+            scorer_builder=cli.scorer_builder,
+            scorer_parallelism=scorer_parallelism,
         )
     evaluator_builders = [inspect_builder]
 
@@ -297,6 +340,7 @@ def build_config(cli: CLIConfig) -> train.Config:
         max_tokens=cli.max_tokens,
         kl_penalty_coef=cli.kl_penalty_coef,
         eval_every=cli.eval_every,
+        eval_on_start=cli.eval_on_start,
         save_every=cli.save_every,
         evaluator_builders=evaluator_builders,
         wandb_project=cli.wandb_project,

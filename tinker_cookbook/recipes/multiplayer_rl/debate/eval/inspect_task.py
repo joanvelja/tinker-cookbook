@@ -21,8 +21,11 @@ from tinker_cookbook.renderers import format_content_as_string
 from ..core.reducer import get_eligible_roles
 from ..core.schedule import build_schedule
 from ..core.visibility import build_generation_messages
+from ..prompts import resolve_prompts
+from ..scoring.facts import built_in_metric_values, resolve_debate_facts_for_states
 from ..scoring.judge import LLMJudgeCallback
 from ..scoring.metrics import MetricFn, mcq_debate_metrics
+from ..scoring.providers import AnswerJudgeClient
 from ..types import (
     DebateOutcome,
     DebateSpec,
@@ -31,12 +34,13 @@ from ..types import (
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     TurnSlot,
     Utterance,
     VisibilityPolicy,
 )
 from ..env import IDENTITY_REMAP_BASES, _remap_to_identity
-from .dataset_adapter import DatasetAdapter
+from .dataset_adapter import DatasetAdapter, resolve_adapter_scoring_mode
 
 # ---------------------------------------------------------------------------
 # State serialization
@@ -80,6 +84,7 @@ def _encode_spec(spec: DebateSpec) -> dict[str, Any]:
         "protocol_kind": spec.protocol_kind.value,
         "prompts_ref": spec.prompts_ref,
         "target": spec.target,
+        "scoring_mode": spec.scoring_mode.value,
     }
 
 
@@ -154,6 +159,7 @@ def _decode_spec(d: dict[str, Any]) -> DebateSpec:
         protocol_kind=ProtocolKind(d["protocol_kind"]),
         prompts_ref=d["prompts_ref"],
         target=d["target"],
+        scoring_mode=ScoringMode(d.get("scoring_mode", ScoringMode.MCQ.value)),
     )
 
 
@@ -246,6 +252,7 @@ def debate_solver(
     prompts_ref: str = "scientific_mcq",
     open_reasoning: bool = False,
     randomize_position: bool = True,
+    scoring_mode: ScoringMode = ScoringMode.MCQ,
 ) -> Solver:
     """Solver that runs a full debate episode between two completers + judge."""
 
@@ -285,6 +292,7 @@ def debate_solver(
             protocol_kind=protocol_kind,
             prompts_ref=prompts_ref,
             target=target_text,
+            scoring_mode=scoring_mode,
         )
 
         initial_state = DebateState(
@@ -354,6 +362,9 @@ def _identity_metric_keys() -> list[str]:
 
 def debate_scorer(
     metrics: dict[str, MetricFn] | None = None,
+    *,
+    scorer_client: AnswerJudgeClient | None = None,
+    scorer_parallelism: int = 64,
 ) -> Scorer:
     """Scorer that evaluates debate outcomes via MetricFn functions.
 
@@ -386,10 +397,26 @@ def debate_scorer(
 
             debate_state = _state_from_json(raw)
             nan = float("nan")
-            values: dict[str, float] = {}
-            for name, fn in resolved.items():
-                result = fn(debate_state)
-                values[name] = result.value if result.value is not None else nan
+            if metrics is None:
+                facts = await resolve_debate_facts_for_states(
+                    [debate_state],
+                    scorer=scorer_client,
+                    prompts_for_ref=resolve_prompts,
+                    parallelism=scorer_parallelism,
+                )
+                values = {
+                    name: value if value is not None else nan
+                    for name, value in built_in_metric_values(debate_state, facts[0]).items()
+                }
+            else:
+                if debate_state.spec.scoring_mode == ScoringMode.OPEN_ENDED:
+                    raise ValueError(
+                        "Custom MetricFn injection is unsupported with OPEN_ENDED semantic scoring."
+                    )
+                values = {}
+                for name, fn in resolved.items():
+                    result = fn(debate_state)
+                    values[name] = result.value if result.value is not None else nan
 
             # Identity remap: translate seat-based to trained/opponent metrics.
             trained_role_str = state.store.get(_TRAINED_ROLE_KEY, None)
@@ -438,10 +465,28 @@ def debate_eval(
     prompts_ref: str = "scientific_mcq",
     open_reasoning: bool = False,
     randomize_position: bool = True,
+    scorer_client: AnswerJudgeClient | None = None,
+    scorer_parallelism: int = 64,
 ) -> Task:
     """Inspect AI task that runs debate eval end-to-end."""
+    samples = adapter.to_samples()
+    scoring_mode = resolve_adapter_scoring_mode(adapter, samples=samples)
+    if scoring_mode == ScoringMode.OPEN_ENDED and scorer_client is None:
+        raise ValueError(
+            "OPEN_ENDED debate eval requires a scorer_client for semantic correctness/equivalence."
+        )
+    if scoring_mode == ScoringMode.OPEN_ENDED:
+        prompts = resolve_prompts(prompts_ref)
+        if prompts.get_binary_judge_template("matcher") is None:
+            raise ValueError(
+                f"OPEN_ENDED debate eval requires _matcher in {prompts.source_ref}."
+            )
+        if prompts.get_binary_judge_template("grader") is None:
+            raise ValueError(
+                f"OPEN_ENDED debate eval requires _grader in {prompts.source_ref}."
+            )
     return Task(
-        dataset=adapter.to_samples(),
+        dataset=samples,
         solver=debate_solver(
             sampling_client,
             opponent_client,
@@ -451,6 +496,10 @@ def debate_eval(
             prompts_ref=prompts_ref,
             open_reasoning=open_reasoning,
             randomize_position=randomize_position,
+            scoring_mode=scoring_mode,
         ),
-        scorer=debate_scorer(),
+        scorer=debate_scorer(
+            scorer_client=scorer_client,
+            scorer_parallelism=scorer_parallelism,
+        ),
     )

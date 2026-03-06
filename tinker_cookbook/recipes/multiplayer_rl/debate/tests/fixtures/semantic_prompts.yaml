@@ -1,0 +1,57 @@
+version: 2
+
+system:
+  judge:
+    default: "You are the judge."
+  debater_a:
+    default: "You are debater_a."
+  debater_b:
+    default: "You are debater_b."
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+  judge: "{{ task_prompt }}"
+
+user:
+  judge:
+    final: ""
+  debater_a:
+    propose: ""
+    critique: ""
+  debater_b:
+    propose: ""
+    critique: ""
+
+fields:
+  debater_a:
+    propose:
+      answer: {type: str}
+    critique:
+      answer: {type: str}
+  debater_b:
+    propose:
+      answer: {type: str}
+    critique:
+      answer: {type: str}
+  judge:
+    final:
+      decision: {type: str}
+
+_matcher:
+  system: "Compare two answers. Reply with SAME or DIFFERENT."
+  user: |
+    Question: {{ question }}
+    Answer A: {{ a }}
+    Answer B: {{ b }}
+  positive: SAME
+  negative: DIFFERENT
+
+_grader:
+  system: "Judge correctness. Reply with PASS or FAIL."
+  user: |
+    Question: {{ question }}
+    Correct answer: {{ target }}
+    Response: {{ response }}
+  positive: PASS
+  negative: FAIL

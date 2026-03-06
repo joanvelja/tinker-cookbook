@@ -454,7 +454,7 @@ class TestFrozenOpponentJudgeValidation:
         import asyncio
 
         with pytest.raises(ValueError, match="include_judge_turns"):
-            asyncio.get_event_loop().run_until_complete(_run())
+            asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------

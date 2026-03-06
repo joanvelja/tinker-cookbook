@@ -6,9 +6,11 @@ import functools
 import hashlib
 import logging
 import re
+import string
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import jinja2
 import jinja2.meta
@@ -36,6 +38,7 @@ _INJECTABLE_KEYS = ("task_prompt", "answer", "answer_a", "answer_b")
 
 _ROLE_NAMES = {"judge", "debater_a", "debater_b"}
 _TAG_NAME_RE = re.compile(r"^\w+$")
+_UTILITY_BLOCK_NAMES = ("_matcher", "_grader")
 
 # Every key that render-time lookups may request.  'default' is expanded into
 # these at compile time so no runtime fallback path exists.
@@ -50,6 +53,14 @@ _log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class BinaryJudgeTemplate:
+    system: str
+    user: jinja2.Template
+    positive: str
+    negative: str
+
+
+@dataclass(frozen=True)
 class DebatePrompts:
     system: dict[str, dict[str, jinja2.Template]]
     user: dict[str, dict[str, jinja2.Template]]
@@ -59,6 +70,7 @@ class DebatePrompts:
     fields: dict[str, dict[str, dict[str, FieldSpec]]]
     content_hash: str
     source_ref: str
+    binary_judges: dict[str, BinaryJudgeTemplate] = field(default_factory=dict)
 
     def render_system(self, state: DebateState, viewer: Role) -> str:
         """Render system template for viewer. Strict lookup, no fallback."""
@@ -177,6 +189,11 @@ class DebatePrompts:
         if not trigger_fields:
             return None
         return list(trigger_fields.keys())
+
+    def get_binary_judge_template(
+        self, name: Literal["matcher", "grader"]
+    ) -> BinaryJudgeTemplate | None:
+        return self.binary_judges.get(name)
 
 
 def check_ab_symmetry(prompts: DebatePrompts) -> list[str]:
@@ -316,6 +333,49 @@ def _scan_block_for_removed_vars(block: object, section_name: str, path: str = "
             _scan_block_for_removed_vars(val, section_name, f".{key}")
 
 
+def normalize_binary_verdict_token(text: str) -> str | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    token = stripped.split()[0].rstrip(string.punctuation)
+    return token.upper() if token else None
+
+
+def _validate_binary_judge_blocks(d: dict) -> None:
+    for block_name in _UTILITY_BLOCK_NAMES:
+        block = d.get(block_name)
+        if block is None:
+            continue
+        if not isinstance(block, dict):
+            raise ValueError(f"{block_name}: expected mapping, got {type(block).__name__}")
+        required_keys = {"system", "user", "positive", "negative"}
+        missing = required_keys - set(block)
+        extra = set(block) - required_keys
+        if missing:
+            raise ValueError(f"{block_name}: missing required keys {sorted(missing)}")
+        if extra:
+            raise ValueError(f"{block_name}: unknown keys {sorted(extra)}")
+        if not isinstance(block["system"], str):
+            raise ValueError(f"{block_name}.system: expected str")
+        if not isinstance(block["user"], str):
+            raise ValueError(f"{block_name}.user: expected str")
+        if not isinstance(block["positive"], str):
+            raise ValueError(f"{block_name}.positive: expected str")
+        if not isinstance(block["negative"], str):
+            raise ValueError(f"{block_name}.negative: expected str")
+
+        positive = normalize_binary_verdict_token(block["positive"])
+        negative = normalize_binary_verdict_token(block["negative"])
+        if positive is None:
+            raise ValueError(f"{block_name}.positive: expected non-empty verdict token")
+        if negative is None:
+            raise ValueError(f"{block_name}.negative: expected non-empty verdict token")
+        if positive == negative:
+            raise ValueError(
+                f"{block_name}: positive/negative must normalize to distinct verdicts"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -336,6 +396,8 @@ def _check_no_default_mixing(mapping: dict, label: str) -> None:
 def _validate(d: dict) -> None:
     if d.get("version") != 2:
         raise ValueError(f"Unsupported prompt version: {d.get('version')} (expected 2)")
+
+    _validate_binary_judge_blocks(d)
 
     for section in ("system", "user"):
         block = d.get(section, {})
@@ -467,6 +529,25 @@ def _parse_fields(block: dict) -> dict[str, dict[str, dict[str, FieldSpec]]]:
     return result
 
 
+def _compile_binary_judge_blocks(d: dict) -> dict[str, BinaryJudgeTemplate]:
+    result: dict[str, BinaryJudgeTemplate] = {}
+    for block_name, short_name in (("_matcher", "matcher"), ("_grader", "grader")):
+        block = d.get(block_name)
+        if block is None:
+            continue
+        positive = normalize_binary_verdict_token(block["positive"])
+        negative = normalize_binary_verdict_token(block["negative"])
+        assert positive is not None
+        assert negative is not None
+        result[short_name] = BinaryJudgeTemplate(
+            system=block["system"],
+            user=_jinja_env.from_string(block["user"]),
+            positive=positive,
+            negative=negative,
+        )
+    return result
+
+
 @functools.lru_cache(maxsize=32)
 def resolve_prompts(ref: str) -> DebatePrompts:
     """Load and compile a prompt template set.
@@ -498,6 +579,7 @@ def resolve_prompts(ref: str) -> DebatePrompts:
     prefill = _compile_templates(d.get("prefill", {}))
     _expand_defaults(prefill, "prefill")
     fields = _parse_fields(d.get("fields", {}))
+    binary_judges = _compile_binary_judge_blocks(d)
 
     prompts = DebatePrompts(
         system=system,
@@ -506,6 +588,7 @@ def resolve_prompts(ref: str) -> DebatePrompts:
         think=think,
         prefill=prefill,
         fields=fields,
+        binary_judges=binary_judges,
         content_hash=content_hash,
         source_ref=str(path),
     )

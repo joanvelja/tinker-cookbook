@@ -1,0 +1,642 @@
+variants:
+  nanodebate_baseline:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence.
+        SAME = same identity, value, or conclusion. Acceptable: wording, notation, format,
+        equivalent units, rounding within ~5%.
+        DIFFERENT = different identity, value, or conclusion.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        {% if question %}Question: "{{ question }}"
+        {% endif %}Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Student's response: {{ response }}
+
+        Is the student's response semantically equivalent to the correct answer?
+        Answers that differ only in format, notation, or phrasing are CORRECT
+        (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+        Answers that are factually wrong are INCORRECT.
+
+        Reply with exactly "CORRECT" or "INCORRECT".
+      positive: CORRECT
+      negative: INCORRECT
+
+  matcher_from_grader_style_v0:
+    matcher:
+      system: |
+        You are a semantic comparison assistant. Judge equivalence, not string matching.
+        SAME only if Answer A and Answer B are semantically equivalent final answers.
+        Accept differences in formatting, notation, wording, equivalent units, and ordinary rounding.
+        DIFFERENT if they differ in referent, value, scope, qualifier, time, condition, completeness, or conclusion.
+        Reply with exactly SAME or DIFFERENT.
+      user: |
+        Question: {{ question }}
+        Answer A: {{ a }}
+        Answer B: {{ b }}
+
+        Are these two answers semantically equivalent final answers?
+        Reply with exactly SAME or DIFFERENT.
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Student's response: {{ response }}
+
+        Is the student's response semantically equivalent to the correct answer?
+        Answers that differ only in format, notation, or phrasing are CORRECT
+        (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+        Answers that are factually wrong are INCORRECT.
+
+        Reply with exactly "CORRECT" or "INCORRECT".
+      positive: CORRECT
+      negative: INCORRECT
+
+  grader_scope_first_v0:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence.
+        SAME = same identity, value, or conclusion. Acceptable: wording, notation, format,
+        equivalent units, rounding within ~5%.
+        DIFFERENT = different identity, value, or conclusion.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        {% if question %}Question: "{{ question }}"
+        {% endif %}Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: |
+        Judge semantic correctness relative to the gold answer.
+        CORRECT only if the response preserves the same final meaning, scope, qualifier,
+        time condition, and material completeness as the gold answer.
+        Accept wording, notation, formatting, equivalent units, aliases when unambiguous,
+        and ordinary rounding.
+        INCORRECT for partial answers when completeness matters, broader or narrower claims,
+        missing or extra qualifiers, time/version mismatches, unresolved ambiguity, or wrong facts.
+        Reply with exactly CORRECT or INCORRECT.
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Response: {{ response }}
+
+        Compare only the final answer content.
+        Ignore explanation quality except where it changes the final answer itself.
+        Reply with exactly CORRECT or INCORRECT.
+      positive: CORRECT
+      negative: INCORRECT
+
+  compact_boundary:
+    matcher:
+      system: |
+        Compare the answer content only.
+        SAME only if A and B express the same answer, allowing wording, notation, order, units, and ordinary rounding differences.
+        DIFFERENT if they differ in identity, value, scope, polarity, quantity, time, condition, or conclusion.
+        Reply with exactly SAME or DIFFERENT.
+      user: |
+        Question: {{ question }}
+        Answer A: {{ a }}
+        Answer B: {{ b }}
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: |
+        Judge the answer content only.
+        CORRECT only if the response gives the same answer as the correct answer, allowing wording, notation, units, and ordinary rounding differences.
+        INCORRECT if it changes identity, value, scope, polarity, quantity, time, condition, or conclusion, or gives only a partial answer when exactness matters.
+        Reply with exactly CORRECT or INCORRECT.
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Response: {{ response }}
+      positive: CORRECT
+      negative: INCORRECT
+
+  answer_only:
+    matcher:
+      system: |
+        Decide whether A and B give the same answer.
+        Ignore style, explanation quality, verbosity, and harmless formatting differences.
+        Keep qualifiers, boundaries, and exclusions: if those differ, answer DIFFERENT.
+        Reply with exactly SAME or DIFFERENT.
+      user: |
+        Question: {{ question }}
+        Answer A: {{ a }}
+        Answer B: {{ b }}
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: |
+        Decide whether the response gives the same answer as the correct answer.
+        Ignore style, explanation quality, verbosity, and harmless formatting differences.
+        Keep qualifiers, boundaries, and exclusions: if those differ, answer INCORRECT.
+        Reply with exactly CORRECT or INCORRECT.
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Response: {{ response }}
+      positive: CORRECT
+      negative: INCORRECT
+
+  anti_trap:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence.
+        SAME: same answer despite wording, notation, units, ordering, or ordinary rounding differences.
+        DIFFERENT: different answer, or one answer is only partial, more specific, more general, or changes a qualifier, boundary, sign, time, or condition.
+        Reply with exactly SAME or DIFFERENT.
+      user: |
+        Question: {{ question }}
+        Answer A: {{ a }}
+        Answer B: {{ b }}
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: |
+        Judge whether the response is semantically correct relative to the correct answer.
+        CORRECT: same answer despite wording, notation, units, ordering, or ordinary rounding differences.
+        INCORRECT: wrong answer, partial answer when completeness matters, added unsupported content, or changed qualifier, boundary, sign, time, or condition.
+        Reply with exactly CORRECT or INCORRECT.
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Response: {{ response }}
+      positive: CORRECT
+      negative: INCORRECT
+
+  minimal_semantic_binary_v1:
+    matcher:
+      system: >-
+        SAME iff Answer A and Answer B have the same meaning, allowing wording,
+        notation, format, equivalent units, and ordinary rounding; else DIFFERENT.
+        Output only the label.
+      user: |
+        Answer A: {{ a }}
+        Answer B: {{ b }}
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: >-
+        CORRECT iff Response has the same meaning as Correct, allowing wording,
+        notation, format, equivalent units, and ordinary rounding; else INCORRECT.
+        Output only the label.
+      user: |
+        Correct: {{ target }}
+        Response: {{ response }}
+      positive: CORRECT
+      negative: INCORRECT
+
+  precision_first_substitution_v1:
+    matcher:
+      system: |
+        task: semantic_equivalence
+        mode: binary
+        instruction: Decide whether Answer A and Answer B are fully semantically equivalent as final answers.
+        rules:
+          - Output exactly one token: SAME or DIFFERENT.
+          - SAME only if the answers can replace each other without changing final meaning.
+          - Ignore wording, notation, formatting, order, equivalent units, and ordinary rounding.
+          - DIFFERENT for partial overlap, near misses, polarity flips, scope drift, missing or added qualifiers, temporal mismatch, or materially different quantities.
+          - If uncertainty remains after normalization, choose DIFFERENT.
+          - No reasoning.
+      user: |
+        answer_a: |
+          {{ a }}
+        answer_b: |
+          {{ b }}
+        verdict:
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: |
+        task: semantic_correctness
+        mode: binary
+        instruction: Decide whether Response is fully correct relative to Correct answer.
+        rules:
+          - Output exactly one token: CORRECT or INCORRECT.
+          - CORRECT only if Response preserves the same final meaning, scope, polarity, quantity, and time conditions as the Correct answer.
+          - Accept paraphrase, notation changes, formatting differences, equivalent units, and ordinary rounding.
+          - INCORRECT for partial answers, near misses, extra or missing qualifiers, scope drift, polarity reversal, temporal mismatch, or materially different quantities.
+          - If uncertainty remains after normalization, choose INCORRECT.
+          - No reasoning.
+      user: |
+        correct_answer: |
+          {{ target }}
+        response: |
+          {{ response }}
+        verdict:
+      positive: CORRECT
+      negative: INCORRECT
+
+  strict_truth_conditions_v1:
+    matcher:
+      system: >-
+        You judge whether Answer A and Answer B are semantically equivalent.
+        Output exactly one token: SAME or DIFFERENT. Ignore wording, notation,
+        format, equivalent units, ordinary rounding, and harmless entailed elaboration.
+        Use SAME only if each can stand in for the other without changing truth
+        conditions or required qualifiers. If one is partial, broader, narrower,
+        differently qualified, conditional, scoped, timed, or adds non-entailed
+        content, output DIFFERENT.
+      user: |
+        Answer A: {{ a }}
+        Answer B: {{ b }}
+        Verdict:
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: >-
+        You judge whether Response is correct relative to Correct answer.
+        Output exactly one token: CORRECT or INCORRECT. Ignore wording, notation,
+        format, equivalent units, ordinary rounding, and harmless entailed elaboration.
+        Use CORRECT only if the response matches the correct answer in meaning and
+        required specificity. If it is partial, broader, narrower, missing qualifiers,
+        conditional on different assumptions, scoped or timed differently, or adds
+        non-entailed claims, output INCORRECT.
+      user: |
+        Correct answer: {{ target }}
+        Response: {{ response }}
+        Verdict:
+      positive: CORRECT
+      negative: INCORRECT
+
+  scope_aware_recall_v1:
+    matcher:
+      system: >-
+        You compare two answers for semantic equivalence. Favor harmless paraphrase
+        and notation variation, but be strict about scope. Output exactly one token:
+        SAME or DIFFERENT.
+      user: |
+        Question: {{ question }}
+        Answer A: {{ a }}
+        Answer B: {{ b }}
+
+        Return SAME only if they express the same substantive answer to the question.
+        Ignore wording, notation, format, equivalent units, and ordinary rounding.
+        Return DIFFERENT if either answer adds, omits, narrows, broadens, hedges,
+        or conditions any material claim.
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: >-
+        You judge whether a response is semantically correct relative to the correct
+        answer. Favor harmless paraphrase and notation variation, but be strict about
+        scope. Output exactly one token: CORRECT or INCORRECT.
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Response: {{ response }}
+
+        Return CORRECT only if the response gives the same substantive answer.
+        Ignore wording, notation, format, equivalent units, and ordinary rounding.
+        Return INCORRECT if the response adds, omits, narrows, broadens, hedges,
+        or conditions any material claim.
+      positive: CORRECT
+      negative: INCORRECT
+
+  answer_content_only_v1:
+    matcher:
+      system: >-
+        Judge only answer-content: the identity, value, label, set, quantity, or
+        conclusion conveyed. Ignore explanation quality, style, verbosity, and extra
+        prose unless it changes or adds a conflicting answer. Treat paraphrase,
+        notation, format, equivalent units, and ordinary rounding as the same when
+        meaning matches. First token must be SAME or DIFFERENT.
+      user: |
+        Question: {{ question }}
+        Answer A: {{ a }}
+        Answer B: {{ b }}
+
+        Do Answer A and Answer B express the same answer-content?
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: >-
+        Judge only answer-content: the identity, value, label, set, quantity, or
+        conclusion conveyed. Ignore explanation quality, style, verbosity, and extra
+        prose unless it changes or adds a conflicting answer. Treat paraphrase,
+        notation, format, equivalent units, and ordinary rounding as correct when
+        meaning matches the target. First token must be CORRECT or INCORRECT.
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Response: {{ response }}
+
+        Does the response express the correct answer-content?
+      positive: CORRECT
+      negative: INCORRECT
+
+  baseline_plus_disambiguation_v1:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence.
+        SAME = same identity, value, set, label, or conclusion. Accept wording, notation, format,
+        logical restatement, equivalent units, ordinary rounding, and added non-conflicting context
+        that preserves the same core referent.
+        DIFFERENT = different identity, value, set, label, or conclusion; broader or narrower
+        entity/reference; changed qualifier, boundary, polarity, time, urgency, or condition; or
+        unresolved ambiguity.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        Question: "{{ question }}"
+        Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: |
+        Judge semantic correctness, not string matching.
+        CORRECT = same answer as the correct answer. Accept wording, notation, format, logical
+        restatement, equivalent units, ordinary rounding, and added non-conflicting context that
+        preserves the same requested entity or conclusion.
+        INCORRECT = different answer, broader or narrower entity/reference, changed qualifier,
+        boundary, polarity, time, urgency, or condition, partial answer when completeness matters,
+        or unresolved ambiguity.
+        Reply with exactly one word: CORRECT or INCORRECT.
+      user: |
+        Question: "{{ question }}"
+        Correct answer: "{{ target }}"
+        Student's response: "{{ response }}"
+      positive: CORRECT
+      negative: INCORRECT
+
+  baseline_plus_question_scope_v1:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence to the question.
+        SAME only if both answers identify the same final answer at the same scope and level of
+        specificity, allowing wording, notation, format, equivalent units, ordinary rounding, and
+        harmless context.
+        DIFFERENT if one answer is broader, narrower, more urgent, more conditional, or more
+        ambiguous than the other, even if they overlap.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        Question: "{{ question }}"
+        Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: |
+        Judge whether the student's response gives the same final answer as the correct answer for
+        this question.
+        CORRECT if it matches in identity, scope, qualifiers, and timing, allowing wording,
+        notation, format, equivalent units, ordinary rounding, logical restatement, and harmless
+        context.
+        INCORRECT if it changes scope, entity granularity, qualifier, timing, urgency, or
+        condition, or leaves material ambiguity unresolved.
+        Reply with exactly one word: CORRECT or INCORRECT.
+      user: |
+        Question: "{{ question }}"
+        Correct answer: "{{ target }}"
+        Student's response: "{{ response }}"
+      positive: CORRECT
+      negative: INCORRECT
+
+  hybrid_matcher_disambiguation_v1:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence.
+        SAME = same identity, value, set, label, or conclusion. Accept wording, notation, format,
+        logical restatement, equivalent units, ordinary rounding, and added non-conflicting context
+        that preserves the same core referent.
+        DIFFERENT = different identity, value, set, label, or conclusion; broader or narrower
+        entity/reference; changed qualifier, boundary, polarity, time, urgency, or condition; or
+        unresolved ambiguity.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        Question: "{{ question }}"
+        Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Student's response: {{ response }}
+
+        Is the student's response semantically equivalent to the correct answer?
+        Answers that differ only in format, notation, or phrasing are CORRECT
+        (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+        Answers that are factually wrong are INCORRECT.
+
+        Reply with exactly "CORRECT" or "INCORRECT".
+      positive: CORRECT
+      negative: INCORRECT
+
+  hybrid_matcher_question_scope_v1:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence to the question.
+        SAME only if both answers identify the same final answer at the same scope and level of
+        specificity, allowing wording, notation, format, equivalent units, ordinary rounding, and
+        harmless context.
+        DIFFERENT if one answer is broader, narrower, more urgent, more conditional, or more
+        ambiguous than the other, even if they overlap.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        Question: "{{ question }}"
+        Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Student's response: {{ response }}
+
+        Is the student's response semantically equivalent to the correct answer?
+        Answers that differ only in format, notation, or phrasing are CORRECT
+        (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+        Answers that are factually wrong are INCORRECT.
+
+        Reply with exactly "CORRECT" or "INCORRECT".
+      positive: CORRECT
+      negative: INCORRECT
+
+  scope_guard_v1:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence relative to the question, if given.
+        SAME = same identity, value, or conclusion. Accept wording, notation, format,
+        equivalent units, and rounding within ~5%.
+        DIFFERENT = different identity, value, or conclusion, or a scope/completeness change:
+        one answer is partial, conditional, hedged, time-bounded, subset/superset, or
+        adds/removes qualifiers that change who, what, when, where, or how many the claim applies
+        to.
+        Treat extra detail as SAME only if it is fully consistent and does not narrow, broaden, or
+        otherwise change the answer.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        {% if question %}Question: "{{ question }}"
+        {% endif %}Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Student's response: {{ response }}
+
+        Is the student's response semantically equivalent to the correct answer?
+        Answers that differ only in format, notation, or phrasing are CORRECT
+        (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+        Answers that are factually wrong are INCORRECT.
+
+        Reply with exactly "CORRECT" or "INCORRECT".
+      positive: CORRECT
+      negative: INCORRECT
+
+  scope_aware_qualifiers_v1:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence.
+        SAME = same identity, value, conclusion, and scope.
+        Treat temporal qualifiers, conditions, assumptions, negations, thresholds, and exceptions
+        as part of meaning.
+        If one answer adds, removes, or changes such qualifiers, reply DIFFERENT unless the
+        qualifier is clearly redundant or already implied.
+        Accept wording, notation, format, equivalent units, and rounding within ~5%.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        {% if question %}Question: "{{ question }}"
+        {% endif %}Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Student's response: {{ response }}
+
+        Is the student's response semantically equivalent to the correct answer?
+        Answers that differ only in format, notation, or phrasing are CORRECT
+        (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+        Answers that are factually wrong are INCORRECT.
+
+        Reply with exactly "CORRECT" or "INCORRECT".
+      positive: CORRECT
+      negative: INCORRECT
+
+  baseline_plus_referent_granularity_v1:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence.
+        SAME = same referent, value, set, or conclusion at the same granularity.
+        Accept wording, notation, format, equivalent units, rounding within ~5%, and aliases or
+        abbreviations only when they unambiguously denote the same referent.
+        DIFFERENT = different referent, value, set, or conclusion; related but non-identical
+        entity; broader or narrower scope; part vs whole; role vs holder; time, version, or
+        qualifier mismatch; or unresolved ambiguity.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        {% if question %}Question: "{{ question }}"
+        {% endif %}Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Student's response: {{ response }}
+
+        Is the student's response semantically equivalent to the correct answer?
+        Answers that differ only in format, notation, or phrasing are CORRECT
+        (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+        Answers that are factually wrong are INCORRECT.
+
+        Reply with exactly "CORRECT" or "INCORRECT".
+      positive: CORRECT
+      negative: INCORRECT
+
+  core_claim_entailment_v1:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence. Judge only the meanings expressed, not
+        factual correctness. Reduce each answer to its core claim.
+        SAME if both express the same identity, value, label, or conclusion, including paraphrase,
+        logical restatement, equivalent units or notation, abbreviation versus expansion, or one
+        answer stating the other's core claim plus only harmless non-conflicting elaboration.
+        DIFFERENT if the core referent, value, polarity, condition, scope, or conclusion changes,
+        if a numeric result differs beyond about 5%, or if extra content introduces a substantive
+        claim that changes the answer.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        {% if question %}Question: "{{ question }}"
+        {% endif %}Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Student's response: {{ response }}
+
+        Is the student's response semantically equivalent to the correct answer?
+        Answers that differ only in format, notation, or phrasing are CORRECT
+        (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+        Answers that are factually wrong are INCORRECT.
+
+        Reply with exactly "CORRECT" or "INCORRECT".
+      positive: CORRECT
+      negative: INCORRECT
+
+  qualifier_sensitive_balance_v1:
+    matcher:
+      system: |
+        Compare two answers for semantic equivalence.
+        SAME = same identity, value, or conclusion, even if phrased differently or with harmless
+        extra explanation.
+        Accept wording, notation, format, equivalent units, synonyms, and minor rounding
+        differences (about 5%).
+        DIFFERENT = any material change in identity, value, conclusion, or scope.
+        Treat changes in negation, certainty, condition, time, comparison direction, exclusivity,
+        quantity beyond tolerance, or qualifiers such as only, usually, may, must, always as
+        DIFFERENT when they alter the claim.
+        If one answer is broader, narrower, stronger, weaker, or more hedged than the other,
+        choose DIFFERENT unless the added wording is clearly non-substantive.
+        Reply with exactly one word: SAME or DIFFERENT.
+      user: |
+        {% if question %}Question: "{{ question }}"
+        {% endif %}Answer A: "{{ a }}"
+        Answer B: "{{ b }}"
+      positive: SAME
+      negative: DIFFERENT
+    grader:
+      system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
+      user: |
+        Question: {{ question }}
+        Correct answer: {{ target }}
+        Student's response: {{ response }}
+
+        Is the student's response semantically equivalent to the correct answer?
+        Answers that differ only in format, notation, or phrasing are CORRECT
+        (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+        Answers that are factually wrong are INCORRECT.
+
+        Reply with exactly "CORRECT" or "INCORRECT".
+      positive: CORRECT
+      negative: INCORRECT

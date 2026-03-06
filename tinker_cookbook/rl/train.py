@@ -303,6 +303,8 @@ class Config:
     log_path: str = chz.field(munger=lambda _, s: os.path.expanduser(s))
     # Evaluation cadence in training iterations (0 = disabled).
     eval_every: int = 20
+    # Whether to run eval on the very first batch after resume (default True).
+    eval_on_start: bool = True
     # Checkpoint cadence in training iterations (0 = disabled).
     save_every: int = 20
     # Optional evaluators run during training.
@@ -467,7 +469,11 @@ async def do_sync_training_with_stream_minibatch(
         t_start = time.time()
 
         # Run evaluations
-        if (cfg.eval_every > 0 and i_batch % cfg.eval_every == 0) or i_batch == end_batch - 1:
+        if (
+            cfg.eval_every > 0
+            and i_batch % cfg.eval_every == 0
+            and (i_batch > start_batch or cfg.eval_on_start)
+        ) or i_batch == end_batch - 1:
             with timed("run_evals", metrics):
                 eval_metrics = await run_evaluations_parallel(
                     evaluators,
@@ -785,7 +791,11 @@ async def do_async_training(
             # while we're running the evals
             sampling_client_eval_step = sampling_client_step
             sampling_client_eval = sampling_client
-            if cfg.eval_every > 0 and sampling_client_eval_step % cfg.eval_every == 0:
+            if (
+                cfg.eval_every > 0
+                and sampling_client_eval_step % cfg.eval_every == 0
+                and (sampling_client_eval_step > start_batch or cfg.eval_on_start)
+            ):
                 with timed("run_evals", metrics):
                     for evaluator in evaluators:
                         eval_metrics = await evaluator(
@@ -1197,7 +1207,11 @@ async def do_sync_training(
         t_start = time.time()
 
         # Run evaluations
-        if cfg.eval_every > 0 and i_batch % cfg.eval_every == 0:
+        if (
+            cfg.eval_every > 0
+            and i_batch % cfg.eval_every == 0
+            and (i_batch > start_batch or cfg.eval_on_start)
+        ):
             with timed("run_evals", metrics):
                 eval_metrics = await run_evaluations_parallel(
                     evaluators,

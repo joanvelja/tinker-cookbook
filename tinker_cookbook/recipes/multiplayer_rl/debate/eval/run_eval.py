@@ -17,7 +17,9 @@ import tinker
 
 from tinker_cookbook import model_info
 
-from .dataset_adapter import GPQAAdapter
+from ..progress import run_with_heartbeat
+from ..scoring.providers import DebateScorerBuilder
+from .dataset_adapter import GPQAAdapter, GPQAOpenEndedAdapter
 from .evaluator import DebateInspectEvaluatorBuilder
 
 logger = logging.getLogger(__name__)
@@ -31,11 +33,26 @@ class Config:
     judge_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     renderer_name: str | None = None
     dataset: str = "gpqa"
+    dataset_subset: str | None = None
+    dataset_split: str = "train"
+    record_ids: list[str] | None = chz.field(default_factory=list)
     prompts_ref: str = "scientific_mcq"
     num_rounds: int = 2
     limit: int | None = None
     log_dir: str | None = None
+    artifacts_dir: str | None = None
     base_url: str | None = None
+    scorer_builder: DebateScorerBuilder | None = None
+    scorer_parallelism: int | None = None
+    open_reasoning: bool = False
+    randomize_position: bool = True
+    reasoning_effort: str | None = None
+    debater_reasoning_effort: str | None = None
+    opponent_reasoning_effort: str | None = None
+    judge_reasoning_effort: str | None = None
+    opponent_max_tokens: int = 8192
+    judge_max_tokens: int = 4096
+    heartbeat_seconds: int = 30
 
 
 async def main(config: Config) -> None:
@@ -52,11 +69,24 @@ async def main(config: Config) -> None:
     if model_name is None:
         raise ValueError("model_path or model_name must be provided")
 
-    renderer_name = config.renderer_name or model_info.get_recommended_renderer_name(model_name)
+    renderer_name = config.renderer_name or model_info.get_recommended_renderer_name(
+        model_name,
+        reasoning_effort=config.debater_reasoning_effort or config.reasoning_effort,
+    )
 
     # Build adapter.
     if config.dataset == "gpqa":
-        adapter = GPQAAdapter(limit=config.limit)
+        adapter = GPQAAdapter(
+            subset=config.dataset_subset or "gpqa_diamond",
+            limit=config.limit,
+        )
+    elif config.dataset == "gpqa_open_ended":
+        adapter = GPQAOpenEndedAdapter(
+            subset=config.dataset_subset or "extended",
+            split=config.dataset_split,
+            limit=config.limit,
+            record_ids=config.record_ids,
+        )
     else:
         raise ValueError(f"Unknown dataset: {config.dataset}")
 
@@ -67,12 +97,22 @@ async def main(config: Config) -> None:
         num_rounds=config.num_rounds,
         opponent_model=config.opponent_model,
         judge_model=config.judge_model,
+        opponent_max_tokens=config.opponent_max_tokens,
+        judge_max_tokens=config.judge_max_tokens,
         renderer_name=renderer_name,
+        reasoning_effort=config.reasoning_effort,
+        debater_reasoning_effort=config.debater_reasoning_effort,
+        opponent_reasoning_effort=config.opponent_reasoning_effort,
+        judge_reasoning_effort=config.judge_reasoning_effort,
         model_name=model_name,
-        log_dir=config.log_dir,
+        log_dir=config.artifacts_dir or config.log_dir,
         log_evals_every=1,
         limit=config.limit,
         base_url=config.base_url,
+        scorer_builder=config.scorer_builder,
+        scorer_parallelism=config.scorer_parallelism,
+        open_reasoning=config.open_reasoning,
+        randomize_position=config.randomize_position,
     )
     evaluator = builder()
 
@@ -82,7 +122,15 @@ async def main(config: Config) -> None:
         base_model=model_name,
     )
 
-    metrics = await evaluator(sampling_client)
+    metrics = await run_with_heartbeat(
+        evaluator(sampling_client),
+        label=(
+            f"debate eval dataset={config.dataset} "
+            f"subset={config.dataset_subset or 'default'} "
+            f"limit={config.limit or 'all'}"
+        ),
+        interval_s=config.heartbeat_seconds,
+    )
 
     logger.info("Debate evaluation completed!")
     for k, v in sorted(metrics.items()):

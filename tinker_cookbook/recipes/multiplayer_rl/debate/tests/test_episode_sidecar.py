@@ -25,6 +25,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     Utterance,
 )
 
@@ -94,6 +95,7 @@ def _make_builder_with_mock_envs(
     trained_role: Role = Role.DEBATER_A,
     with_thinking: bool = False,
     outcome: DebateOutcome | None = None,
+    selfplay: bool = False,
 ) -> tuple[DebateGroupBuilder, list[DebateEnv]]:
     """Create a DebateGroupBuilder and mock DebateEnv(s) for testing on_group_complete."""
     if with_thinking:
@@ -132,10 +134,9 @@ def _make_builder_with_mock_envs(
         protocol_kind=ProtocolKind.SEQUENTIAL,
         num_rounds=1,
         episode_log_dir=episode_log_dir,
-        opponent_completer=MagicMock(),  # marks frozen-opponent mode
+        opponent_completer=None if selfplay else MagicMock(),
         group_size=1,
     )
-    # Simulate frozen-opponent mode by setting _runtimes directly.
     builder._runtimes = [runtime]
 
     opponent_role = Role.DEBATER_B if trained_role == Role.DEBATER_A else Role.DEBATER_A
@@ -299,8 +300,8 @@ class TestSchemaValidation:
         # The thinking text is "The answer is B" -> strict parser should extract "B"
         assert record["answers"]["think_trained"] == "B"
 
-    def test_signals_only_id_prefixed(self):
-        """signals dict contains only id/ prefixed keys."""
+    def test_signals_only_id_prefixed_frozen_opp(self):
+        """In frozen-opp mode, signals dict contains only id/ prefixed keys."""
         record = self._get_record()
         for key in record["signals"]:
             assert key.startswith("id/"), f"Signal key {key!r} missing 'id/' prefix"
@@ -353,7 +354,117 @@ class TestSchemaValidation:
 
 
 # ---------------------------------------------------------------------------
-# Test 3: File lock concurrency test
+# Test 3: Self-play signals
+# ---------------------------------------------------------------------------
+
+
+class TestSelfPlaySignals:
+    def test_selfplay_signals_nonempty(self):
+        """In self-play mode, signals includes all metrics (no id/ filter)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir, selfplay=True)
+            metrics = {
+                "accuracy.debater_a": 1.0,
+                "win_rate.debater_b": 0.0,
+                "judge_confidence": 0.95,
+            }
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, metrics)],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+
+        assert record["signals"] == metrics
+
+    def test_selfplay_schema_v2_seat_based(self):
+        """Self-play records use schema_version=2 with seat-based fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir, selfplay=True)
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {"accuracy.debater_a": 0.5})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+
+        assert record["schema_version"] == 2
+        # Seat-based fields.
+        assert "role" in record
+        assert "reward" in record
+        assert record["role"] in ("debater_a", "debater_b")
+        # No identity-framed fields.
+        assert "trained_role" not in record
+        assert "reward_trained" not in record
+        # Answers keyed by seat.
+        assert "public_debater_a" in record["answers"]
+        assert "public_debater_b" in record["answers"]
+        assert "public_trained" not in record["answers"]
+
+    def test_selfplay_transcript_identity_uses_seat(self):
+        """In self-play mode, transcript identity uses seat names (debater_a/debater_b)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir, selfplay=True)
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+
+        for entry in record["transcript"]:
+            assert entry["identity"] in ("debater_a", "debater_b")
+            assert entry["identity"] == entry["role"]
+
+    def test_frozen_opp_schema_v1_identity_based(self):
+        """Frozen-opp records use schema_version=1 with identity-based fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir, selfplay=False)
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {"id/accuracy.trained": 1.0})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+
+        assert record["schema_version"] == 1
+        assert "trained_role" in record
+        assert "reward_trained" in record
+        assert "role" not in record
+        assert "public_trained" in record["answers"]
+        assert "public_opponent" in record["answers"]
+
+    def test_frozen_opp_signals_filters_id_prefix(self):
+        """In frozen-opp mode, signals only contains id/-prefixed metrics."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir, selfplay=False)
+            metrics = {
+                "id/accuracy.trained": 1.0,
+                "accuracy.debater_a": 0.5,  # should be excluded
+            }
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, metrics)],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+
+        assert "id/accuracy.trained" in record["signals"]
+        assert "accuracy.debater_a" not in record["signals"]
+
+
+# ---------------------------------------------------------------------------
+# Test 4: File lock concurrency test
 # ---------------------------------------------------------------------------
 
 
@@ -418,6 +529,7 @@ class TestWiring:
             renderer=MagicMock(),
             protocol_kind=ProtocolKind.SEQUENTIAL,
             num_rounds=1,
+            scoring_mode=ScoringMode.MCQ,
             episode_log_dir="/tmp/test-episodes",
         )
         batch = ds.get_batch(0)
@@ -435,6 +547,7 @@ class TestWiring:
             renderer=MagicMock(),
             protocol_kind=ProtocolKind.SEQUENTIAL,
             num_rounds=1,
+            scoring_mode=ScoringMode.MCQ,
         )
         batch = ds.get_batch(0)
         assert batch[0].episode_log_dir is None
@@ -494,8 +607,8 @@ class TestNoOp:
             # (Using tmpdir here to verify nothing was written to a default location.)
             assert not os.listdir(tmpdir)
 
-    def test_no_file_created_when_not_frozen_opponent(self):
-        """on_group_complete does nothing in normal mode (no _runtimes)."""
+    def test_empty_env_group_creates_empty_file(self):
+        """on_group_complete with empty env_group writes no records."""
         with tempfile.TemporaryDirectory() as tmpdir:
             builder = DebateGroupBuilder(
                 task_prompt="Q",
@@ -505,10 +618,7 @@ class TestNoOp:
                 protocol_kind=ProtocolKind.SEQUENTIAL,
                 num_rounds=1,
                 episode_log_dir=tmpdir,
-                # No opponent_completer = normal mode.
             )
-            # _runtimes is empty by default (normal mode).
-            assert not builder._runtimes
 
             builder.on_group_complete(
                 trajectories_G=[],
@@ -517,4 +627,6 @@ class TestNoOp:
             )
 
             episodes_path = os.path.join(tmpdir, "episodes.jsonl")
-            assert not os.path.exists(episodes_path)
+            assert os.path.exists(episodes_path)
+            with open(episodes_path) as f:
+                assert f.read() == ""

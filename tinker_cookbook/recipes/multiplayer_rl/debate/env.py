@@ -12,7 +12,7 @@ import uuid
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import chz
 import tinker
@@ -32,6 +32,7 @@ from tinker_cookbook.completers import MessageCompleter, StopCondition
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 from .scoring.metrics import MetricFn, _latest_think_answer, mcq_debate_metrics
+from .scoring.mcq import normalize_mcq
 from .scoring.trajectory import final_answer
 from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
 from .prompts import check_ab_symmetry, resolve_prompts
@@ -44,9 +45,13 @@ from .types import (
     DebateState,
     ProtocolKind,
     Role,
+    ScoringMode,
     TurnTicket,
 )
 from .core.visibility import build_generation_messages
+
+if TYPE_CHECKING:
+    from .scoring.providers import AnswerJudgeClient
 
 _EPISODE_LOG_LOCK = threading.Lock()
 
@@ -102,6 +107,37 @@ def _remap_to_identity(m: Metrics, trained_role: Role) -> Metrics:
 
 # (task_prompt, answer_a, answer_b) or (task_prompt, answer_a, answer_b, target)
 DebateProblem = tuple[str, str, str] | tuple[str, str, str, str]
+
+
+def _looks_like_mcq_answer(text: str | None) -> bool:
+    if not text:
+        return False
+    return normalize_mcq(text) is not None
+
+
+def _infer_problem_scoring_mode(problem: DebateProblem) -> ScoringMode:
+    if len(problem) == 3:
+        _prompt, answer_a, answer_b = problem
+        candidates = [answer_a, answer_b]
+    else:
+        _prompt, answer_a, answer_b, target = problem
+        candidates = [answer_a, answer_b, target]
+    non_empty = [candidate for candidate in candidates if candidate]
+    if non_empty and all(_looks_like_mcq_answer(candidate) for candidate in non_empty):
+        return ScoringMode.MCQ
+    return ScoringMode.OPEN_ENDED
+
+
+def _infer_dataset_scoring_mode(problems: Sequence[DebateProblem]) -> ScoringMode:
+    if not problems:
+        return ScoringMode.MCQ
+    modes = {_infer_problem_scoring_mode(problem) for problem in problems}
+    if len(modes) > 1:
+        raise ValueError(
+            "Mixed scoring modes in one DebateDataset are unsupported. "
+            "Pass scoring_mode explicitly or split the dataset by task family."
+        )
+    return next(iter(modes))
 
 
 @dataclass
@@ -238,15 +274,16 @@ class DebateEnv(Env):
 
 @dataclass
 class DebateGroupBuilder(EnvGroupBuilder):
-    """Builds a group of DebateEnvs sharing one runtime.
+    """Builds a group of DebateEnvs.
 
-    In normal mode (opponent_completer=None), creates one runtime with one env
-    per include_roles entry.
+    Both modes create group_size independent runtimes stored in _runtimes.
 
-    In frozen-opponent mode (opponent_completer set), creates group_size
-    independent runtimes, each with a single trained-agent env. The opponent
-    is driven by the completer via _drive_opponent(). Simultaneous slots are
-    handled by firing the opponent as a background task (asyncio.ensure_future).
+    In normal/self-play mode (opponent_completer=None), each runtime gets
+    len(include_roles) envs — all sharing the same coordinator.
+
+    In frozen-opponent mode (opponent_completer set), each runtime gets a
+    single trained-agent env. The opponent is driven by the completer via
+    _drive_opponent().
     """
 
     task_prompt: str
@@ -267,11 +304,13 @@ class DebateGroupBuilder(EnvGroupBuilder):
     randomize_position: bool = False
     prompts_ref: str = "default"
     target: str | None = None
+    scoring_mode: ScoringMode = ScoringMode.MCQ
     metrics: dict[str, MetricFn] | None = field(default=None, repr=False)
+    scorer: AnswerJudgeClient | None = field(default=None, repr=False)
+    scorer_parallelism: int = 64
     episode_log_dir: str | None = None
 
     # Set after make_envs
-    _runtime: DebateRuntime | None = field(default=None, repr=False)
     _runtimes: list[DebateRuntime] = field(default_factory=list, repr=False)
 
     def _build_answer_by_role(self) -> dict[Role, str] | None:
@@ -288,8 +327,8 @@ class DebateGroupBuilder(EnvGroupBuilder):
     ) -> None:
         if self.episode_log_dir is None:
             return
-        if not self._runtimes:
-            return  # Only log in frozen-opponent mode
+
+        is_selfplay = self.opponent_completer is None
 
         os.makedirs(self.episode_log_dir, exist_ok=True)
         records: list[str] = []
@@ -297,41 +336,77 @@ class DebateGroupBuilder(EnvGroupBuilder):
         for env, (reward, metrics) in zip(env_group, rewards_and_metrics_G, strict=True):
             assert isinstance(env, DebateEnv)
             state = env.runtime.state
-            trained_role = env.role
-            opponent_role = Role.DEBATER_B if trained_role == Role.DEBATER_A else Role.DEBATER_A
+            this_role = env.role
+            other_role = Role.DEBATER_B if this_role == Role.DEBATER_A else Role.DEBATER_A
 
-            record = {
-                "schema_version": 1,
+            # Shared fields across both modes.
+            record: dict = {
+                "schema_version": 2 if is_selfplay else 1,
                 "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
                 "debate_id": state.spec.debate_id,
                 "protocol_kind": state.spec.protocol_kind.value,
                 "prompts_ref": state.spec.prompts_ref,
                 "open_reasoning": state.spec.open_reasoning,
-                "trained_role": trained_role.value,
                 "target": state.spec.target,
                 "winner": (
                     state.outcome.winner.value if state.outcome and state.outcome.winner else None
                 ),
-                "reward_trained": reward,
-                "answers": {
-                    "public_trained": final_answer(state, role=trained_role),
-                    "public_opponent": final_answer(state, role=opponent_role),
-                    "think_trained": _latest_think_answer(state, trained_role),
-                    "think_opponent": _latest_think_answer(state, opponent_role),
-                },
-                "signals": {k: v for k, v in metrics.items() if k.startswith("id/")},
-                "transcript": [
-                    {
-                        "role": utt.role.value,
-                        "phase": utt.phase.value,
-                        "round": utt.round_index,
-                        "text": utt.text,
-                        "identity": "trained" if utt.role == trained_role else "opponent",
-                    }
-                    for utt in state.transcript
-                ],
                 "verdict_text": state.outcome.verdict_text if state.outcome else None,
             }
+
+            if is_selfplay:
+                # Self-play: seat-based framing. No trained/opponent distinction.
+                record.update(
+                    {
+                        "role": this_role.value,
+                        "reward": reward,
+                        "answers": {
+                            f"public_{Role.DEBATER_A.value}": final_answer(
+                                state, role=Role.DEBATER_A
+                            ),
+                            f"public_{Role.DEBATER_B.value}": final_answer(
+                                state, role=Role.DEBATER_B
+                            ),
+                            f"think_{Role.DEBATER_A.value}": _latest_think_answer(
+                                state, Role.DEBATER_A
+                            ),
+                            f"think_{Role.DEBATER_B.value}": _latest_think_answer(
+                                state, Role.DEBATER_B
+                            ),
+                        },
+                        "signals": dict(metrics),
+                    }
+                )
+            else:
+                # Frozen-opponent: identity-based framing.
+                record.update(
+                    {
+                        "trained_role": this_role.value,
+                        "reward_trained": reward,
+                        "answers": {
+                            "public_trained": final_answer(state, role=this_role),
+                            "public_opponent": final_answer(state, role=other_role),
+                            "think_trained": _latest_think_answer(state, this_role),
+                            "think_opponent": _latest_think_answer(state, other_role),
+                        },
+                        "signals": {k: v for k, v in metrics.items() if k.startswith("id/")},
+                    }
+                )
+
+            record["transcript"] = [
+                {
+                    "role": utt.role.value,
+                    "phase": utt.phase.value,
+                    "round": utt.round_index,
+                    "text": utt.text,
+                    "identity": (
+                        utt.role.value
+                        if is_selfplay
+                        else ("trained" if utt.role == env.role else "opponent")
+                    ),
+                }
+                for utt in state.transcript
+            ]
             records.append(json.dumps(record) + "\n")
 
         log_path = os.path.join(self.episode_log_dir, "episodes.jsonl")
@@ -340,8 +415,28 @@ class DebateGroupBuilder(EnvGroupBuilder):
                 f.writelines(records)
 
     async def make_envs(self) -> Sequence[Env]:
+        if self.opponent_completer is None and self.randomize_position:
+            raise ValueError(
+                "randomize_position=True has no effect in self-play mode "
+                "(both agents share the same policy). Set randomize_position=False."
+            )
+
         # Eager validation: fail fast on bad prompts_ref.
         prompts = resolve_prompts(self.prompts_ref)
+        if self.scoring_mode == ScoringMode.OPEN_ENDED:
+            if self.scorer is None:
+                raise ValueError(
+                    "OPEN_ENDED debate scoring requires a scorer client. "
+                    "Pass scorer=... on DebateGroupBuilder."
+                )
+            if prompts.get_binary_judge_template("matcher") is None:
+                raise ValueError(
+                    f"OPEN_ENDED debate scoring requires _matcher in {prompts.source_ref}."
+                )
+            if prompts.get_binary_judge_template("grader") is None:
+                raise ValueError(
+                    f"OPEN_ENDED debate scoring requires _grader in {prompts.source_ref}."
+                )
         if self.randomize_position:
             for w in check_ab_symmetry(prompts):
                 warnings.warn(f"randomize_position=True but A/B asymmetry: {w}")
@@ -380,6 +475,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
                     protocol_kind=self.protocol_kind,
                     prompts_ref=self.prompts_ref,
                     target=self.target,
+                    scoring_mode=self.scoring_mode,
                 )
                 state = DebateState(
                     spec=spec,
@@ -409,7 +505,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
                 )
             return envs
 
-        # Normal (multi-agent) mode.
+        # Normal (multi-agent / self-play) mode.
         # Validate all schedule actors have a corresponding env to prevent deadlock.
         required_roles = {r for slot in schedule for r in slot.actors}
         missing = required_roles - set(self.include_roles)
@@ -418,90 +514,102 @@ class DebateGroupBuilder(EnvGroupBuilder):
                 f"Schedule requires roles {missing} but include_roles={self.include_roles}. "
                 f"All schedule actors must have an env, otherwise the runtime deadlocks."
             )
-        spec = DebateSpec(
-            debate_id=uuid.uuid4().hex,
-            task_prompt=self.task_prompt,
-            answer_by_role=answer_by_role,
-            schedule=schedule,
-            open_reasoning=self.open_reasoning,
-            protocol_kind=self.protocol_kind,
-            prompts_ref=self.prompts_ref,
-            target=self.target,
-        )
-        state = DebateState(
-            spec=spec,
-            slot_index=0,
-            rounds_completed=0,
-            transcript=(),
-            pending_simultaneous={},
-            judge_trace=(),
-            done=False,
-            outcome=None,
-        )
-        self._runtime = DebateRuntime(
-            state,
-            step_reward_fn=self.step_reward_fn,
-            judge_callback=self.judge_callback,
-        )
-        return [
-            DebateEnv(role=role, runtime=self._runtime, renderer=self.renderer)
-            for role in self.include_roles
-        ]
 
-    def _compute_metrics(self, state: DebateState) -> Metrics:
-        """Compute flat metrics dict from the current state."""
+        envs: list[Env] = []
+        self._runtimes = []
+        for _ in range(self.group_size):
+            spec = DebateSpec(
+                debate_id=uuid.uuid4().hex,
+                task_prompt=self.task_prompt,
+                answer_by_role=answer_by_role,
+                schedule=schedule,
+                open_reasoning=self.open_reasoning,
+                protocol_kind=self.protocol_kind,
+                prompts_ref=self.prompts_ref,
+                target=self.target,
+                scoring_mode=self.scoring_mode,
+            )
+            state = DebateState(
+                spec=spec,
+                slot_index=0,
+                rounds_completed=0,
+                transcript=(),
+                pending_simultaneous={},
+                judge_trace=(),
+                done=False,
+                outcome=None,
+            )
+            runtime = DebateRuntime(
+                state,
+                step_reward_fn=self.step_reward_fn,
+                judge_callback=self.judge_callback,
+            )
+            self._runtimes.append(runtime)
+            for role in self.include_roles:
+                envs.append(DebateEnv(role=role, runtime=runtime, renderer=self.renderer))
+        return envs
+
+    def _compute_metrics_sync(self, state: DebateState) -> Metrics:
+        """Compute flat metrics dict from the current state using sync MetricFns."""
         metric_fns = self.metrics
         if metric_fns is None:
             metric_fns = mcq_debate_metrics()
         results = {name: fn(state) for name, fn in metric_fns.items()}
         return {name: r.value for name, r in results.items() if r.value is not None}
 
+    async def _compute_builtin_metrics_batch(self, states: Sequence[DebateState]) -> list[Metrics]:
+        from .scoring.facts import built_in_metric_values, resolve_debate_facts_for_states
+
+        facts_by_state = await resolve_debate_facts_for_states(
+            states,
+            scorer=self.scorer,
+            prompts_for_ref=resolve_prompts,
+            parallelism=self.scorer_parallelism,
+        )
+        metrics_by_state: list[Metrics] = []
+        for state, facts in zip(states, facts_by_state, strict=True):
+            values = built_in_metric_values(state, facts)
+            metrics_by_state.append({name: value for name, value in values.items() if value is not None})
+        return metrics_by_state
+
     async def compute_group_rewards(
         self, trajectory_group: list[Trajectory], env_group: Sequence[Env]
     ) -> list[tuple[float, Metrics]]:
-        if self.outcome_reward_fn is None:
-            # Still compute metrics even without outcome reward.
-            if self._runtimes:
-                results = []
-                for env in env_group:
-                    assert isinstance(env, DebateEnv)
-                    m = self._compute_metrics(env.runtime.state)
-                    m = _remap_to_identity(m, env.role)
-                    results.append((0.0, m))
-                return results
-            if self._runtime is not None:
-                m = self._compute_metrics(self._runtime.state)
-                return [(0.0, m) for _ in trajectory_group]
-            return [(0.0, {}) for _ in trajectory_group]
+        runtime_index_by_id: dict[int, int] = {}
+        unique_runtimes: list[DebateRuntime] = []
+        for env in env_group:
+            assert isinstance(env, DebateEnv)
+            runtime_id = id(env.runtime)
+            if runtime_id in runtime_index_by_id:
+                continue
+            runtime_index_by_id[runtime_id] = len(unique_runtimes)
+            unique_runtimes.append(env.runtime)
 
-        if self._runtimes:
-            # Frozen-opponent mode: each env has its own runtime.
-            results = []
-            for env in env_group:
-                assert isinstance(env, DebateEnv)
-                m = self._compute_metrics(env.runtime.state)
-                m = _remap_to_identity(m, env.role)
-                outcome = env.runtime.state.outcome
-                if outcome is None:
-                    results.append((0.0, m))
-                else:
-                    rewards_by_role = self.outcome_reward_fn(outcome)
-                    results.append((rewards_by_role.get(env.role, 0.0), m))
-            return results
+        states = [runtime.state for runtime in unique_runtimes]
+        if self.metrics is not None and any(
+            state.spec.scoring_mode == ScoringMode.OPEN_ENDED for state in states
+        ):
+            raise ValueError(
+                "Custom MetricFn injection is unsupported with OPEN_ENDED semantic scoring."
+            )
 
-        # Normal mode: single shared runtime.
-        if self._runtime is None:
-            return [(0.0, {}) for _ in trajectory_group]
-        outcome = self._runtime.state.outcome
-        m = self._compute_metrics(self._runtime.state)
-        if outcome is None:
-            return [(0.0, m) for _ in trajectory_group]
-        rewards_by_role = self.outcome_reward_fn(outcome)
+        if self.metrics is None:
+            metrics_by_runtime = await self._compute_builtin_metrics_batch(states)
+        else:
+            metrics_by_runtime = [self._compute_metrics_sync(state) for state in states]
+
         results = []
         for env in env_group:
             assert isinstance(env, DebateEnv)
-            reward = rewards_by_role.get(env.role, 0.0)
-            results.append((reward, m))
+            m = dict(metrics_by_runtime[runtime_index_by_id[id(env.runtime)]])
+            if self.opponent_completer is not None:
+                m = _remap_to_identity(m, env.role)
+            outcome = env.runtime.state.outcome
+            if outcome is None or self.outcome_reward_fn is None:
+                results.append((0.0, m))
+            else:
+                rewards_by_role = self.outcome_reward_fn(outcome)
+                results.append((rewards_by_role.get(env.role, 0.0), m))
         return results
 
     def logging_tags(self) -> list[str]:
@@ -519,6 +627,8 @@ class DebateBranchGroupBuilder(EnvGroupBuilder):
     outcome_reward_fn: OutcomeRewardFn | None = None
     include_roles: tuple[Role, ...] = (Role.DEBATER_A, Role.DEBATER_B)
     metrics: dict[str, MetricFn] | None = field(default=None, repr=False)
+    scorer: AnswerJudgeClient | None = field(default=None, repr=False)
+    scorer_parallelism: int = 64
 
     _runtime: DebateRuntime | None = field(default=None, repr=False)
 
@@ -534,22 +644,42 @@ class DebateBranchGroupBuilder(EnvGroupBuilder):
             for role in self.include_roles
         ]
 
-    def _compute_metrics(self, state: DebateState) -> Metrics:
+    def _compute_metrics_sync(self, state: DebateState) -> Metrics:
         metric_fns = self.metrics
         if metric_fns is None:
             metric_fns = mcq_debate_metrics()
         results = {name: fn(state) for name, fn in metric_fns.items()}
         return {name: r.value for name, r in results.items() if r.value is not None}
 
+    async def _compute_builtin_metrics(self, state: DebateState) -> Metrics:
+        from .scoring.facts import built_in_metric_values, resolve_debate_facts_for_states
+
+        facts = await resolve_debate_facts_for_states(
+            [state],
+            scorer=self.scorer,
+            prompts_for_ref=resolve_prompts,
+            parallelism=self.scorer_parallelism,
+        )
+        values = built_in_metric_values(state, facts[0])
+        return {name: value for name, value in values.items() if value is not None}
+
     async def compute_group_rewards(
         self, trajectory_group: list[Trajectory], env_group: Sequence[Env]
     ) -> list[tuple[float, Metrics]]:
         if self._runtime is None:
             return [(0.0, {}) for _ in trajectory_group]
-        m = self._compute_metrics(self._runtime.state)
+        state = self._runtime.state
+        if self.metrics is not None and state.spec.scoring_mode == ScoringMode.OPEN_ENDED:
+            raise ValueError(
+                "Custom MetricFn injection is unsupported with OPEN_ENDED semantic scoring."
+            )
+        if self.metrics is None:
+            m = await self._compute_builtin_metrics(state)
+        else:
+            m = self._compute_metrics_sync(state)
         if self.outcome_reward_fn is None:
             return [(0.0, m) for _ in trajectory_group]
-        outcome = self._runtime.state.outcome
+        outcome = state.outcome
         if outcome is None:
             return [(0.0, m) for _ in trajectory_group]
         rewards_by_role = self.outcome_reward_fn(outcome)
@@ -585,7 +715,10 @@ class DebateDataset(RLDataset):
         opponent_renderer: Renderer | None = None,
         randomize_position: bool = False,
         prompts_ref: str = "default",
+        scoring_mode: ScoringMode | None = None,
         metrics: dict[str, MetricFn] | None = None,
+        scorer: AnswerJudgeClient | None = None,
+        scorer_parallelism: int = 64,
         episode_log_dir: str | None = None,
     ) -> None:
         self.problems = problems
@@ -604,8 +737,17 @@ class DebateDataset(RLDataset):
         self.opponent_renderer = opponent_renderer
         self.randomize_position = randomize_position
         self.prompts_ref = prompts_ref
+        self.scoring_mode = scoring_mode or _infer_dataset_scoring_mode(problems)
         self.metrics = metrics
+        self.scorer = scorer
+        self.scorer_parallelism = scorer_parallelism
         self.episode_log_dir = episode_log_dir
+
+        if self.scoring_mode == ScoringMode.OPEN_ENDED and self.scorer is None:
+            raise ValueError(
+                "OPEN_ENDED debate scoring requires a scorer client. "
+                "Pass scorer=... on DebateDataset."
+            )
 
     @staticmethod
     def _unpack_problem(problem: DebateProblem) -> tuple[str, str, str, str | None]:
@@ -640,7 +782,10 @@ class DebateDataset(RLDataset):
                 randomize_position=self.randomize_position,
                 prompts_ref=self.prompts_ref,
                 target=target,
+                scoring_mode=self.scoring_mode,
                 metrics=self.metrics,
+                scorer=self.scorer,
+                scorer_parallelism=self.scorer_parallelism,
                 episode_log_dir=self.episode_log_dir,
             )
             for prompt, ans_a, ans_b, target in (self._unpack_problem(p) for p in batch_problems)
@@ -662,6 +807,9 @@ class DebateDatasetBuilder(RLDatasetBuilder):
     include_judge_turns: bool = False
     batch_size: int = 4
     prompts_ref: str = "default"
+    scoring_mode: ScoringMode | None = None
+    scorer: AnswerJudgeClient | None = field(default=None, repr=False)
+    scorer_parallelism: int = 64
     # Problems supplied externally (not serialized by chz).
     # Each problem is (task_prompt, answer_a, answer_b) or (task_prompt, answer_a, answer_b, target).
     train_problems: list[DebateProblem] = field(default_factory=list)
@@ -678,6 +826,9 @@ class DebateDatasetBuilder(RLDatasetBuilder):
             open_reasoning=self.open_reasoning,
             include_judge_turns=self.include_judge_turns,
             prompts_ref=self.prompts_ref,
+            scoring_mode=self.scoring_mode,
+            scorer=self.scorer,
+            scorer_parallelism=self.scorer_parallelism,
         )
         test = None
         if self.test_problems:
@@ -690,5 +841,8 @@ class DebateDatasetBuilder(RLDatasetBuilder):
                 open_reasoning=self.open_reasoning,
                 include_judge_turns=self.include_judge_turns,
                 prompts_ref=self.prompts_ref,
+                scoring_mode=self.scoring_mode,
+                scorer=self.scorer,
+                scorer_parallelism=self.scorer_parallelism,
             )
         return train, test

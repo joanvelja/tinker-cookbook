@@ -34,6 +34,11 @@ class ProtocolKind(StrEnum):
     HYBRID = "hybrid"
 
 
+class ScoringMode(StrEnum):
+    MCQ = "mcq"
+    OPEN_ENDED = "open_ended"
+
+
 class VisibilityPolicy(StrEnum):
     ALL_PRIOR = "all_prior"
     COMPLETED_ROUNDS_ONLY = "completed_rounds_only"
@@ -83,6 +88,7 @@ class DebateSpec:
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     prompts_ref: str = "default"
     target: str | None = None
+    scoring_mode: ScoringMode = ScoringMode.MCQ
 
     def __post_init__(self) -> None:
         if self.answer_by_role is not None:

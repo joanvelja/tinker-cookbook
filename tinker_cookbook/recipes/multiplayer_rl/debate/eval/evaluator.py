@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 from ..types import ProtocolKind
 from .dataset_adapter import DatasetAdapter
 from .inspect_task import debate_eval
+from ..scoring.providers import DebateScorerBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ class DebateInspectEvaluatorBuilder:
     judge_max_tokens: int = 4096
     renderer_name: str | None = None
     reasoning_effort: str | None = None
+    debater_reasoning_effort: str | None = None
+    opponent_reasoning_effort: str | None = None
+    judge_reasoning_effort: str | None = None
     model_name: str | None = None
 
     log_dir: str | None = None
@@ -53,6 +57,8 @@ class DebateInspectEvaluatorBuilder:
     base_url: str | None = None
     max_connections: int = 256
     progress_timeout_s: int = 900
+    scorer_builder: DebateScorerBuilder | None = None
+    scorer_parallelism: int | None = None
 
     def __call__(self) -> DebateInspectEvaluator:
         return DebateInspectEvaluator(self)
@@ -81,9 +87,17 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
         if cfg.model_name is None:
             raise ValueError("model_name must be set on DebateInspectEvaluatorBuilder")
 
+        debater_reasoning_effort = cfg.debater_reasoning_effort or cfg.reasoning_effort
+        opponent_reasoning_effort = (
+            cfg.opponent_reasoning_effort
+            or cfg.debater_reasoning_effort
+            or cfg.reasoning_effort
+        )
+        judge_reasoning_effort = cfg.judge_reasoning_effort or cfg.reasoning_effort
+
         # Per-role renderer construction.
         trained_name = cfg.renderer_name or model_info.get_recommended_renderer_name(
-            cfg.model_name, reasoning_effort=cfg.reasoning_effort
+            cfg.model_name, reasoning_effort=debater_reasoning_effort
         )
         trained_renderer = get_renderer(trained_name, get_tokenizer(cfg.model_name))
 
@@ -113,7 +127,7 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             )
         else:
             opp_name = model_info.get_recommended_renderer_name(
-                cfg.opponent_model, reasoning_effort=cfg.reasoning_effort
+                cfg.opponent_model, reasoning_effort=opponent_reasoning_effort
             )
             opp_renderer = get_renderer(opp_name, get_tokenizer(cfg.opponent_model))
             opp_client = service.create_sampling_client(
@@ -131,7 +145,7 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
 
         # Judge completer — always gets its own sampling client.
         judge_name = model_info.get_recommended_renderer_name(
-            cfg.judge_model, reasoning_effort=cfg.reasoning_effort
+            cfg.judge_model, reasoning_effort=judge_reasoning_effort
         )
         judge_renderer = get_renderer(judge_name, get_tokenizer(cfg.judge_model))
         judge_client = service.create_sampling_client(
@@ -147,6 +161,21 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             model_name=cfg.judge_model,
         )
 
+        scorer_client = (
+            cfg.scorer_builder.build(usage_tracker=usage_tracker)
+            if cfg.scorer_builder is not None
+            else None
+        )
+        scorer_parallelism = (
+            cfg.scorer_parallelism
+            if cfg.scorer_parallelism is not None
+            else (
+                cfg.scorer_builder.max_connections
+                if cfg.scorer_builder is not None
+                else cfg.max_connections
+            )
+        )
+
         task = debate_eval(
             adapter=cfg.adapter,
             sampling_client=trained_completer,
@@ -157,6 +186,8 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             prompts_ref=cfg.prompts_ref,
             open_reasoning=cfg.open_reasoning,
             randomize_position=cfg.randomize_position,
+            scorer_client=scorer_client,
+            scorer_parallelism=scorer_parallelism,
         )
 
         log_dir = cfg.log_dir or os.path.expanduser("~/inspect-logs")
