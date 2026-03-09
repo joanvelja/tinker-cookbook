@@ -203,7 +203,7 @@ uv run python -m tinker_cookbook.recipes.multiplayer_rl.debate.scripts.dump_io \
 
 Full 11-step walkthrough lives in `README.md`. The short version:
 
-GPQA questions load from HuggingFace with shuffled MCQ options, then get wrapped as `DebateProblem` tuples. `DebateDataset.get_batch()` yields `DebateGroupBuilder` instances, each creating `group_size` independent runtimes via `make_envs()`. The schedule (`build_schedule()`) produces a `TurnSlot` sequence from protocol + num_rounds.
+GPQA questions load from HuggingFace with shuffled MCQ options, then get wrapped as `DebateProblemSpec` instances. `DebateDataset.get_batch()` yields `DebateGroupBuilder` instances, each creating `group_size` independent runtimes via `make_envs()`. The schedule (`build_schedule()`) produces a `TurnSlot` sequence from the `DebateGameSpec`.
 
 The Tinker RL loop drives `initial_observation()` / `step(action)` while the frozen opponent runs via `MessageCompleter`. On each `submit()`, field extraction parses XML tags from model output. After the schedule exhausts, the judge renders a verdict parsed into `DebateOutcome`.
 

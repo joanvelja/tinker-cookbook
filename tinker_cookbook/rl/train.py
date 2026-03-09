@@ -132,7 +132,11 @@ def _select_representative_inds(scores: list[float], num_inds: int) -> list[int]
 
 
 @scope
-def print_group(traj_group: TrajectoryGroup, tokenizer: Tokenizer):
+def print_group(
+    traj_group: TrajectoryGroup,
+    tokenizer: Tokenizer,
+    advantages: torch.Tensor | None = None,
+):
     """
     Print a subset of the trajectory group to the console.
     """
@@ -145,9 +149,14 @@ def print_group(traj_group: TrajectoryGroup, tokenizer: Tokenizer):
             final_rewards_G=[traj_group.final_rewards_G[i] for i in inds],
             metrics_G=[traj_group.metrics_G[i] for i in inds],
         )
+        if advantages is not None:
+            advantages = advantages[inds]
 
     rewards = traj_group.get_total_rewards()
-    advantages_G = compute_advantages([traj_group])
+    if advantages is None:
+        advantages_G = compute_advantages([traj_group])
+    else:
+        advantages_G = [advantages]
     data_D, metadata_D = assemble_training_data([traj_group], advantages_G)
 
     buf = io.StringIO()
@@ -896,13 +905,15 @@ async def prepare_minibatch(
     taglist_P = [env_group_builder.logging_tags() for env_group_builder in env_group_builders_P]
     metrics.update(compute_trajectory_metrics(trajectory_groups_P, taglist_P))
 
-    # Print up to two trajectory groups
-    for traj_group in trajectory_groups_P[:2]:
-        print_group(traj_group, tokenizer)
+    # Compute advantages once for the full batch (used for both display and training)
+    advantages_P = compute_advantages(trajectory_groups_P)
+
+    # Print up to two trajectory groups with correctly-centered advantages
+    for i, traj_group in enumerate(trajectory_groups_P[:2]):
+        print_group(traj_group, tokenizer, advantages=advantages_P[i])
 
     # Assemble training data
     with timed("assemble_training_data", metrics):
-        advantages_P = compute_advantages(trajectory_groups_P)
         data_D, _metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
 
     # Incorporate KL penalty if configured

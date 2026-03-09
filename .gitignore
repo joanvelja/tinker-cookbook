@@ -4,3 +4,6 @@
 .env.*
 .venv
 uv.lock
+artifacts/
+tmp/
+docs/plans/

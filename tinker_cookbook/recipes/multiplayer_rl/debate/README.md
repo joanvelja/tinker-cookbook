@@ -128,19 +128,33 @@ With `include_judge_turns=True`, `JUDGE_QUERY` and `JUDGE_VERDICT` slots are app
 ### Programmatic usage
 
 ```python
-from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateDataset
+from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateGameSpec, DebateProblemSpec, ProtocolKind, ScoringMode,
+)
+from tinker_cookbook.recipes.multiplayer_rl.debate.dataset import DebateDataset
 
-dataset = DebateDataset(
-    problems=[("Is P=NP?", "Yes", "No", "No")],  # (prompt, ans_a, ans_b, target)
-    batch_size=1,
-    renderer=renderer,
+problem = DebateProblemSpec.from_seat_answers(
+    task_prompt="Is P=NP?",
+    answer_a="Yes",
+    answer_b="No",
+    scoring_mode=ScoringMode.MCQ,
+    target="No",
+)
+game = DebateGameSpec(
     protocol_kind=ProtocolKind.SEQUENTIAL,
     num_rounds=2,
+    prompts_ref="scientific_mcq",
+)
+
+dataset = DebateDataset(
+    problems=[problem],
+    batch_size=1,
+    group_size=4,
+    game=game,
+    renderer=renderer,
     judge_callback=judge_callback,
     outcome_reward_fn=zero_sum_outcome_reward,
     opponent_completer=opponent_completer,
-    group_size=4,
-    prompts_ref="scientific_mcq",
     metrics=mcq_debate_metrics(),
 )
 ```
@@ -168,15 +182,26 @@ def zero_sum(outcome: DebateOutcome) -> dict[Role, float]:
     loser = Role.DEBATER_B if outcome.winner == Role.DEBATER_A else Role.DEBATER_A
     return {outcome.winner: 1.0, loser: -1.0}
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateGroupBuilder
+from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateGameSpec, DebateProblemSpec, ProtocolKind, ScoringMode,
+)
+from tinker_cookbook.recipes.multiplayer_rl.debate.builders import DebateGroupBuilder
 
-group = DebateGroupBuilder(
+problem = DebateProblemSpec.from_seat_answers(
     task_prompt="Is P=NP?",
     answer_a="Yes",
     answer_b="No",
-    renderer=renderer,
-    protocol_kind="sequential",
+    scoring_mode=ScoringMode.OPEN_ENDED,
+)
+game = DebateGameSpec(
+    protocol_kind=ProtocolKind.SEQUENTIAL,
     num_rounds=2,
+)
+
+group = DebateGroupBuilder(
+    problem=problem,
+    game=game,
+    renderer=renderer,
     step_reward_fn=brevity_reward,
     outcome_reward_fn=zero_sum,
 )
@@ -212,14 +237,10 @@ class LLMJudge:
 Capture a snapshot mid-debate, then branch into independent continuations:
 
 ```python
-from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateBranchGroupBuilder
+from tinker_cookbook.recipes.multiplayer_rl.debate.builders import DebateBranchGroupBuilder
 
-# Capture state at any point
-snapshot = runtime.snapshot(
-    renderer_name="qwen3",
-    protocol_kind="sequential",
-    protocol_kwargs={},
-)
+# Capture state at any point (only renderer_name needed)
+snapshot = runtime.snapshot(renderer_name="qwen3")
 
 # Create N independent branches from the same state
 branches = [
