@@ -71,6 +71,7 @@ class DebatePrompts:
     content_hash: str
     source_ref: str
     binary_judges: dict[str, BinaryJudgeTemplate] = field(default_factory=dict)
+    opponent_wrap: dict[str, jinja2.Template] | None = None
 
     def render_system(self, state: DebateState, viewer: Role) -> str:
         """Render system template for viewer. Strict lookup, no fallback."""
@@ -190,6 +191,22 @@ class DebatePrompts:
             return None
         return list(trigger_fields.keys())
 
+    def render_opponent_wrap(self, text: str, label: str, phase: str, viewer: Role) -> str:
+        """Render opponent wrap template for the given viewer.
+
+        Uses "debater" template for DEBATER_A/DEBATER_B viewers,
+        "judge" template for JUDGE viewer. Variables: text, label, phase.
+        """
+        if self.opponent_wrap is None:
+            raise ValueError("render_opponent_wrap called but opponent_wrap is None")
+        key = "judge" if viewer == Role.JUDGE else "debater"
+        if key not in self.opponent_wrap:
+            raise KeyError(
+                f"No opponent_wrap template for key={key} "
+                f"in {self.source_ref}. Available keys: {sorted(self.opponent_wrap.keys())}"
+            )
+        return self.opponent_wrap[key].render(text=text, label=label, phase=phase)
+
     def get_binary_judge_template(
         self, name: Literal["matcher", "grader"]
     ) -> BinaryJudgeTemplate | None:
@@ -264,7 +281,7 @@ def _build_context(state: DebateState, viewer: Role) -> dict:
         round_index = -1
     num_rounds = max((s.round_index for s in schedule), default=0) + 1
 
-    answer_by_role = state.spec.answer_by_role
+    answer_by_role = state.spec.problem.answer_by_role
     has_assigned = bool(answer_by_role and viewer in answer_by_role and answer_by_role[viewer])
 
     return {
@@ -287,9 +304,9 @@ def _build_context(state: DebateState, viewer: Role) -> dict:
 
 def _actual_values(state: DebateState, viewer: Role) -> dict[str, str]:
     """Map sentinel keys to their real values for post-Jinja replacement."""
-    answer_by_role = state.spec.answer_by_role or {}
+    answer_by_role = state.spec.problem.answer_by_role or {}
     return {
-        "task_prompt": state.spec.task_prompt,
+        "task_prompt": state.spec.problem.task_prompt,
         "answer": answer_by_role.get(viewer, ""),
         "answer_a": answer_by_role.get(Role.DEBATER_A, ""),
         "answer_b": answer_by_role.get(Role.DEBATER_B, ""),
@@ -465,6 +482,19 @@ def _validate(d: dict) -> None:
                         if scoring is not None:
                             validate_type_scoring(tag_name, _TYPE_MAP[type_str], scoring)
 
+    # Validate opponent_wrap section.
+    ow = d.get("opponent_wrap")
+    if ow is not None:
+        if not isinstance(ow, dict):
+            raise ValueError(f"opponent_wrap: expected mapping, got {type(ow).__name__}")
+        valid_keys = {"debater", "judge"}
+        extra = set(ow) - valid_keys
+        if extra:
+            raise ValueError(f"opponent_wrap: unknown keys {sorted(extra)} (expected 'debater' and/or 'judge')")
+        for key, val in ow.items():
+            if not isinstance(val, str):
+                raise ValueError(f"opponent_wrap.{key}: expected str, got {type(val).__name__}")
+
 
 _jinja_env = jinja2.sandbox.SandboxedEnvironment(undefined=jinja2.StrictUndefined)
 
@@ -581,6 +611,12 @@ def resolve_prompts(ref: str) -> DebatePrompts:
     fields = _parse_fields(d.get("fields", {}))
     binary_judges = _compile_binary_judge_blocks(d)
 
+    # Compile opponent_wrap templates.
+    raw_ow = d.get("opponent_wrap")
+    opponent_wrap: dict[str, jinja2.Template] | None = None
+    if raw_ow is not None:
+        opponent_wrap = {key: _jinja_env.from_string(val) for key, val in raw_ow.items()}
+
     prompts = DebatePrompts(
         system=system,
         user=user,
@@ -591,6 +627,7 @@ def resolve_prompts(ref: str) -> DebatePrompts:
         binary_judges=binary_judges,
         content_hash=content_hash,
         source_ref=str(path),
+        opponent_wrap=opponent_wrap,
     )
 
     warnings = check_ab_symmetry(prompts)

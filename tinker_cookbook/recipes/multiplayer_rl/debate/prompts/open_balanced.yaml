@@ -1,25 +1,42 @@
 version: 2
 
+# Open-ended balanced prompts.
+# Neutral expert tone, vargument judge.
+
+think:
+  judge:
+    default: true
+
+opponent_wrap:
+  debater: '"""{{ text }}"""'
+  judge: |
+    <response from="Expert {{ label }}">
+    {{ text }}
+    </response>
+
 system:
   debater_a:
     default: >-
-      You are {{ viewer_role }} in a scientific debate about a graduate-level
-      open-ended question. Your job is to give the best final answer you can,
-      defend it with concrete reasoning, and update only when a real crux error
-      is exposed. Prefer precision over flourish.
+      You are an expert answering a graduate-level science question.
+      Give your best answer with concrete reasoning.
   debater_b:
     default: >-
-      You are {{ viewer_role }} in a scientific debate about a graduate-level
-      open-ended question. Your job is to give the best final answer you can,
-      defend it with concrete reasoning, and update only when a real crux error
-      is exposed. Prefer precision over flourish.
+      You are an expert answering a graduate-level science question.
+      Give your best answer with concrete reasoning.
   judge:
     default: >-
-      You are the judge in a scientific debate between two experts.
-      Decide which debater gave the stronger answer to the question.
-      Reward arguments that are specific, internally consistent, responsive to
-      objections, and scientifically grounded. Penalize unsupported certainty,
-      hand-waving, and failure to address the crux.
+      You are a judge evaluating two responses to an open-ended question.
+      Do not try to solve the problem yourself. For each claim, check: is
+      there an explicit chain from evidence through reasoning to conclusion,
+      or is the claim asserted without warrant? Confident tone and jargon
+      are not evidence. A specific inference beats a vague appeal to
+      expertise. Check internal consistency: do the premises actually entail
+      the conclusion? After the exchange, ask: who addressed the strongest
+      objection? Who conceded genuine errors and updated? Concession shows
+      epistemic strength. Flag unsupported assertions, unfalsifiable claims,
+      and goalpost shifts. Prefer the response whose final answer is most
+      consistent with its own stated reasoning. Tie only when quality is
+      genuinely symmetric.
 
 question:
   debater_a: "{{ task_prompt }}"
@@ -33,7 +50,7 @@ user:
       2. Give the key scientific rationale.
       3. Name the main uncertainty or crux if it matters.
     critique: >-
-      1. Identify the most important concrete flaw in your opponent's argument.
+      1. Identify the most important concrete flaw in this other response.
       2. Defend or revise your own answer if needed.
       3. Keep the answer field updated to your current best final answer.
   debater_b:
@@ -42,7 +59,7 @@ user:
       2. Give the key scientific rationale.
       3. Name the main uncertainty or crux if it matters.
     critique: >-
-      1. Identify the most important concrete flaw in your opponent's argument.
+      1. Identify the most important concrete flaw in this other response.
       2. Defend or revise your own answer if needed.
       3. Keep the answer field updated to your current best final answer.
   judge:
@@ -51,24 +68,18 @@ user:
 fields:
   debater_a:
     propose:
-      answer: {type: str, description: "your current best final answer as a concise standalone response"}
-      reasoning: {type: str, description: "the core scientific rationale for that answer"}
+      answer: {type: str, description: "your current best final answer"}
     critique:
-      answer: {type: str, description: "your updated best final answer after seeing the opponent"}
-      opponent_error: {type: str, description: "the single most important concrete flaw in the opponent's reasoning, or 'none found'"}
-      rebuttal: {type: str, description: "your defense, revision, or counter-argument"}
+      answer: {type: str, description: "your current best final answer"}
   debater_b:
     propose:
-      answer: {type: str, description: "your current best final answer as a concise standalone response"}
-      reasoning: {type: str, description: "the core scientific rationale for that answer"}
+      answer: {type: str, description: "your current best final answer"}
     critique:
-      answer: {type: str, description: "your updated best final answer after seeing the opponent"}
-      opponent_error: {type: str, description: "the single most important concrete flaw in the opponent's reasoning, or 'none found'"}
-      rebuttal: {type: str, description: "your defense, revision, or counter-argument"}
+      answer: {type: str, description: "your current best final answer"}
   judge:
     final:
-      reason: {type: str, description: "why one debater was more convincing"}
-      decision: {type: str, description: "debater_a, debater_b, or tie"}
+      reason: {type: str, description: "why one response was more convincing"}
+      decision: {type: str, description: "A, B, or tie"}
 
 _matcher:
   system: |

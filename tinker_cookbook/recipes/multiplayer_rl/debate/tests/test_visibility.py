@@ -4,21 +4,24 @@ from __future__ import annotations
 
 
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
+from tinker_cookbook.recipes.multiplayer_rl.debate.tests.conftest import make_spec
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     TurnSlot,
     Utterance,
     VisibilityPolicy,
+    _strip_reasoning,
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.visibility import (
     REGISTRY,
     _consolidate_str_messages,
     _shuffle_simultaneous,
-    _strip_reasoning,
     _wrap_opponent_turn,
     all_prior,
     build_generation_messages,
@@ -32,8 +35,7 @@ def _make_spec(
     schedule: tuple[TurnSlot, ...],
     open_reasoning: bool = False,
 ) -> DebateSpec:
-    return DebateSpec(
-        debate_id="test",
+    return make_spec(
         task_prompt="Which is bigger, 2 or 3?",
         answer_by_role={Role.DEBATER_A: "2", Role.DEBATER_B: "3"},
         schedule=schedule,
@@ -172,7 +174,7 @@ def test_completed_rounds_only_empty_first_round():
 def test_wrap_opponent_turn_format():
     utt = _utt(Role.DEBATER_A, 0, "my argument")
     wrapped = _wrap_opponent_turn(utt, open_reasoning=True)
-    assert '<opponent_turn agent="Debater A" phase="propose">' in wrapped
+    assert '<opponent_turn agent="A" phase="propose">' in wrapped
     assert "my argument" in wrapped
     assert "</opponent_turn>" in wrapped
 
@@ -326,7 +328,7 @@ def test_get_visible_messages_opponent_wrapped():
     # Opponent turn = user, wrapped
     assert msgs[3]["role"] == "user"
     assert "<opponent_turn" in msgs[3]["content"]
-    assert "Debater B" in msgs[3]["content"]
+    assert 'agent="B"' in msgs[3]["content"]
 
 
 # --- No assigned stance ---
@@ -336,8 +338,7 @@ def _make_spec_no_stance(
     schedule: tuple[TurnSlot, ...],
     open_reasoning: bool = False,
 ) -> DebateSpec:
-    return DebateSpec(
-        debate_id="test",
+    return make_spec(
         task_prompt="Which is bigger, 2 or 3?",
         answer_by_role=None,
         schedule=schedule,
@@ -380,8 +381,11 @@ def test_build_generation_messages_structure():
     schedule = build_schedule(ProtocolKind.SEQUENTIAL, 1)
     spec = DebateSpec(
         debate_id="test",
-        task_prompt="Is 2>3?",
-        answer_by_role={Role.DEBATER_A: "yes", Role.DEBATER_B: "no"},
+        problem=DebateProblemSpec(
+            task_prompt="Is 2>3?",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role={Role.DEBATER_A: "yes", Role.DEBATER_B: "no"},
+        ),
         schedule=schedule,
         open_reasoning=False,
     )
@@ -398,7 +402,7 @@ def test_build_generation_messages_structure():
     assert "Your assigned position: no" in msgs[1]["content"]
     # Transcript: opponent turn wrapped in XML
     assert msgs[2]["role"] == "user"
-    assert '<opponent_turn agent="Debater A"' in msgs[2]["content"]
+    assert '<opponent_turn agent="A"' in msgs[2]["content"]
     assert "</opponent_turn>" in msgs[2]["content"]
     assert prefill is None
 
@@ -418,8 +422,8 @@ def test_build_generation_messages_judge_all_wrapped():
     # Both debate turns must be wrapped (judge is never "self")
     assert transcript_content.count("<opponent_turn") == 2
     assert transcript_content.count("</opponent_turn>") == 2
-    assert 'agent="Debater A"' in transcript_content
-    assert 'agent="Debater B"' in transcript_content
+    assert 'agent="A"' in transcript_content
+    assert 'agent="B"' in transcript_content
     # No raw unwrapped turn content outside of opponent_turn tags
     assert "A argues" in transcript_content
     assert "B argues" in transcript_content
@@ -472,8 +476,11 @@ prefill:
     try:
         spec = DebateSpec(
             debate_id="test",
-            task_prompt="Question?",
-            answer_by_role={Role.DEBATER_A: "yes", Role.DEBATER_B: "no"},
+            problem=DebateProblemSpec(
+                task_prompt="Question?",
+                scoring_mode=ScoringMode.MCQ,
+                answer_by_role={Role.DEBATER_A: "yes", Role.DEBATER_B: "no"},
+            ),
             schedule=build_schedule(ProtocolKind.SEQUENTIAL, 1),
             open_reasoning=False,
             prompts_ref=f.name,
@@ -484,6 +491,125 @@ prefill:
         # Debater B has no prefill config -> None
         msgs_b, prefill_b = build_generation_messages(state, Role.DEBATER_B)
         assert prefill_b is None
+    finally:
+        import os
+
+        os.unlink(f.name)
+        _rp.cache_clear()
+
+
+# --- opponent_wrap ---
+
+
+def test_wrap_opponent_turn_fallback_no_prompts():
+    """Without prompts/viewer, _wrap_opponent_turn uses hardcoded format."""
+    utt = _utt(Role.DEBATER_A, 0, "hello")
+    wrapped = _wrap_opponent_turn(utt, open_reasoning=True)
+    assert '<opponent_turn agent="A" phase="propose">' in wrapped
+    assert "hello" in wrapped
+
+
+def test_wrap_opponent_turn_with_opponent_wrap():
+    """With prompts.opponent_wrap, _wrap_opponent_turn delegates to template."""
+    import tempfile
+    from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import resolve_prompts as _rp
+
+    yaml_content = """\
+version: 2
+system:
+  judge:
+    default: "judge"
+  debater_a:
+    default: "a"
+  debater_b:
+    default: "b"
+question:
+  debater_a: "q"
+  debater_b: "q"
+opponent_wrap:
+  debater: "{{ text }}"
+  judge: '<response from="Expert {{ label }}">\n{{ text }}\n</response>'
+"""
+    f = tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False)
+    f.write(yaml_content)
+    f.flush()
+    f.close()
+    _rp.cache_clear()
+    try:
+        prompts = _rp(f.name)
+        utt = _utt(Role.DEBATER_A, 0, "my argument")
+        # Debater viewer: raw text
+        wrapped_debater = _wrap_opponent_turn(utt, open_reasoning=True, prompts=prompts, viewer=Role.DEBATER_B)
+        assert wrapped_debater == "my argument"
+        assert "<opponent_turn" not in wrapped_debater
+        # Judge viewer: wrapped with custom template
+        wrapped_judge = _wrap_opponent_turn(utt, open_reasoning=True, prompts=prompts, viewer=Role.JUDGE)
+        assert 'from="Expert A"' in wrapped_judge
+        assert "my argument" in wrapped_judge
+    finally:
+        import os
+
+        os.unlink(f.name)
+        _rp.cache_clear()
+
+
+def test_get_visible_messages_with_opponent_wrap():
+    """Full integration: opponent_wrap templates used in get_visible_messages."""
+    import tempfile
+    from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import resolve_prompts as _rp
+    from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule as _bs
+
+    yaml_content = """\
+version: 2
+system:
+  judge:
+    default: "judge"
+  debater_a:
+    default: "a"
+  debater_b:
+    default: "b"
+question:
+  debater_a: "q"
+  debater_b: "q"
+  judge: "q"
+opponent_wrap:
+  debater: "{{ text }}"
+  judge: '<response from="Expert {{ label }}">\n{{ text }}\n</response>'
+"""
+    f = tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False)
+    f.write(yaml_content)
+    f.flush()
+    f.close()
+    _rp.cache_clear()
+    try:
+        schedule = _bs(ProtocolKind.SEQUENTIAL, 1, include_judge_turns=True)
+        spec = DebateSpec(
+            debate_id="test",
+            problem=DebateProblemSpec(
+                task_prompt="Q?",
+                scoring_mode=ScoringMode.MCQ,
+                answer_by_role={Role.DEBATER_A: "yes", Role.DEBATER_B: "no"},
+            ),
+            schedule=schedule,
+            open_reasoning=False,
+            prompts_ref=f.name,
+        )
+        transcript = (
+            _utt(Role.DEBATER_A, 0, "A argues"),
+            _utt(Role.DEBATER_B, 0, "B argues"),
+        )
+        state = _make_state(spec, transcript=transcript, slot_index=2, rounds_completed=1)
+        # Debater B sees A's turn as raw text
+        msgs_b = get_visible_messages(state, Role.DEBATER_B)
+        opponent_msg = [m for m in msgs_b if m["role"] == "user" and "A argues" in str(m.get("content", ""))]
+        assert len(opponent_msg) == 1
+        assert "<opponent_turn" not in opponent_msg[0]["content"]
+        assert opponent_msg[0]["content"] == "A argues"
+        # Judge sees wrapped
+        msgs_j = get_visible_messages(state, Role.JUDGE)
+        judge_content = "\n".join(str(m.get("content", "")) for m in msgs_j)
+        assert 'from="Expert A"' in judge_content
+        assert 'from="Expert B"' in judge_content
     finally:
         import os
 

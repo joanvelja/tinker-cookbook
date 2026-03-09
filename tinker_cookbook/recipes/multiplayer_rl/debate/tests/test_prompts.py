@@ -16,12 +16,15 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.fields import FieldSp
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.parsing import (
     generate_format_instructions,
 )
+from tinker_cookbook.recipes.multiplayer_rl.debate.tests.conftest import make_spec
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     TurnSlot,
     VisibilityPolicy,
 )
@@ -74,13 +77,11 @@ def _make_spec(
 ) -> DebateSpec:
     if answer_by_role is None:
         answer_by_role = {Role.DEBATER_A: "Yes", Role.DEBATER_B: "No"}
-    return DebateSpec(
-        debate_id="test",
+    return make_spec(
         task_prompt=task_prompt,
         answer_by_role=answer_by_role,
         schedule=_make_schedule(num_rounds),
         open_reasoning=open_reasoning,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
         prompts_ref=prompts_ref,
     )
 
@@ -366,8 +367,11 @@ def test_answer_by_role_none():
     p = resolve_prompts("default")
     spec = DebateSpec(
         debate_id="test",
-        task_prompt="Question?",
-        answer_by_role=None,
+        problem=DebateProblemSpec(
+            task_prompt="Question?",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role=None,
+        ),
         schedule=_make_schedule(1),
         open_reasoning=False,
         protocol_kind=ProtocolKind.SEQUENTIAL,
@@ -827,4 +831,83 @@ def test_mixed_default_rejected_think():
         _v2_yaml(extra="think:\n  debater_a:\n    default: true\n    critique: false\n")
     )
     with pytest.raises(ValueError, match="cannot coexist"):
+        resolve_prompts(path)
+
+
+# ---------------------------------------------------------------------------
+# opponent_wrap
+# ---------------------------------------------------------------------------
+
+
+def test_opponent_wrap_parsed():
+    """opponent_wrap YAML section loads correctly."""
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
+opponent_wrap:
+  debater: "{{ text }}"
+  judge: '<response from="Expert {{ label }}">\n{{ text }}\n</response>'
+"""
+        )
+    )
+    p = resolve_prompts(path)
+    assert p.opponent_wrap is not None
+    assert "debater" in p.opponent_wrap
+    assert "judge" in p.opponent_wrap
+
+
+def test_opponent_wrap_absent():
+    """No opponent_wrap section -> None (legacy fallback)."""
+    p = resolve_prompts("default")
+    assert p.opponent_wrap is None
+
+
+def test_render_opponent_wrap_debater():
+    """render_opponent_wrap with debater viewer -> debater template."""
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
+opponent_wrap:
+  debater: "{{ text }}"
+  judge: '<response from="Expert {{ label }}">\n{{ text }}\n</response>'
+"""
+        )
+    )
+    p = resolve_prompts(path)
+    result = p.render_opponent_wrap("hello world", "A", "propose", Role.DEBATER_B)
+    assert result == "hello world"
+
+
+def test_render_opponent_wrap_judge():
+    """render_opponent_wrap with judge viewer -> judge template with label."""
+    path = _tmp_yaml(
+        _v2_yaml(
+            extra="""\
+opponent_wrap:
+  debater: "{{ text }}"
+  judge: '<response from="Expert {{ label }}">\n{{ text }}\n</response>'
+"""
+        )
+    )
+    p = resolve_prompts(path)
+    result = p.render_opponent_wrap("my argument", "A", "propose", Role.JUDGE)
+    assert 'from="Expert A"' in result
+    assert "my argument" in result
+
+
+def test_opponent_wrap_validation_bad_keys():
+    """opponent_wrap with unknown keys is rejected."""
+    path = _tmp_yaml(
+        _v2_yaml(extra="opponent_wrap:\n  badkey: '{{ text }}'\n")
+    )
+    with pytest.raises(ValueError, match="unknown keys"):
+        resolve_prompts(path)
+
+
+def test_opponent_wrap_validation_non_string():
+    """opponent_wrap with non-string value is rejected."""
+    path = _tmp_yaml(
+        _v2_yaml(extra="opponent_wrap:\n  debater: 42\n")
+    )
+    with pytest.raises(ValueError, match="expected str"):
         resolve_prompts(path)

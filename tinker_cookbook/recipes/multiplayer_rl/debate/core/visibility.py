@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import random
-import re
 from collections.abc import Callable
 
 from tinker_cookbook.renderers import Message
@@ -26,17 +25,11 @@ def register(policy: VisibilityPolicy) -> Callable[[VisibilityFn], VisibilityFn]
     return decorator
 
 
-_THINK_RE = re.compile(r"<think(?:ing)?[^>]*>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
-
 _ROLE_LABELS: dict[Role, str] = {
-    Role.DEBATER_A: "Debater A",
-    Role.DEBATER_B: "Debater B",
+    Role.DEBATER_A: "A",
+    Role.DEBATER_B: "B",
     Role.JUDGE: "Judge",
 }
-
-
-def _strip_reasoning(text: str) -> str:
-    return _THINK_RE.sub("", text).strip()
 
 
 def _system_message(state: DebateState, viewer: Role) -> Message:
@@ -44,20 +37,21 @@ def _system_message(state: DebateState, viewer: Role) -> Message:
     return Message(role="system", content=prompts.render_system(state, viewer))
 
 
-def _wrap_opponent_turn(utt: Utterance, open_reasoning: bool) -> str:
+def _wrap_opponent_turn(utt: Utterance, open_reasoning: bool, prompts=None, viewer=None) -> str:
     label = _ROLE_LABELS[utt.role]
-    text = utt.text if open_reasoning else _strip_reasoning(utt.text)
+    text = utt.text if open_reasoning else utt.stripped_text
+    if prompts is not None and prompts.opponent_wrap is not None and viewer is not None:
+        return prompts.render_opponent_wrap(text, label, utt.phase.value, viewer)
     return f'<opponent_turn agent="{label}" phase="{utt.phase.value}">\n{text}\n</opponent_turn>'
 
 
-def _utterance_to_message(utt: Utterance, viewer: Role, open_reasoning: bool) -> Message:
-    """Convert utterance to Message. Own turns -> assistant (stripped), opponent -> user (wrapped)."""
+def _utterance_to_message(utt: Utterance, viewer: Role, open_reasoning: bool, prompts=None) -> Message:
+    """Convert utterance to Message. Own turns -> assistant (full text), opponent -> user (wrapped)."""
     if utt.role == viewer:
-        # Strip own prior thinking to save context budget; the public output
-        # already reflects those decisions.
-        return Message(role="assistant", content=_strip_reasoning(utt.text))
+        # Keep full text (including thinking) for KV-cache prefix reuse.
+        return Message(role="assistant", content=utt.text)
     else:
-        return Message(role="user", content=_wrap_opponent_turn(utt, open_reasoning))
+        return Message(role="user", content=_wrap_opponent_turn(utt, open_reasoning, prompts=prompts, viewer=viewer))
 
 
 def _shuffle_simultaneous(
@@ -140,6 +134,7 @@ def completed_rounds_only(state: DebateState, viewer: Role) -> list[Utterance]:
 
 def get_visible_messages(state: DebateState, viewer: Role) -> tuple[Message, ...]:
     """Observation messages: system + question + transcript (no instructions)."""
+    prompts = resolve_prompts(state.spec.prompts_ref)
     msgs: list[Message] = [_system_message(state, viewer)]
 
     q = _question_message(state, viewer)
@@ -161,7 +156,7 @@ def get_visible_messages(state: DebateState, viewer: Role) -> tuple[Message, ...
 
     # Convert to Messages
     for utt in utterances:
-        msgs.append(_utterance_to_message(utt, viewer, state.spec.open_reasoning))
+        msgs.append(_utterance_to_message(utt, viewer, state.spec.open_reasoning, prompts=prompts))
 
     return tuple(msgs)
 
@@ -172,37 +167,58 @@ def build_generation_messages(
     *,
     trigger: str | None = None,
 ) -> tuple[list[Message], str | None]:
-    """Full prompt assembly: observation + instruction + prefill.
+    """Full prompt assembly: observation + interleaved instructions + prefill.
+
+    Produces a prefix-monotonic message sequence for KV-cache reuse:
+      [system] [question] [instr_1] [own_turn_1] [opp_turn_1] [instr_2] [own_turn_2] ... [current_instr]
+
+    Historical phase instructions are reconstructed before each own-turn.
+    Adjacent same-role user messages are consolidated for API compliance.
 
     Returns (messages, prefill_string_or_None).
     """
     prompts = resolve_prompts(state.spec.prompts_ref)
 
-    # 1. Observation: system + question + transcript
-    obs = list(get_visible_messages(state, viewer))
+    # 1. Fixed prefix: system + question
+    msgs: list[Message] = [_system_message(state, viewer)]
+    q = _question_message(state, viewer)
+    if q is not None:
+        msgs.append(q)
 
-    # 2. Scoped consolidation: keep system (0) and question (1) fixed, consolidate transcript only
-    transcript_start = 1  # after system
-    if len(obs) > 1 and obs[1]["role"] == "user":
-        q = _question_message(state, viewer)
-        if q is not None:
-            transcript_start = 2
+    # 2. Get visible utterances (policy-filtered, shuffled for judge)
+    schedule = state.spec.schedule
+    if state.slot_index < len(schedule):
+        policy_name = schedule[state.slot_index].visibility_policy
+    else:
+        policy_name = VisibilityPolicy.ALL_PRIOR
 
-    fixed = obs[:transcript_start]
-    transcript_msgs = obs[transcript_start:]
-    consolidated = _consolidate_str_messages(transcript_msgs)
-    msgs = fixed + consolidated
+    utterances = REGISTRY[policy_name](state, viewer)
+    utterances = _shuffle_simultaneous(utterances, viewer, state)
 
-    # 3. Resolve trigger
+    # 3. Build transcript with interleaved phase instructions before own turns
+    transcript_msgs: list[Message] = []
+    for utt in utterances:
+        if utt.role == viewer:
+            # Insert reconstructed phase instruction before own turn
+            instr = prompts.render_user(state, viewer, trigger=utt.phase.value)
+            if instr:
+                transcript_msgs.append(Message(role="user", content=instr))
+        transcript_msgs.append(
+            _utterance_to_message(utt, viewer, state.spec.open_reasoning, prompts=prompts)
+        )
+
+    # 4. Consolidate transcript (merges adjacent same-role user messages)
+    msgs.extend(_consolidate_str_messages(transcript_msgs))
+
+    # 5. Resolve trigger and append current instruction
     if trigger is None:
         trigger = current_phase(state)
 
-    # 4. Append instruction (phase + think + fields)
     user_content = prompts.render_user(state, viewer, trigger=trigger)
     if user_content:
         msgs.append(Message(role="user", content=user_content))
 
-    # 5. Resolve prefill
+    # 6. Resolve prefill
     prefill = prompts.render_prefill(state, viewer, trigger=trigger)
 
     return msgs, prefill
