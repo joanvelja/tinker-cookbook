@@ -14,9 +14,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import random
-
-import datasets
 import tinker
 
 from tinker_cookbook.completers import TinkerMessageCompleter, TinkerTokenCompleter
@@ -26,11 +23,13 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.usage import UsageTracker
 from tinker_cookbook.utils import logtree
 
-from ..env import DebateDataset, DebateEnv, DebateProblem
+from ..env import DebateEnv
+from ..dataset import DebateDataset
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from ..scoring.metrics import mcq_debate_metrics
 from .trace_fmt import DebateTraceCSSInjector, render_rollout_html
-from ..types import ProtocolKind
+from ..types import DebateGameSpec, ProtocolKind, Role
+from ..data.gpqa import assign_seat_answers, load_gpqa_mcq_problems
 
 MODEL = "Qwen/Qwen3-4B-Instruct-2507"
 RENDERER = "qwen3_instruct"
@@ -39,42 +38,16 @@ TRACE_PATH = "/tmp/tinker-examples/smoke_mcq.html"
 N_PROBLEMS = 2
 
 
-def _load_gpqa_problems(n: int, seed: int = 42) -> list[DebateProblem]:
-    """Load n GPQA diamond problems as (task_prompt, answer_a, answer_b, target) tuples."""
-    ds = datasets.load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
-    rng = random.Random(seed)
-    indices = rng.sample(range(len(ds)), min(n, len(ds)))
-
-    problems: list[DebateProblem] = []
-    for idx in indices:
-        row = ds[idx]
-        correct = row["Correct Answer"]
-        wrong = [row[f"Incorrect Answer {i}"] for i in (1, 2, 3)]
-
-        # Shuffle into ABCD, track correct label.
-        options = [correct] + wrong
-        rng.shuffle(options)
-        target_label = chr(ord("A") + options.index(correct))
-
-        # Format as MCQ prompt.
-        question = row["Question"]
-        option_lines = "\n".join(f"{chr(ord('A') + i)}) {opt}" for i, opt in enumerate(options))
-        task_prompt = f"{question}\n\n{option_lines}"
-
-        # Debater A gets the correct answer, debater B gets a random wrong one.
-        wrong_label = rng.choice(
-            [chr(ord("A") + i) for i in range(4) if chr(ord("A") + i) != target_label]
-        )
-        problems.append((task_prompt, target_label, wrong_label, target_label))
-
-    return problems
-
-
 async def run():
-    problems = _load_gpqa_problems(N_PROBLEMS)
+    problems = assign_seat_answers(load_gpqa_mcq_problems(N_PROBLEMS))
     print(f"Loaded {len(problems)} GPQA problems", flush=True)
-    for i, (prompt, ans_a, ans_b, target) in enumerate(problems):
-        print(f"  [{i}] A={ans_a} B={ans_b} target={target}  {prompt[:80]}...", flush=True)
+    for i, prob in enumerate(problems):
+        abr = prob.answer_by_role or {}
+        print(
+            f"  [{i}] A={abr.get(Role.DEBATER_A, '')} B={abr.get(Role.DEBATER_B, '')} "
+            f"target={prob.target}  {prob.task_prompt[:80]}...",
+            flush=True,
+        )
     print(flush=True)
 
     # Separate ServiceClient per actor to avoid holder-level backoff coupling.
@@ -105,17 +78,20 @@ async def run():
         model_name=MODEL,
     )
 
+    game = DebateGameSpec(
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=2,
+        prompts_ref=PROMPTS_REF,
+    )
     dataset = DebateDataset(
         problems=problems,
         batch_size=len(problems),
+        group_size=2,
+        game=game,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=2,
         judge_callback=LLMJudgeCallback(judge_completer),
         outcome_reward_fn=zero_sum_outcome_reward,
         opponent_completer=opponent_completer,
-        group_size=2,
-        prompts_ref=PROMPTS_REF,
         metrics=mcq_debate_metrics(),
     )
 

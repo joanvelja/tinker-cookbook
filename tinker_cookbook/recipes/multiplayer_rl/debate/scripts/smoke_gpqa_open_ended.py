@@ -28,12 +28,13 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.usage import UsageTracker
 from tinker_cookbook.utils import logtree
 
-from ..env import DebateDataset, DebateProblem, DebateEnv
-from ..eval.dataset_adapter import GPQAOpenEndedAdapter
+from ..env import DebateEnv
+from ..dataset import DebateDataset
+from ..data.gpqa import load_gpqa_open_ended_problems, problem_to_sample
 from ..progress import run_with_heartbeat
-from ..scoring import DebateScorerBuilder, RecordingAnswerJudgeClient
+from ..scoring import AnswerJudgeClient, DebateScorerBuilder, RecordingAnswerJudgeClient
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
-from ..types import ProtocolKind
+from ..types import DebateGameSpec, ProtocolKind
 from .trace_fmt import DebateTraceCSSInjector, render_rollout_html
 
 DEBATER_MODEL = "openai/gpt-oss-120b"
@@ -53,14 +54,6 @@ def _default_run_name(prompts_ref: str) -> str:
 def _artifact_dir(root: str | None, prompts_ref: str) -> Path:
     base = Path(root or "artifacts/debate/gpqa_open_ended")
     return base / _default_run_name(prompts_ref)
-
-
-def _samples_to_problems(samples) -> list[DebateProblem]:
-    problems: list[DebateProblem] = []
-    for sample in samples:
-        target = sample.target.text if hasattr(sample.target, "text") else str(sample.target)
-        problems.append((str(sample.input), "", "", target))
-    return problems
 
 
 def _render_scorer_calls_html(problem_calls) -> str:
@@ -95,7 +88,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=[],
         help="Repeatable record id selector. Defaults to two fixed smoke records.",
     )
-    parser.add_argument("--prompts-ref", default="gpqa_open_balanced_smoke")
+    parser.add_argument("--prompts-ref", default="open_balanced")
     parser.add_argument("--num-rounds", type=int, default=2)
     parser.add_argument("--group-size", type=int, default=1)
     parser.add_argument("--debater-model", default=DEBATER_MODEL)
@@ -123,14 +116,12 @@ async def run(args: argparse.Namespace) -> None:
     episode_log_dir = artifact_dir / "episodes"
 
     record_ids = args.record_ids or list(DEFAULT_RECORD_IDS)
-    adapter = GPQAOpenEndedAdapter(
+    problems = load_gpqa_open_ended_problems(
         subset=args.subset,
         split=args.split,
         record_ids=record_ids,
     )
-    samples = adapter.to_samples()
-    problems = _samples_to_problems(samples)
-    scoring_mode = adapter.resolve_scoring_mode()
+    samples = [problem_to_sample(p, source="gpqa_open_ended") for p in problems]
 
     retry_config = RetryConfig(
         max_connections=args.max_connections,
@@ -184,20 +175,22 @@ async def run(args: argparse.Namespace) -> None:
         ).build(usage_tracker=usage)
     )
 
+    game = DebateGameSpec(
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=args.num_rounds,
+        prompts_ref=args.prompts_ref,
+    )
     dataset = DebateDataset(
         problems=problems,
         batch_size=len(problems),
+        group_size=args.group_size,
+        game=game,
         renderer=debater_renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=args.num_rounds,
         judge_callback=LLMJudgeCallback(judge),
         outcome_reward_fn=zero_sum_outcome_reward,
         opponent_completer=None,
         opponent_renderer=None,
-        group_size=args.group_size,
         randomize_position=False,
-        prompts_ref=args.prompts_ref,
-        scoring_mode=scoring_mode,
         scorer=scorer,
         scorer_parallelism=args.max_connections,
         episode_log_dir=str(episode_log_dir),
@@ -236,30 +229,47 @@ async def run(args: argparse.Namespace) -> None:
     builders = dataset.get_batch(0)
     summaries: list[dict[str, object]] = []
 
+    async def _run_problem(
+        idx: int,
+        sample,
+        builder,
+        inner_scorer: AnswerJudgeClient,
+        heartbeat_s: int,
+    ):
+        recorder = RecordingAnswerJudgeClient(inner_scorer)
+        builder.scorer = recorder
+        n = len(samples)
+        record_id = str(sample.metadata["record_id"])
+        envs = await run_with_heartbeat(
+            builder.make_envs(),
+            label=f"problem {idx + 1}/{n} {record_id}: make_envs",
+            interval_s=heartbeat_s,
+        )
+        trajectories = await run_with_heartbeat(
+            asyncio.gather(*[do_single_rollout(policy, env) for env in envs]),
+            label=f"problem {idx + 1}/{n} {record_id}: rollouts",
+            interval_s=heartbeat_s,
+        )
+        rewards_and_metrics = await run_with_heartbeat(
+            builder.compute_group_rewards(trajectories, envs),
+            label=f"problem {idx + 1}/{n} {record_id}: rewards+metrics",
+            interval_s=heartbeat_s,
+        )
+        return idx, sample, builder, envs, trajectories, rewards_and_metrics, recorder.calls
+
     try:
         with logtree.init_trace(f"GPQA Open-Ended Smoke: {args.prompts_ref}", path=str(trace_path)):
             logtree.log_formatter(DebateTraceCSSInjector())
 
-            for idx, (sample, builder) in enumerate(zip(samples, builders, strict=True)):
-                call_start = len(scorer.calls)
-                record_id = str(sample.metadata["record_id"])
-                envs = await run_with_heartbeat(
-                    builder.make_envs(),
-                    label=f"problem {idx + 1}/{len(samples)} {record_id}: make_envs",
-                    interval_s=args.heartbeat_seconds,
-                )
-                trajectories = await run_with_heartbeat(
-                    asyncio.gather(*[do_single_rollout(policy, env) for env in envs]),
-                    label=f"problem {idx + 1}/{len(samples)} {record_id}: rollouts",
-                    interval_s=args.heartbeat_seconds,
-                )
-                rewards_and_metrics = await run_with_heartbeat(
-                    builder.compute_group_rewards(trajectories, envs),
-                    label=f"problem {idx + 1}/{len(samples)} {record_id}: rewards+metrics",
-                    interval_s=args.heartbeat_seconds,
-                )
+            results = await asyncio.gather(*[
+                _run_problem(idx, sample, builder, scorer.inner, args.heartbeat_seconds)
+                for idx, (sample, builder) in enumerate(zip(samples, builders, strict=True))
+            ])
+
+            all_scorer_calls = []
+            for idx, sample, builder, envs, trajectories, rewards_and_metrics, problem_calls in results:
                 builder.on_group_complete(trajectories, envs, rewards_and_metrics)
-                problem_calls = scorer.calls[call_start:]
+                all_scorer_calls.extend(problem_calls)
 
                 with logtree.scope_header(
                     f"Problem {idx}: {sample.metadata['record_id']} / {sample.input[:80]}...",
@@ -278,6 +288,8 @@ async def run(args: argparse.Namespace) -> None:
                             }
                         )
                     logtree.log_html(_render_scorer_calls_html(problem_calls))
+
+            scorer.calls = all_scorer_calls
     finally:
         scorer.write_jsonl(artifact_dir / "semantic_calls.jsonl")
         (artifact_dir / "summary.json").write_text(json.dumps(summaries, indent=2))

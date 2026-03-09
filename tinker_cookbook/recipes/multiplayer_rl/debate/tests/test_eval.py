@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.eval.dataset_adapter import (
     DatasetAdapter,
     GPQAAdapter,
@@ -23,8 +22,9 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
     debate_eval,
     debate_scorer,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.env import IDENTITY_REMAP_BASES
+from tinker_cookbook.recipes.multiplayer_rl.debate.builders import IDENTITY_REMAP_BASES
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.providers import DebateScorerBuilder
+from tinker_cookbook.recipes.multiplayer_rl.debate.tests.conftest import make_spec
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
     DebateSpec,
@@ -49,16 +49,13 @@ def _make_spec(
     num_rounds: int = 2,
     prompts_ref: str = "scientific_mcq",
 ) -> DebateSpec:
-    schedule = build_schedule(ProtocolKind.SEQUENTIAL, num_rounds)
-    return DebateSpec(
+    return make_spec(
         debate_id="test-debate-001",
         task_prompt="What is the answer?\nA) Foo\nB) Bar\nC) Baz\nD) Qux",
-        answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
-        schedule=schedule,
-        open_reasoning=True,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        prompts_ref=prompts_ref,
         target=target,
+        num_rounds=num_rounds,
+        open_reasoning=True,
+        prompts_ref=prompts_ref,
     )
 
 
@@ -262,7 +259,7 @@ def test_gpqa_open_ended_adapter_missing_record_id(monkeypatch):
     )
 
     adapter = GPQAOpenEndedAdapter(record_ids=["rec-missing"])
-    with pytest.raises(ValueError, match="could not find requested record_ids"):
+    with pytest.raises(ValueError, match="Missing record_ids"):
         adapter.to_samples()
 
 
@@ -280,12 +277,12 @@ def test_debate_state_json_roundtrip():
 
     # Verify spec
     assert restored.spec.debate_id == original.spec.debate_id
-    assert restored.spec.task_prompt == original.spec.task_prompt
-    assert restored.spec.target == original.spec.target
+    assert restored.spec.problem.task_prompt == original.spec.problem.task_prompt
+    assert restored.spec.problem.target == original.spec.problem.target
     assert restored.spec.protocol_kind == original.spec.protocol_kind
     assert restored.spec.prompts_ref == original.spec.prompts_ref
     assert restored.spec.open_reasoning == original.spec.open_reasoning
-    assert dict(restored.spec.answer_by_role) == dict(original.spec.answer_by_role)
+    assert dict(restored.spec.problem.answer_by_role) == dict(original.spec.problem.answer_by_role)
     assert len(restored.spec.schedule) == len(original.spec.schedule)
     for r_slot, o_slot in zip(restored.spec.schedule, original.spec.schedule):
         assert r_slot.slot_id == o_slot.slot_id
@@ -627,25 +624,17 @@ async def test_evaluator_uses_actor_specific_reasoning_effort(monkeypatch):
 
 
 def test_smoke_gpqa_open_ended_passes_explicit_open_ended_mode(monkeypatch):
-    from inspect_ai.dataset import Sample
-
     from tinker_cookbook.recipes.multiplayer_rl.debate.scripts import smoke_gpqa_open_ended
+    from tinker_cookbook.recipes.multiplayer_rl.debate.types import DebateProblemSpec
 
-    class _FakeAdapter:
-        def __init__(self, **_kwargs):
-            pass
-
-        def to_samples(self):
-            return [
-                Sample(
-                    input="Which city is nicknamed the Big Apple?",
-                    target="New York City",
-                    metadata={"record_id": "rec-test-1"},
-                )
-            ]
-
-        def resolve_scoring_mode(self):
-            return ScoringMode.OPEN_ENDED
+    fake_problems = [
+        DebateProblemSpec.from_seat_answers(
+            "Which city is nicknamed the Big Apple?",
+            "", "", ScoringMode.OPEN_ENDED,
+            target="New York City",
+            metadata={"record_id": "rec-test-1"},
+        ),
+    ]
 
     captured: dict[str, object] = {}
 
@@ -653,7 +642,11 @@ def test_smoke_gpqa_open_ended_passes_explicit_open_ended_mode(monkeypatch):
         captured.update(kwargs)
         raise RuntimeError("stop after dataset construction")
 
-    monkeypatch.setattr(smoke_gpqa_open_ended, "GPQAOpenEndedAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        smoke_gpqa_open_ended,
+        "load_gpqa_open_ended_problems",
+        lambda **_kwargs: fake_problems,
+    )
     monkeypatch.setattr(smoke_gpqa_open_ended, "DebateDataset", _fake_dataset)
     monkeypatch.setattr(smoke_gpqa_open_ended.tinker, "ServiceClient", lambda base_url=None: MagicMock(create_sampling_client=lambda **kwargs: MagicMock()))
     monkeypatch.setattr(
@@ -688,7 +681,9 @@ def test_smoke_gpqa_open_ended_passes_explicit_open_ended_mode(monkeypatch):
     with pytest.raises(RuntimeError, match="stop after dataset construction"):
         asyncio.run(smoke_gpqa_open_ended.run(args))
 
-    assert captured["scoring_mode"] == ScoringMode.OPEN_ENDED
+    # scoring_mode is on each DebateProblemSpec
+    problems = captured["problems"]
+    assert all(p.scoring_mode == ScoringMode.OPEN_ENDED for p in problems)
 
 
 @pytest.mark.asyncio

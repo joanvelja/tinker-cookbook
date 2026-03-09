@@ -3,28 +3,28 @@
 from __future__ import annotations
 
 import asyncio
-import random
 from datetime import datetime
 
 import chz
 import tinker
-from datasets import load_dataset
 from tinker.lib.public_interfaces.service_client import RetryConfig
 
 from tinker_cookbook import cli_utils, model_info
 from tinker_cookbook.completers import TinkerMessageCompleter
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.rl import train
+from tinker_cookbook.rl.train import StreamMinibatchConfig
 from tinker_cookbook.rl.types import RLDataset, RLDatasetBuilder
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.usage import UsageTracker
 
-from ..env import DebateDataset, DebateProblem
-from ..eval.dataset_adapter import GPQAAdapter
+from ..dataset import DebateDataset
+from ..eval.dataset_adapter import ProblemsAdapter
 from ..eval.evaluator import DebateInspectEvaluatorBuilder
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from ..scoring.providers import DebateScorerBuilder
-from ..types import ProtocolKind
+from ..sources import GPQAProblemSource, ProblemSource
+from ..types import DebateGameSpec, DebateProblemSpec, ProtocolKind, ScoringMode
 
 
 def _recommended_max_connections(batch_size: int, group_size: int, self_play: bool = False) -> int:
@@ -34,44 +34,14 @@ def _recommended_max_connections(batch_size: int, group_size: int, self_play: bo
     return max(16, batch_size * group_size * agents_per_game)
 
 
-def _load_gpqa(
-    subset: str = "gpqa_diamond",
-    test_fraction: float = 0.1,
-    seed: int = 42,
-) -> tuple[list[dict], list[dict]]:
-    ds = load_dataset("Idavidrein/gpqa", subset, split="train").shuffle(seed=seed)
-    rows = [ds[i] for i in range(len(ds))]
-    n_test = max(1, int(len(rows) * test_fraction))
-    return rows[:-n_test], rows[-n_test:]
-
-
-def _gpqa_to_problems(rows: list[dict], seed: int = 42) -> list[DebateProblem]:
-    """Convert GPQA rows to free-debate problems with shuffled MCQ options.
-
-    Returns (task_prompt, "", "", target_label) tuples — empty answer strings
-    for free debate, with target_label tracking the ground truth for accuracy.
-    """
-    rng = random.Random(seed)
-    problems: list[DebateProblem] = []
-    for row in rows:
-        correct = row["Correct Answer"]
-        wrong = [row[f"Incorrect Answer {i}"] for i in (1, 2, 3)]
-
-        # Shuffle into ABCD, track correct label.
-        options = [correct] + wrong
-        rng.shuffle(options)
-        target_label = chr(ord("A") + options.index(correct))
-
-        # Format as MCQ prompt.
-        option_lines = "\n".join(f"{chr(ord('A') + i)}) {opt}" for i, opt in enumerate(options))
-        task_prompt = f"{row['Question']}\n\n{option_lines}"
-        problems.append((task_prompt, "", "", target_label))
-    return problems
-
-
 @chz.chz
 class DebateRLDatasetBuilder(RLDatasetBuilder):
-    """Builds debate RL datasets with opponent completer and LLM judge."""
+    """Builds debate RL datasets with opponent completer and LLM judge.
+
+    Receives pre-loaded problems from ``build_config``. This separation
+    ensures the eval adapter can draw from the *same* test split,
+    eliminating train/test contamination from independent HF re-loads.
+    """
 
     model_name: str
     renderer_name: str | None = None
@@ -80,7 +50,8 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     judge_model: str
     opponent_max_tokens: int = 8192
     judge_max_tokens: int = 4096
-    gpqa_subset: str = "gpqa_extended"
+    train_problems: list[DebateProblemSpec] = chz.field(default_factory=list)
+    test_problems: list[DebateProblemSpec] = chz.field(default_factory=list)
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     num_rounds: int = 2
     batch_size: int = 32
@@ -96,7 +67,6 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     scorer_builder: DebateScorerBuilder | None = None
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
-        # Per-role renderer construction: each actor gets its own model-appropriate renderer.
         trained_name = self.renderer_name or model_info.get_recommended_renderer_name(
             self.model_name, reasoning_effort=self.reasoning_effort
         )
@@ -158,46 +128,42 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             else self.max_connections
         )
 
-        # Load GPQA.
-        train_rows, test_rows = _load_gpqa(self.gpqa_subset)
-        train_problems = _gpqa_to_problems(train_rows)
-        test_problems = _gpqa_to_problems(test_rows)
-
-        train_ds = DebateDataset(
-            problems=train_problems,
-            batch_size=self.batch_size,
-            renderer=trained_renderer,
+        game = DebateGameSpec(
             protocol_kind=self.protocol_kind,
             num_rounds=self.num_rounds,
+            prompts_ref=self.prompts_ref,
             open_reasoning=self.open_reasoning,
+        )
+
+        train_ds = DebateDataset(
+            problems=self.train_problems,
+            batch_size=self.batch_size,
+            group_size=self.group_size,
+            game=game,
+            renderer=trained_renderer,
             judge_callback=judge_callback,
             outcome_reward_fn=zero_sum_outcome_reward,
             opponent_completer=opponent_completer,
             opponent_renderer=opponent_renderer,
-            group_size=self.group_size,
             randomize_position=self.randomize_position,
-            prompts_ref=self.prompts_ref,
             scorer=scorer_client,
             scorer_parallelism=scorer_parallelism,
             episode_log_dir=self.episode_log_dir,
         )
 
         test_ds: RLDataset | None = None
-        if test_problems:
+        if self.test_problems:
             test_ds = DebateDataset(
-                problems=test_problems,
-                batch_size=len(test_problems),
+                problems=self.test_problems,
+                batch_size=len(self.test_problems),
+                group_size=self.group_size,
+                game=game,
                 renderer=trained_renderer,
-                protocol_kind=self.protocol_kind,
-                num_rounds=self.num_rounds,
-                open_reasoning=self.open_reasoning,
                 judge_callback=judge_callback,
                 outcome_reward_fn=zero_sum_outcome_reward,
                 opponent_completer=opponent_completer,
                 opponent_renderer=opponent_renderer,
-                group_size=self.group_size,
                 randomize_position=self.randomize_position,
-                prompts_ref=self.prompts_ref,
                 scorer=scorer_client,
                 scorer_parallelism=scorer_parallelism,
                 episode_log_dir=self.episode_log_dir,
@@ -215,7 +181,7 @@ class CLIConfig:
     judge_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     opponent_max_tokens: int = 8192
     judge_max_tokens: int = 4096
-    gpqa_subset: str = "gpqa_extended"
+    problem_source: ProblemSource = GPQAProblemSource()
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     num_rounds: int = 2
     batch_size: int = 32
@@ -224,10 +190,11 @@ class CLIConfig:
     max_tokens: int = 8192
     randomize_position: bool = True
     self_play: bool = False
-    prompts_ref: str = "judge_exploit"
+    prompts_ref: str | None = None
     open_reasoning: bool = False
     kl_penalty_coef: float = 0.0
     inspect_eval: DebateInspectEvaluatorBuilder | None = None
+    eval_limit: int | None = 25
     eval_every: int = 10
     eval_on_start: bool = True
     save_every: int = 20
@@ -239,10 +206,25 @@ class CLIConfig:
     max_connections: int | None = None
     progress_timeout_s: int = 900
     scorer_builder: DebateScorerBuilder | None = None
+    num_minibatches: int | None = None  # None = sync training (default)
 
 
 def build_config(cli: CLIConfig) -> train.Config:
+    if cli.num_minibatches is not None and cli.batch_size % cli.num_minibatches != 0:
+        raise ValueError(
+            f"batch_size ({cli.batch_size}) must be divisible by "
+            f"num_minibatches ({cli.num_minibatches})"
+        )
+
+    scoring_mode = cli.problem_source.scoring_mode()
+    if scoring_mode == ScoringMode.OPEN_ENDED and cli.scorer_builder is None:
+        raise ValueError(
+            f"problem_source {type(cli.problem_source).__name__} produces "
+            f"OPEN_ENDED problems, which require scorer_builder to be set"
+        )
+
     model_name = cli.model_name
+    prompts_ref = cli.prompts_ref or cli.problem_source.default_prompts_ref()
     max_connections = cli.max_connections or _recommended_max_connections(
         cli.batch_size, cli.group_size, self_play=cli.self_play
     )
@@ -252,6 +234,10 @@ def build_config(cli: CLIConfig) -> train.Config:
 
     # Self-play: both agents share the same policy, so randomize_position is meaningless.
     randomize_position = False if cli.self_play else cli.randomize_position
+
+    # Load problems early so the eval adapter can draw from the test split,
+    # eliminating train/test contamination from independent HF re-loads.
+    train_problems, test_problems = cli.problem_source.load()
 
     date_and_time = datetime.now().strftime("%Y-%m-%d-%H-%M")
     run_name = (
@@ -270,14 +256,15 @@ def build_config(cli: CLIConfig) -> train.Config:
         judge_model=cli.judge_model,
         opponent_max_tokens=cli.opponent_max_tokens,
         judge_max_tokens=cli.judge_max_tokens,
-        gpqa_subset=cli.gpqa_subset,
+        train_problems=train_problems,
+        test_problems=test_problems,
         protocol_kind=cli.protocol_kind,
         num_rounds=cli.num_rounds,
         batch_size=cli.batch_size,
         group_size=cli.group_size,
         randomize_position=randomize_position,
         self_play=cli.self_play,
-        prompts_ref=cli.prompts_ref,
+        prompts_ref=prompts_ref,
         open_reasoning=cli.open_reasoning,
         base_url=cli.base_url,
         episode_log_dir=cli.episode_log_dir,
@@ -291,13 +278,17 @@ def build_config(cli: CLIConfig) -> train.Config:
         model_name, reasoning_effort=cli.reasoning_effort
     )
 
+    # Eval parallelism: one debate per sample, 3 actors each.
+    eval_n = cli.eval_limit if cli.eval_limit is not None else len(test_problems)
+    eval_max_connections = max(16, eval_n * 3)
+
     if cli.inspect_eval is not None:
         inspect_builder = chz.replace(
             cli.inspect_eval,
             renderer_name=cli.inspect_eval.renderer_name or eval_renderer_name,
             model_name=cli.inspect_eval.model_name or model_name,
             reasoning_effort=cli.reasoning_effort,
-            max_connections=max_connections,
+            max_connections=eval_max_connections,
             progress_timeout_s=cli.progress_timeout_s,
             scorer_builder=cli.inspect_eval.scorer_builder or cli.scorer_builder,
             scorer_parallelism=(
@@ -307,12 +298,17 @@ def build_config(cli: CLIConfig) -> train.Config:
             ),
         )
     else:
-        # Default: GPQA eval matching training config.
+        # Eval draws from the test split — no contamination.
+        eval_adapter = ProblemsAdapter(
+            test_problems,
+            source="gpqa_eval",
+            limit=cli.eval_limit,
+        )
         # Self-play training → self-play eval (opponent_model=None triggers
         # same-weights opponent in DebateInspectEvaluator).
         inspect_builder = DebateInspectEvaluatorBuilder(
-            adapter=GPQAAdapter(free_debate=True, limit=10),
-            prompts_ref=cli.prompts_ref,
+            adapter=eval_adapter,
+            prompts_ref=prompts_ref,
             num_rounds=cli.num_rounds,
             protocol_kind=cli.protocol_kind,
             open_reasoning=cli.open_reasoning,
@@ -325,7 +321,7 @@ def build_config(cli: CLIConfig) -> train.Config:
             reasoning_effort=cli.reasoning_effort,
             model_name=model_name,
             base_url=cli.base_url,
-            max_connections=max_connections,
+            max_connections=eval_max_connections,
             progress_timeout_s=cli.progress_timeout_s,
             scorer_builder=cli.scorer_builder,
             scorer_parallelism=scorer_parallelism,
@@ -348,6 +344,14 @@ def build_config(cli: CLIConfig) -> train.Config:
         base_url=cli.base_url,
         sampling_max_connections=max_connections,
         sampling_progress_timeout=cli.progress_timeout_s,
+        stream_minibatch_config=(
+            StreamMinibatchConfig(
+                groups_per_batch=cli.batch_size,
+                num_minibatches=cli.num_minibatches,
+            )
+            if cli.num_minibatches is not None
+            else None
+        ),
     )
 
 

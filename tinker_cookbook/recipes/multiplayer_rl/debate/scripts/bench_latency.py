@@ -28,7 +28,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import datasets
 import tinker
 
 from tinker_cookbook.completers import TinkerMessageCompleter, TinkerTokenCompleter
@@ -36,9 +35,11 @@ from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.rl.rollouts import do_single_rollout
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
-from ..env import DebateDataset, DebateEnv, DebateProblem
+from ..env import DebateEnv
+from ..dataset import DebateDataset
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
-from ..types import ProtocolKind
+from ..types import DebateGameSpec, DebateProblemSpec, ProtocolKind
+from ..data.gpqa import assign_seat_answers, load_gpqa_mcq_problems
 
 # ---------------------------------------------------------------------------
 # JSONL writer
@@ -57,39 +58,6 @@ class JSONLWriter:
 
     def close(self) -> None:
         self._f.close()
-
-
-# ---------------------------------------------------------------------------
-# Problem loading (shared with smoke_mcq.py pattern)
-# ---------------------------------------------------------------------------
-
-
-def _load_gpqa_problems(n: int, seed: int = 42) -> list[DebateProblem]:
-    """Load n GPQA diamond problems as (task_prompt, answer_a, answer_b, target) tuples."""
-    ds = datasets.load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
-    rng = random.Random(seed)
-    indices = rng.sample(range(len(ds)), min(n, len(ds)))
-
-    problems: list[DebateProblem] = []
-    for idx in indices:
-        row = ds[idx]
-        correct = row["Correct Answer"]
-        wrong = [row[f"Incorrect Answer {i}"] for i in (1, 2, 3)]
-
-        options = [correct] + wrong
-        rng.shuffle(options)
-        target_label = chr(ord("A") + options.index(correct))
-
-        question = row["Question"]
-        option_lines = "\n".join(f"{chr(ord('A') + i)}) {opt}" for i, opt in enumerate(options))
-        task_prompt = f"{question}\n\n{option_lines}"
-
-        wrong_label = rng.choice(
-            [chr(ord("A") + i) for i in range(4) if chr(ord("A") + i) != target_label]
-        )
-        problems.append((task_prompt, target_label, wrong_label, target_label))
-
-    return problems
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +314,7 @@ class RunResult:
 
 async def _run_arm(
     arm_config: ArmConfig,
-    problems: list[DebateProblem],
+    problems: list[DebateProblemSpec],
     model: str,
     judge_model: str,
     group_size: int,
@@ -417,17 +385,20 @@ async def _run_arm(
         except Exception:
             pass  # warmup failure is non-fatal
 
+    game = DebateGameSpec(
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=NUM_ROUNDS,
+        prompts_ref=prompts_ref,
+    )
     dataset = DebateDataset(
         problems=problems,
         batch_size=len(problems),
+        group_size=group_size,
+        game=game,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=NUM_ROUNDS,
         judge_callback=LLMJudgeCallback(judge_completer),
         outcome_reward_fn=zero_sum_outcome_reward,
         opponent_completer=opponent_completer,
-        group_size=group_size,
-        prompts_ref=prompts_ref,
     )
 
     call_rows: list[dict[str, Any]] = []
@@ -573,7 +544,7 @@ async def run_phase2(
     print(f"  Problems: {n_problems}, group_sizes: {group_sizes}", flush=True)
     print(flush=True)
 
-    problems = _load_gpqa_problems(n_problems, seed=seed)
+    problems = assign_seat_answers(load_gpqa_mcq_problems(n_problems, seed=seed), seed=seed)
     print(f"  Loaded {len(problems)} GPQA problems", flush=True)
 
     rng = random.Random(seed)

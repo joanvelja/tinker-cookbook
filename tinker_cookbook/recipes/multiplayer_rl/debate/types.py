@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Mapping
+
+_THINK_RE = re.compile(r"<think(?:ing)?[^>]*>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(text: str) -> str:
+    return _THINK_RE.sub("", text).strip()
 
 
 class Role(StrEnum):
@@ -63,10 +70,12 @@ class Utterance:
     token_count: int
     slot_id: int
     fields: Mapping[str, Any] | None = None
+    stripped_text: str = field(init=False)
 
     def __post_init__(self) -> None:
         if self.fields is not None:
             object.__setattr__(self, "fields", _freeze_mapping(self.fields))
+        object.__setattr__(self, "stripped_text", _strip_reasoning(self.text))
 
 
 def _freeze_mapping(m: Mapping) -> MappingProxyType:
@@ -77,22 +86,65 @@ def _freeze_mapping(m: Mapping) -> MappingProxyType:
 
 
 @dataclass(frozen=True)
+class DebateProblemSpec:
+    task_prompt: str
+    scoring_mode: ScoringMode
+    answer_by_role: Mapping[Role, str] | None = None
+    target: str | None = None
+    metadata: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.answer_by_role is not None:
+            # Normalize: strip whitespace, blank → None
+            cleaned = {k: v.strip() for k, v in self.answer_by_role.items() if v and v.strip()}
+            abr = _freeze_mapping(cleaned) if cleaned else None
+            object.__setattr__(self, "answer_by_role", abr)
+        if self.metadata is not None:
+            object.__setattr__(self, "metadata", _freeze_mapping(self.metadata))
+
+    @staticmethod
+    def from_seat_answers(
+        task_prompt: str,
+        answer_a: str,
+        answer_b: str,
+        scoring_mode: ScoringMode,
+        *,
+        target: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> "DebateProblemSpec":
+        answer_by_role = {Role.DEBATER_A: answer_a, Role.DEBATER_B: answer_b}
+        return DebateProblemSpec(
+            task_prompt=task_prompt,
+            scoring_mode=scoring_mode,
+            answer_by_role=answer_by_role,
+            target=target,
+            metadata=metadata,
+        )
+
+
+@dataclass(frozen=True)
+class DebateGameSpec:
+    protocol_kind: ProtocolKind
+    num_rounds: int
+    prompts_ref: str = "default"
+    open_reasoning: bool = False
+    include_judge_turns: bool = False
+
+    def __post_init__(self) -> None:
+        if self.num_rounds < 1:
+            raise ValueError(f"num_rounds must be >= 1, got {self.num_rounds}")
+
+
+@dataclass(frozen=True)
 class DebateSpec:
     """Static config -- does not change during episode."""
 
     debate_id: str
-    task_prompt: str
-    answer_by_role: Mapping[Role, str] | None
+    problem: DebateProblemSpec
     schedule: tuple[TurnSlot, ...]
     open_reasoning: bool
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     prompts_ref: str = "default"
-    target: str | None = None
-    scoring_mode: ScoringMode = ScoringMode.MCQ
-
-    def __post_init__(self) -> None:
-        if self.answer_by_role is not None:
-            object.__setattr__(self, "answer_by_role", _freeze_mapping(self.answer_by_role))
 
 
 @dataclass(frozen=True)
@@ -163,12 +215,7 @@ class ActionResult:
 @dataclass(frozen=True)
 class DebateSnapshot:
     state: DebateState
-    protocol_kind: ProtocolKind
-    protocol_kwargs: Mapping[str, Any]
     renderer_name: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "protocol_kwargs", _freeze_mapping(self.protocol_kwargs))
 
 
 @dataclass(frozen=True)

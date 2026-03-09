@@ -18,11 +18,13 @@ from dataclasses import replace
 from ..prompts import resolve_prompts
 from ..core.schedule import build_schedule
 from ..types import (
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     Utterance,
 )
 from ..core.visibility import build_generation_messages, get_visible_messages
@@ -91,10 +93,12 @@ def dump_debate(
     resolve_prompts(prompts_ref)  # validate prompts_ref early
     schedule = build_schedule(protocol_kind, num_rounds)
 
+    problem = DebateProblemSpec.from_seat_answers(
+        task_prompt, answer_a, answer_b, ScoringMode.MCQ
+    )
     spec = DebateSpec(
         debate_id="dump-io-test",
-        task_prompt=task_prompt,
-        answer_by_role={Role.DEBATER_A: answer_a, Role.DEBATER_B: answer_b},
+        problem=problem,
         schedule=schedule,
         open_reasoning=open_reasoning,
         protocol_kind=protocol_kind,

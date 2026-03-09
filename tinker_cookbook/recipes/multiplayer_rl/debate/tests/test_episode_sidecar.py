@@ -11,15 +11,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.env import (
-    DebateEnv,
+from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateEnv
+from tinker_cookbook.recipes.multiplayer_rl.debate.builders import (
     DebateGroupBuilder,
     _EPISODE_LOG_LOCK,
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import DebateRuntime
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateGameSpec,
     DebateOutcome,
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     Phase,
@@ -45,13 +47,16 @@ def _make_state(
     schedule = build_schedule(ProtocolKind.SEQUENTIAL, 1)
     spec = DebateSpec(
         debate_id=uuid.uuid4().hex,
-        task_prompt="What is 2+2?",
-        answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+        problem=DebateProblemSpec(
+            task_prompt="What is 2+2?",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+            target=target,
+        ),
         schedule=schedule,
         open_reasoning=False,
         protocol_kind=ProtocolKind.SEQUENTIAL,
         prompts_ref="default",
-        target=target,
     )
     return DebateState(
         spec=spec,
@@ -127,12 +132,11 @@ def _make_builder_with_mock_envs(
 
     renderer = MagicMock()
     builder = DebateGroupBuilder(
-        task_prompt="What is 2+2?",
-        answer_a="A",
-        answer_b="B",
+        problem=DebateProblemSpec.from_seat_answers(
+            "What is 2+2?", "A", "B", ScoringMode.MCQ,
+        ),
+        game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         episode_log_dir=episode_log_dir,
         opponent_completer=None if selfplay else MagicMock(),
         group_size=1,
@@ -521,15 +525,14 @@ class TestConcurrency:
 class TestWiring:
     def test_debate_dataset_passes_episode_log_dir(self):
         """DebateDataset passes episode_log_dir to DebateGroupBuilder in get_batch."""
-        from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateDataset
+        from tinker_cookbook.recipes.multiplayer_rl.debate.dataset import DebateDataset
 
         ds = DebateDataset(
-            problems=[("q1", "a1", "b1")],
+            problems=[DebateProblemSpec.from_seat_answers("q1", "a1", "b1", ScoringMode.MCQ)],
             batch_size=1,
+            group_size=1,
+            game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
             renderer=MagicMock(),
-            protocol_kind=ProtocolKind.SEQUENTIAL,
-            num_rounds=1,
-            scoring_mode=ScoringMode.MCQ,
             episode_log_dir="/tmp/test-episodes",
         )
         batch = ds.get_batch(0)
@@ -539,15 +542,14 @@ class TestWiring:
 
     def test_debate_dataset_none_by_default(self):
         """episode_log_dir defaults to None when not specified."""
-        from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateDataset
+        from tinker_cookbook.recipes.multiplayer_rl.debate.dataset import DebateDataset
 
         ds = DebateDataset(
-            problems=[("q1", "a1", "b1")],
+            problems=[DebateProblemSpec.from_seat_answers("q1", "a1", "b1", ScoringMode.MCQ)],
             batch_size=1,
+            group_size=1,
+            game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
             renderer=MagicMock(),
-            protocol_kind=ProtocolKind.SEQUENTIAL,
-            num_rounds=1,
-            scoring_mode=ScoringMode.MCQ,
         )
         batch = ds.get_batch(0)
         assert batch[0].episode_log_dir is None
@@ -611,12 +613,9 @@ class TestNoOp:
         """on_group_complete with empty env_group writes no records."""
         with tempfile.TemporaryDirectory() as tmpdir:
             builder = DebateGroupBuilder(
-                task_prompt="Q",
-                answer_a="A",
-                answer_b="B",
+                problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
+                game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
                 renderer=MagicMock(),
-                protocol_kind=ProtocolKind.SEQUENTIAL,
-                num_rounds=1,
                 episode_log_dir=tmpdir,
             )
 

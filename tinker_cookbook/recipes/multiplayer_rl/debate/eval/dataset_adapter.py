@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-import random
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from inspect_ai.dataset import Sample
 
+from ..data.gpqa import (
+    assign_seat_answers,
+    load_gpqa_mcq_problems,
+    load_gpqa_open_ended_problems,
+    problem_to_sample,
+)
 from ..scoring.mcq import normalize_mcq
-from ..types import ScoringMode
+from ..types import DebateProblemSpec, ScoringMode
 
 
 @runtime_checkable
@@ -47,13 +52,47 @@ def resolve_adapter_scoring_mode(
     return infer_scoring_mode_from_samples(resolved_samples)
 
 
-class GPQAAdapter:
-    """Loads GPQA diamond and creates Samples for MCQ debate evaluation.
+# ---------------------------------------------------------------------------
+# ProblemsAdapter — wraps pre-loaded problems (no HF re-fetch)
+# ---------------------------------------------------------------------------
 
-    Each Sample:
-      input = task_prompt (question + shuffled ABCD choices)
-      target = correct answer label (A/B/C/D)
-      metadata = {"answer_a": correct_label, "answer_b": wrong_label, "source": "gpqa_diamond"}
+
+class ProblemsAdapter:
+    """Adapts pre-loaded DebateProblemSpecs to the DatasetAdapter protocol.
+
+    Use this to build eval adapters from a known train/test split,
+    eliminating contamination from independent HF re-loads.
+    """
+
+    def __init__(
+        self,
+        problems: Sequence[DebateProblemSpec],
+        *,
+        source: str = "problems",
+        limit: int | None = None,
+    ) -> None:
+        self._problems = list(problems[:limit] if limit is not None else problems)
+        self._source = source
+
+    def to_samples(self) -> list[Sample]:
+        return [problem_to_sample(p, source=self._source) for p in self._problems]
+
+    def resolve_scoring_mode(self) -> ScoringMode:
+        if not self._problems:
+            return ScoringMode.MCQ
+        return self._problems[0].scoring_mode
+
+
+# ---------------------------------------------------------------------------
+# HF-loading adapters — for standalone eval (no training, no contamination)
+# ---------------------------------------------------------------------------
+
+
+class GPQAAdapter:
+    """Loads GPQA MCQ from HuggingFace and creates Samples.
+
+    For standalone eval only. Training-loop eval should use ProblemsAdapter
+    with test_problems from ProblemSource.load().
     """
 
     def __init__(
@@ -69,71 +108,22 @@ class GPQAAdapter:
         self._free_debate = free_debate
 
     def to_samples(self) -> list[Sample]:
-        import datasets as hf_datasets
-
-        ds = hf_datasets.load_dataset("Idavidrein/gpqa", self._subset, split="train")
-        rng = random.Random(self._seed)
-
-        n = len(ds) if self._limit is None else min(self._limit, len(ds))
-        indices = rng.sample(range(len(ds)), n)
-
-        samples: list[Sample] = []
-        for idx in indices:
-            row = ds[idx]
-            correct = row["Correct Answer"]
-            wrong = [row[f"Incorrect Answer {i}"] for i in (1, 2, 3)]
-
-            # Shuffle into ABCD, track correct label.
-            options = [correct] + wrong
-            rng.shuffle(options)
-            target_label = chr(ord("A") + options.index(correct))
-
-            # Format as MCQ prompt.
-            question = row["Question"]
-            option_lines = "\n".join(f"{chr(ord('A') + i)}) {opt}" for i, opt in enumerate(options))
-            task_prompt = f"{question}\n\n{option_lines}"
-
-            if self._free_debate:
-                metadata = {"answer_a": "", "answer_b": "", "source": "gpqa_diamond"}
-            else:
-                # Debater A gets correct, B gets random wrong.
-                wrong_label = rng.choice(
-                    [chr(ord("A") + i) for i in range(4) if chr(ord("A") + i) != target_label]
-                )
-                metadata = {
-                    "answer_a": target_label,
-                    "answer_b": wrong_label,
-                    "source": "gpqa_diamond",
-                }
-
-            samples.append(
-                Sample(
-                    input=task_prompt,
-                    target=target_label,
-                    metadata=metadata,
-                )
-            )
-
-        return samples
+        problems = load_gpqa_mcq_problems(
+            n=self._limit, subset=self._subset, seed=self._seed
+        )
+        if not self._free_debate:
+            problems = assign_seat_answers(problems, seed=self._seed)
+        return [problem_to_sample(p, source="gpqa_diamond") for p in problems]
 
     def resolve_scoring_mode(self) -> ScoringMode:
         return ScoringMode.MCQ
 
 
 class GPQAOpenEndedAdapter:
-    """Loads GPQA open-ended and creates Samples for semantic debate evaluation.
+    """Loads GPQA open-ended from HuggingFace and creates Samples.
 
-    Each Sample:
-      input = question text
-      target = gold free-form answer
-      metadata = {
-          "answer_a": "",
-          "answer_b": "",
-          "source": "gpqa_open_ended",
-          "record_id": ...,
-          "domain": ...,
-          "subdomain": ...,
-      }
+    For standalone eval only. Training-loop eval should use ProblemsAdapter
+    with test_problems from ProblemSource.load().
     """
 
     def __init__(
@@ -151,51 +141,14 @@ class GPQAOpenEndedAdapter:
         self._record_ids = list(record_ids) if record_ids is not None else None
 
     def to_samples(self) -> list[Sample]:
-        import datasets as hf_datasets
-
-        ds = hf_datasets.load_dataset("joanvelja/gpqa-open-ended", self._subset, split=self._split)
-        rows = [ds[i] for i in range(len(ds))]
-
-        if self._record_ids:
-            requested = set(self._record_ids)
-            rows = [row for row in rows if row.get("record_id") in requested]
-            found = {row.get("record_id") for row in rows}
-            missing = requested - found
-            if missing:
-                missing_csv = ", ".join(sorted(str(record_id) for record_id in missing))
-                raise ValueError(
-                    "GPQA open-ended adapter could not find requested record_ids: "
-                    f"{missing_csv}"
-                )
-            rows.sort(key=lambda row: self._record_ids.index(str(row["record_id"])))
-        elif self._limit is not None:
-            rng = random.Random(self._seed)
-            n = min(self._limit, len(rows))
-            rows = [rows[idx] for idx in rng.sample(range(len(rows)), n)]
-
-        samples: list[Sample] = []
-        for row in rows:
-            samples.append(
-                Sample(
-                    input=str(row["question"]),
-                    target=str(row["answer"]),
-                    metadata={
-                        "answer_a": "",
-                        "answer_b": "",
-                        "source": "gpqa_open_ended",
-                        "record_id": str(row.get("record_id", "")),
-                        "domain": str(row.get("domain", "")),
-                        "subdomain": str(row.get("subdomain", "")),
-                        "writer_difficulty": row.get("writer_difficulty"),
-                        "expert_accuracy": row.get("expert_accuracy"),
-                        "non_expert_accuracy": row.get("non_expert_accuracy"),
-                        "conversion_type": row.get("conversion_type"),
-                        "flag": row.get("flag"),
-                    },
-                )
-            )
-
-        return samples
+        problems = load_gpqa_open_ended_problems(
+            subset=self._subset,
+            split=self._split,
+            seed=self._seed,
+            record_ids=self._record_ids,
+            limit=self._limit,
+        )
+        return [problem_to_sample(p, source="gpqa_open_ended") for p in problems]
 
     def resolve_scoring_mode(self) -> ScoringMode:
         return ScoringMode.OPEN_ENDED

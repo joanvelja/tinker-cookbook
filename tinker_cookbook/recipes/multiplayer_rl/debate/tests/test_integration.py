@@ -11,16 +11,19 @@ from pathlib import Path
 
 import pytest
 
+from tinker_cookbook.recipes.multiplayer_rl.debate.tests.conftest import make_spec
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateGameSpec,
     DebateOutcome,
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     Utterance,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.reducer import apply_action
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.trajectory import (
     answer_from_utterance,
@@ -52,16 +55,12 @@ def _make_spec(
     num_rounds: int = 2,
     prompts_ref: str = "scientific_mcq",
 ) -> DebateSpec:
-    schedule = build_schedule(ProtocolKind.SEQUENTIAL, num_rounds)
-    return DebateSpec(
-        debate_id="test",
+    return make_spec(
         task_prompt="Which letter? A) X B) Y C) Z D) W",
         answer_by_role={Role.DEBATER_A: "C", Role.DEBATER_B: "B"},
-        schedule=schedule,
-        open_reasoning=False,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        prompts_ref=prompts_ref,
         target=target,
+        num_rounds=num_rounds,
+        prompts_ref=prompts_ref,
     )
 
 
@@ -435,19 +434,19 @@ class TestFieldSymmetryCheck:
 
 class TestFrozenOpponentJudgeValidation:
     def test_include_judge_turns_raises(self):
-        from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateGroupBuilder
+        from tinker_cookbook.recipes.multiplayer_rl.debate.builders import DebateGroupBuilder
 
         async def _run():
             builder = DebateGroupBuilder(
-                task_prompt="Q?",
-                answer_a="A",
-                answer_b="B",
+                problem=DebateProblemSpec.from_seat_answers("Q?", "A", "B", ScoringMode.MCQ),
+                game=DebateGameSpec(
+                    ProtocolKind.SEQUENTIAL,
+                    num_rounds=1,
+                    include_judge_turns=True,
+                    prompts_ref="scientific_mcq",
+                ),
                 renderer=None,  # type: ignore[arg-type]  # never reached
-                protocol_kind=ProtocolKind.SEQUENTIAL,
-                num_rounds=1,
-                include_judge_turns=True,
                 opponent_completer=lambda msgs: {"content": "test"},
-                prompts_ref="scientific_mcq",
             )
             await builder.make_envs()
 

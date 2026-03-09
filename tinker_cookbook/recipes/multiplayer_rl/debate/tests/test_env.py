@@ -10,16 +10,19 @@ from unittest.mock import MagicMock
 import pytest
 import tinker
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.env import (
+from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateEnv
+from tinker_cookbook.recipes.multiplayer_rl.debate.builders import (
     DebateBranchGroupBuilder,
-    DebateDataset,
-    DebateEnv,
     DebateGroupBuilder,
 )
+from tinker_cookbook.recipes.multiplayer_rl.debate.dataset import DebateDataset
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import DebateRuntime
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateGameSpec,
     DebateOutcome,
+    DebateProblemSpec,
+    DebateSnapshot,
     DebateSpec,
     DebateState,
     JudgeDecision,
@@ -31,20 +34,22 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
 from tinker_cookbook.renderers import Message
 
 
+# Convenience helpers for test readability.
+_MCQ_PROBLEM = DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ)
+_SEQ_1 = DebateGameSpec(protocol_kind=ProtocolKind.SEQUENTIAL, num_rounds=1)
+_SEQ_2 = DebateGameSpec(protocol_kind=ProtocolKind.SEQUENTIAL, num_rounds=2)
+_SIM_2 = DebateGameSpec(protocol_kind=ProtocolKind.SIMULTANEOUS, num_rounds=2)
+
+
 # --- DebateGroupBuilder ---
 
 
 def test_group_builder_make_envs_count():
     """make_envs produces one env per role in include_roles."""
-    from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateEnv
-
     builder = DebateGroupBuilder(
-        task_prompt="test",
-        answer_a="A",
-        answer_b="B",
+        problem=DebateProblemSpec.from_seat_answers("test", "A", "B", ScoringMode.MCQ),
+        game=_SEQ_1,
         renderer=MagicMock(),
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
     )
     envs = asyncio.get_event_loop().run_until_complete(builder.make_envs())
     assert len(envs) == 2  # default: both debaters
@@ -54,12 +59,9 @@ def test_group_builder_make_envs_count():
 def test_group_builder_partial_roles_rejected():
     """Partial include_roles that doesn't cover all schedule actors raises ValueError."""
     builder = DebateGroupBuilder(
-        task_prompt="test",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=MagicMock(),
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         include_roles=(Role.DEBATER_A,),
     )
     with pytest.raises(ValueError, match="Schedule requires roles"):
@@ -68,12 +70,9 @@ def test_group_builder_partial_roles_rejected():
 
 def test_group_builder_logging_tags():
     builder = DebateGroupBuilder(
-        task_prompt="test",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=DebateGameSpec(protocol_kind=ProtocolKind.SIMULTANEOUS, num_rounds=1),
         renderer=MagicMock(),
-        protocol_kind=ProtocolKind.SIMULTANEOUS,
-        num_rounds=1,
     )
     assert builder.logging_tags() == ["debate", "simultaneous"]
 
@@ -81,12 +80,9 @@ def test_group_builder_logging_tags():
 def test_group_builder_compute_rewards_no_outcome_fn():
     """Without outcome_reward_fn, returns zeros."""
     builder = DebateGroupBuilder(
-        task_prompt="test",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=MagicMock(),
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
     )
     envs = asyncio.get_event_loop().run_until_complete(builder.make_envs())
     # Fake trajectories
@@ -99,18 +95,13 @@ def test_group_builder_compute_rewards_no_outcome_fn():
 
 def test_group_builder_compute_rewards_with_outcome_fn():
     """With outcome_reward_fn, returns mapped rewards."""
-    from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateEnv
-
     def outcome_fn(outcome: DebateOutcome) -> Mapping[Role, float]:
         return outcome.scores_by_role
 
     builder = DebateGroupBuilder(
-        task_prompt="test",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=MagicMock(),
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         outcome_reward_fn=outcome_fn,
     )
     envs = asyncio.get_event_loop().run_until_complete(builder.make_envs())
@@ -141,14 +132,10 @@ def test_group_builder_compute_rewards_with_outcome_fn():
 
 def test_branch_builder_creates_independent_envs():
     """Branch builder creates envs from snapshot with independent state."""
-    from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateEnv
-    from tinker_cookbook.recipes.multiplayer_rl.debate.types import DebateSnapshot
-
     schedule = build_schedule(ProtocolKind.SEQUENTIAL, 2)
     spec = DebateSpec(
         debate_id="test",
-        task_prompt="test",
-        answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+        problem=DebateProblemSpec.from_seat_answers("test", "A", "B", ScoringMode.MCQ),
         schedule=schedule,
         open_reasoning=False,
     )
@@ -164,8 +151,6 @@ def test_branch_builder_creates_independent_envs():
     )
     snapshot = DebateSnapshot(
         state=state,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        protocol_kwargs={"num_rounds": 2},
         renderer_name="test",
     )
     builder = DebateBranchGroupBuilder(
@@ -182,34 +167,39 @@ def test_branch_builder_creates_independent_envs():
 
 
 def test_debate_dataset_len():
-    problems = [("q1", "a1", "b1"), ("q2", "a2", "b2"), ("q3", "a3", "b3")]
+    problems = [
+        DebateProblemSpec.from_seat_answers("q1", "a1", "b1", ScoringMode.MCQ),
+        DebateProblemSpec.from_seat_answers("q2", "a2", "b2", ScoringMode.MCQ),
+        DebateProblemSpec.from_seat_answers("q3", "a3", "b3", ScoringMode.MCQ),
+    ]
     ds = DebateDataset(
         problems=problems,
         batch_size=2,
+        group_size=1,
+        game=_SEQ_1,
         renderer=MagicMock(),
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
-        scoring_mode=ScoringMode.MCQ,
     )
     assert len(ds) == 2  # ceil(3/2)
 
 
 def test_debate_dataset_get_batch():
-    problems = [("q1", "a1", "b1"), ("q2", "a2", "b2")]
+    problems = [
+        DebateProblemSpec.from_seat_answers("q1", "a1", "b1", ScoringMode.MCQ),
+        DebateProblemSpec.from_seat_answers("q2", "a2", "b2", ScoringMode.MCQ),
+    ]
     ds = DebateDataset(
         problems=problems,
         batch_size=2,
+        group_size=1,
+        game=_SEQ_1,
         renderer=MagicMock(),
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
-        scoring_mode=ScoringMode.MCQ,
     )
     batch = ds.get_batch(0)
     assert len(batch) == 2
     assert all(isinstance(b, DebateGroupBuilder) for b in batch)
     # Check that task prompts are correct
-    assert batch[0].task_prompt == "q1"
-    assert batch[1].task_prompt == "q2"
+    assert batch[0].problem.task_prompt == "q1"
+    assert batch[1].problem.task_prompt == "q2"
 
 
 # --- Mocks for frozen-opponent tests ---
@@ -306,12 +296,9 @@ def test_frozen_opponent_sequential():
     renderer = MockRenderer()
     completer = MockCompleter()
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_2,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=2,
         opponent_completer=completer,
         group_size=1,
     )
@@ -335,12 +322,9 @@ def test_frozen_opponent_b_first():
     renderer = MockRenderer()
     completer = MockCompleter()
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
-        renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
+        renderer=MagicMock(),
     )
     # Manually set up frozen-opponent with B as the trained role.
     # We bypass the builder to control role assignment.
@@ -350,8 +334,7 @@ def test_frozen_opponent_b_first():
     schedule = bs(ProtocolKind.SEQUENTIAL, 1)
     spec = DebateSpec(
         debate_id="test-b-first",
-        task_prompt="Q",
-        answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+        problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
         schedule=schedule,
         open_reasoning=False,
     )
@@ -392,8 +375,7 @@ def test_frozen_opponent_hybrid():
     schedule = bs(ProtocolKind.HYBRID, 2)
     spec = DebateSpec(
         debate_id="hybrid-frozen",
-        task_prompt="Q",
-        answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+        problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
         schedule=schedule,
         open_reasoning=False,
     )
@@ -438,12 +420,9 @@ def test_frozen_opponent_group_size():
     renderer = MockRenderer()
     completer = MockCompleter()
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         opponent_completer=completer,
         group_size=4,
     )
@@ -462,12 +441,9 @@ def test_frozen_opponent_randomize_position():
     roles = []
     for _ in range(100):
         builder = DebateGroupBuilder(
-            task_prompt="Q",
-            answer_a="A",
-            answer_b="B",
+            problem=_MCQ_PROBLEM,
+            game=_SEQ_1,
             renderer=renderer,
-            protocol_kind=ProtocolKind.SEQUENTIAL,
-            num_rounds=1,
             opponent_completer=completer,
             group_size=1,
             randomize_position=True,
@@ -493,12 +469,9 @@ def test_frozen_opponent_compute_group_rewards():
         return outcome.scores_by_role
 
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         opponent_completer=completer,
         group_size=2,
         outcome_reward_fn=outcome_fn,
@@ -552,12 +525,9 @@ def test_frozen_opponent_uses_opponent_renderer_tokenizer():
     completer = MockCompleter()
 
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=trained_renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         opponent_completer=completer,
         opponent_renderer=opponent_renderer,
         group_size=1,
@@ -580,12 +550,9 @@ def test_frozen_opponent_fallback_to_trained_renderer():
     completer = MockCompleter()
 
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         opponent_completer=completer,
         group_size=1,
     )
@@ -605,12 +572,9 @@ def test_frozen_opponent_simultaneous():
     renderer = MockRenderer()
     completer = MockCompleter()
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SIM_2,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SIMULTANEOUS,
-        num_rounds=2,
         opponent_completer=completer,
         group_size=1,
     )
@@ -633,12 +597,9 @@ def test_selfplay_make_envs():
     """Self-play with group_size=3 creates 6 envs (3 runtimes x 2 roles), pairs share runtime."""
     renderer = MockRenderer()
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         group_size=3,
     )
     envs = _run(builder.make_envs())
@@ -664,12 +625,9 @@ def test_selfplay_rollout():
     """Self-play rollout: both agents take turns concurrently via gather."""
     renderer = MockRenderer()
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         group_size=1,
         judge_callback=MockJudge(),
     )
@@ -713,12 +671,9 @@ def test_selfplay_compute_group_rewards():
         return outcome.scores_by_role
 
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         group_size=2,
         outcome_reward_fn=outcome_fn,
         judge_callback=MockJudge(),
@@ -759,14 +714,11 @@ def test_selfplay_randomize_position_guard():
     """randomize_position=True raises ValueError in self-play mode."""
     renderer = MockRenderer()
     builder = DebateGroupBuilder(
-        task_prompt="Q",
-        answer_a="A",
-        answer_b="B",
+        problem=_MCQ_PROBLEM,
+        game=_SEQ_1,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=1,
         randomize_position=True,
-        # No opponent_completer → self-play mode.
+        # No opponent_completer -> self-play mode.
     )
     with pytest.raises(ValueError, match="randomize_position"):
         _run(builder.make_envs())

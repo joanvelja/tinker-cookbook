@@ -21,12 +21,12 @@ from unittest.mock import MagicMock
 import pytest
 import tinker
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.env import (
+from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateEnv
+from tinker_cookbook.recipes.multiplayer_rl.debate.builders import (
     DebateBranchGroupBuilder,
-    DebateDataset,
-    DebateEnv,
     DebateGroupBuilder,
 )
+from tinker_cookbook.recipes.multiplayer_rl.debate.dataset import DebateDataset
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.reducer import (
     apply_action,
     apply_judge_event,
@@ -38,7 +38,9 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.core.reducer import (
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import DebateRuntime
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateGameSpec,
     DebateOutcome,
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     JudgeDecision,
@@ -46,15 +48,16 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     TurnSlot,
     Utterance,
     VisibilityPolicy,
+    _strip_reasoning,
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.visibility import (
     REGISTRY,
     _consolidate_str_messages,
     _shuffle_simultaneous,
-    _strip_reasoning,
     _wrap_opponent_turn,
     all_prior,
     build_generation_messages,
@@ -75,8 +78,11 @@ def _make_spec(
 ) -> DebateSpec:
     return DebateSpec(
         debate_id="test",
-        task_prompt="Which is bigger, 2 or 3?",
-        answer_by_role={Role.DEBATER_A: "2", Role.DEBATER_B: "3"},
+        problem=DebateProblemSpec(
+            task_prompt="Which is bigger, 2 or 3?",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role={Role.DEBATER_A: "2", Role.DEBATER_B: "3"},
+        ),
         schedule=schedule,
         open_reasoning=open_reasoning,
     )
@@ -372,14 +378,14 @@ class TestWrapOpponentTurn:
     def test_format_and_label(self):
         utt = _utt(Role.DEBATER_A, 0, "my argument")
         result = _wrap_opponent_turn(utt, open_reasoning=True)
-        assert '<opponent_turn agent="Debater A" phase="propose">' in result
+        assert '<opponent_turn agent="A" phase="propose">' in result
         assert "my argument" in result
         assert "</opponent_turn>" in result
 
     def test_label_debater_b(self):
         utt = _utt(Role.DEBATER_B, 0, "counter")
         result = _wrap_opponent_turn(utt, open_reasoning=True)
-        assert 'agent="Debater B"' in result
+        assert 'agent="B"' in result
 
     def test_reasoning_stripped_when_closed(self):
         utt = _utt(Role.DEBATER_A, 0, "visible <thinking>secret</thinking> end")
@@ -405,8 +411,11 @@ class TestShuffleSimultaneous:
         schedule = build_schedule(ProtocolKind.SIMULTANEOUS, 1)
         spec = DebateSpec(
             debate_id=debate_id,
-            task_prompt="Q",
-            answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+            problem=DebateProblemSpec(
+                task_prompt="Q",
+                scoring_mode=ScoringMode.MCQ,
+                answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+            ),
             schedule=schedule,
             open_reasoning=False,
         )
@@ -465,8 +474,11 @@ class TestShuffleSimultaneous:
         schedule = build_schedule(ProtocolKind.SEQUENTIAL, 1)
         spec = DebateSpec(
             debate_id="test",
-            task_prompt="Q",
-            answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+            problem=DebateProblemSpec(
+                task_prompt="Q",
+                scoring_mode=ScoringMode.MCQ,
+                answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+            ),
             schedule=schedule,
             open_reasoning=False,
         )
@@ -537,7 +549,7 @@ class TestBuildGenerationMessages:
         assert msgs[1]["role"] == "user"  # question
         assert "Which is bigger" in msgs[1]["content"]
         assert msgs[2]["role"] == "user"  # opponent turn (wrapped)
-        assert '<opponent_turn agent="Debater A"' in msgs[2]["content"]
+        assert '<opponent_turn agent="A"' in msgs[2]["content"]
 
     def test_trigger_override(self):
         state = _make_state()
@@ -566,7 +578,7 @@ class TestBuildGenerationMessages:
         msgs, _ = build_generation_messages(state, Role.DEBATER_A)
         opponent_msgs = [m for m in msgs if m["role"] == "user" and "opponent_turn" in str(m.get("content", ""))]
         assert len(opponent_msgs) == 1  # exactly one opponent turn (B)
-        assert 'agent="Debater B"' in opponent_msgs[0]["content"]
+        assert 'agent="B"' in opponent_msgs[0]["content"]
         assert "</opponent_turn>" in opponent_msgs[0]["content"]
 
 
@@ -888,15 +900,6 @@ class TestRuntime:
         assert rewards[Role.DEBATER_B] == len("debater_b_text")
 
     @pytest.mark.asyncio
-    async def test_obs_consistent(self):
-        runtime = DebateRuntime(_make_state(kind=ProtocolKind.SEQUENTIAL, num_rounds=1))
-        ticket = await runtime.wait_for_turn(Role.DEBATER_A)
-        assert ticket is not None
-        result = await runtime.submit(ticket, "A", 1)
-        # V2: cache removed, but messages should be equal
-        assert result.messages == runtime._get_messages(runtime.state, Role.DEBATER_A)
-
-    @pytest.mark.asyncio
     async def test_wait_returns_none_when_done(self):
         runtime = DebateRuntime(_make_state(kind=ProtocolKind.SEQUENTIAL, num_rounds=1))
         t = await runtime.wait_for_turn(Role.DEBATER_A)
@@ -908,7 +911,7 @@ class TestRuntime:
 
     def test_snapshot(self):
         runtime = DebateRuntime(_make_state())
-        snap = runtime.snapshot("llama3", ProtocolKind.SEQUENTIAL, {"num_rounds": 2})
+        snap = runtime.snapshot("llama3")
         assert snap.state is runtime.state
         assert snap.renderer_name == "llama3"
 
@@ -926,8 +929,9 @@ class TestEnvIntegration:
         """Full sequential debate: DebateGroupBuilder -> DebateEnv -> rollout."""
         renderer = MockRenderer()
         builder = DebateGroupBuilder(
-            task_prompt="Is 2 > 3?", answer_a="yes", answer_b="no",
-            renderer=renderer, protocol_kind=ProtocolKind.SEQUENTIAL, num_rounds=1,
+            problem=DebateProblemSpec.from_seat_answers("Is 2 > 3?", "yes", "no", ScoringMode.MCQ),
+            game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
+            renderer=renderer,
         )
         envs = await builder.make_envs()
         assert len(envs) == 2
@@ -947,15 +951,16 @@ class TestEnvIntegration:
         all_results = await asyncio.gather(*[rollout(e) for e in envs])  # type: ignore[arg-type]
         for agent_results in all_results:
             assert agent_results[-1].episode_done
-        assert builder._runtime.state.done
-        assert len(builder._runtime.state.transcript) == 2
+        assert builder._runtimes[0].state.done
+        assert len(builder._runtimes[0].state.transcript) == 2
 
     @pytest.mark.asyncio
     async def test_simultaneous_full_rollout(self):
         renderer = MockRenderer()
         builder = DebateGroupBuilder(
-            task_prompt="Q", answer_a="A", answer_b="B",
-            renderer=renderer, protocol_kind=ProtocolKind.SIMULTANEOUS, num_rounds=2,
+            problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
+            game=DebateGameSpec(ProtocolKind.SIMULTANEOUS, num_rounds=2),
+            renderer=renderer,
         )
         envs = await builder.make_envs()
 
@@ -973,15 +978,16 @@ class TestEnvIntegration:
         all_results = await asyncio.gather(*[rollout(e) for e in envs])  # type: ignore[arg-type]
         for agent_results in all_results:
             assert agent_results[-1].episode_done
-        assert builder._runtime.state.done
-        assert len(builder._runtime.state.transcript) == 4
+        assert builder._runtimes[0].state.done
+        assert len(builder._runtimes[0].state.transcript) == 4
 
     @pytest.mark.asyncio
     async def test_hybrid_full_rollout(self):
         renderer = MockRenderer()
         builder = DebateGroupBuilder(
-            task_prompt="Q", answer_a="A", answer_b="B",
-            renderer=renderer, protocol_kind=ProtocolKind.HYBRID, num_rounds=2,
+            problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
+            game=DebateGameSpec(ProtocolKind.HYBRID, num_rounds=2),
+            renderer=renderer,
         )
         envs = await builder.make_envs()
 
@@ -999,8 +1005,8 @@ class TestEnvIntegration:
         all_results = await asyncio.gather(*[rollout(e) for e in envs])  # type: ignore[arg-type]
         for agent_results in all_results:
             assert agent_results[-1].episode_done
-        assert builder._runtime.state.done
-        assert len(builder._runtime.state.transcript) == 4
+        assert builder._runtimes[0].state.done
+        assert len(builder._runtimes[0].state.transcript) == 4
 
     @pytest.mark.asyncio
     async def test_group_rewards_with_judge(self):
@@ -1012,8 +1018,9 @@ class TestEnvIntegration:
         judge = MockJudge()
         renderer = MockRenderer()
         builder = DebateGroupBuilder(
-            task_prompt="Q", answer_a="A", answer_b="B",
-            renderer=renderer, protocol_kind=ProtocolKind.SEQUENTIAL, num_rounds=1,
+            problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
+            game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
+            renderer=renderer,
             judge_callback=judge, outcome_reward_fn=outcome_fn,
         )
         envs = await builder.make_envs()
@@ -1039,26 +1046,27 @@ class TestEnvIntegration:
         """Branch from mid-debate snapshot creates independent runtime."""
         renderer = MockRenderer()
         builder = DebateGroupBuilder(
-            task_prompt="Q", answer_a="A", answer_b="B",
-            renderer=renderer, protocol_kind=ProtocolKind.SEQUENTIAL, num_rounds=2,
+            problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
+            game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=2),
+            renderer=renderer,
         )
         await builder.make_envs()
 
         # Play round 0 via runtime.
-        t = await builder._runtime.wait_for_turn(Role.DEBATER_A)
-        await builder._runtime.submit(t, "A round 0", 3)
-        t = await builder._runtime.wait_for_turn(Role.DEBATER_B)
-        await builder._runtime.submit(t, "B round 0", 3)
-        assert builder._runtime.state.rounds_completed == 1
+        t = await builder._runtimes[0].wait_for_turn(Role.DEBATER_A)
+        await builder._runtimes[0].submit(t, "A round 0", 3)
+        t = await builder._runtimes[0].wait_for_turn(Role.DEBATER_B)
+        await builder._runtimes[0].submit(t, "B round 0", 3)
+        assert builder._runtimes[0].state.rounds_completed == 1
 
         # Snapshot and branch.
-        snap = builder._runtime.snapshot("mock", ProtocolKind.SEQUENTIAL, {})
+        snap = builder._runtimes[0].snapshot("mock")
         branch = DebateBranchGroupBuilder(snapshot=snap, renderer=renderer)
         await branch.make_envs()
 
         # Advance original.
-        t = await builder._runtime.wait_for_turn(Role.DEBATER_A)
-        await builder._runtime.submit(t, "A round 1 original", 4)
+        t = await builder._runtimes[0].wait_for_turn(Role.DEBATER_A)
+        await builder._runtimes[0].submit(t, "A round 1 original", 4)
 
         # Branch should be independent.
         assert branch._runtime.state.rounds_completed == 1
@@ -1066,48 +1074,57 @@ class TestEnvIntegration:
 
     def test_env_count_default(self):
         builder = DebateGroupBuilder(
-            task_prompt="test", answer_a="A", answer_b="B",
-            renderer=MagicMock(), protocol_kind=ProtocolKind.SEQUENTIAL, num_rounds=1,
+            problem=DebateProblemSpec.from_seat_answers("test", "A", "B", ScoringMode.MCQ),
+            game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
+            renderer=MagicMock(),
         )
-        envs = asyncio.get_event_loop().run_until_complete(builder.make_envs())
+        envs = asyncio.run(builder.make_envs())
         assert len(envs) == 2 and all(isinstance(e, DebateEnv) for e in envs)
 
     def test_partial_roles_rejected(self):
         builder = DebateGroupBuilder(
-            task_prompt="test", answer_a="A", answer_b="B",
-            renderer=MagicMock(), protocol_kind=ProtocolKind.SEQUENTIAL,
-            num_rounds=1, include_roles=(Role.DEBATER_A,),
+            problem=DebateProblemSpec.from_seat_answers("test", "A", "B", ScoringMode.MCQ),
+            game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
+            renderer=MagicMock(),
+            include_roles=(Role.DEBATER_A,),
         )
         with pytest.raises(ValueError, match="Schedule requires roles"):
-            asyncio.get_event_loop().run_until_complete(builder.make_envs())
+            asyncio.run(builder.make_envs())
 
     def test_dataset_batching(self):
-        problems = [("q1", "a1", "b1"), ("q2", "a2", "b2"), ("q3", "a3", "b3")]
+        problems = [
+            DebateProblemSpec.from_seat_answers("q1", "a1", "b1", ScoringMode.MCQ),
+            DebateProblemSpec.from_seat_answers("q2", "a2", "b2", ScoringMode.MCQ),
+            DebateProblemSpec.from_seat_answers("q3", "a3", "b3", ScoringMode.MCQ),
+        ]
         ds = DebateDataset(
-            problems=problems, batch_size=2, renderer=MagicMock(),
-            protocol_kind=ProtocolKind.SEQUENTIAL, num_rounds=1,
+            problems=problems, batch_size=2, group_size=1,
+            game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
+            renderer=MagicMock(),
         )
         assert len(ds) == 2
         batch = ds.get_batch(0)
         assert len(batch) == 2
-        assert batch[0].task_prompt == "q1"
+        assert batch[0].problem.task_prompt == "q1"
 
     def test_logging_tags(self):
         for kind in ProtocolKind:
             builder = DebateGroupBuilder(
-                task_prompt="Q", answer_a="A", answer_b="B",
-                renderer=MagicMock(), protocol_kind=kind, num_rounds=1,
+                problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
+                game=DebateGameSpec(kind, num_rounds=1),
+                renderer=MagicMock(),
             )
             assert builder.logging_tags() == ["debate", kind.value]
 
     def test_compute_rewards_no_outcome_fn(self):
         builder = DebateGroupBuilder(
-            task_prompt="test", answer_a="A", answer_b="B",
-            renderer=MagicMock(), protocol_kind=ProtocolKind.SEQUENTIAL, num_rounds=1,
+            problem=DebateProblemSpec.from_seat_answers("test", "A", "B", ScoringMode.MCQ),
+            game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
+            renderer=MagicMock(),
         )
-        envs = asyncio.get_event_loop().run_until_complete(builder.make_envs())
+        envs = asyncio.run(builder.make_envs())
         fake_trajs = [MagicMock() for _ in envs]
-        rewards = asyncio.get_event_loop().run_until_complete(
+        rewards = asyncio.run(
             builder.compute_group_rewards(fake_trajs, envs)
         )
         assert all(r == (0.0, {}) for r in rewards)

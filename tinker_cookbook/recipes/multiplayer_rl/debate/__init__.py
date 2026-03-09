@@ -1,13 +1,8 @@
 """Debate environment for Tinker RL."""
 
-from .env import (
-    DebateBranchGroupBuilder,
-    DebateDataset,
-    DebateDatasetBuilder,
-    DebateEnv,
-    DebateGroupBuilder,
-    DebateProblem,
-)
+from .env import DebateEnv
+from .builders import DebateGroupBuilder, DebateBranchGroupBuilder
+from .dataset import DebateDataset, DebateDatasetBuilder
 from .scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from .scoring.metrics import MetricFn, MetricResult, mcq_debate_metrics
 from .scoring.providers import DebateScorerBuilder
@@ -19,6 +14,8 @@ from .core.schedule import build_schedule
 from .types import (
     ActionResult,
     DebateOutcome,
+    DebateGameSpec,
+    DebateProblemSpec,
     DebateSnapshot,
     DebateSpec,
     DebateState,
@@ -44,7 +41,9 @@ __all__ = [
     "VisibilityPolicy",
     # Frozen dataclasses
     "ActionResult",
+    "DebateGameSpec",
     "DebateOutcome",
+    "DebateProblemSpec",
     "DebateSnapshot",
     "DebateSpec",
     "DebateState",
@@ -63,7 +62,6 @@ __all__ = [
     "DebateBranchGroupBuilder",
     "DebateDataset",
     "DebateDatasetBuilder",
-    "DebateProblem",
     # Metrics
     "MetricFn",
     "MetricResult",

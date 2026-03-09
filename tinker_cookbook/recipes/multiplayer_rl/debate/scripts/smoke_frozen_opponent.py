@@ -15,9 +15,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import math
-import random
-
-import datasets
 import tinker
 from tinker.lib.public_interfaces.service_client import RetryConfig
 from tinker.types import LossFnType
@@ -33,10 +30,11 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.usage import UsageTracker
 from tinker_cookbook.utils import logtree
 
-from ..env import DebateDataset, DebateProblem
+from ..dataset import DebateDataset
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from ..scoring.metrics import mcq_debate_metrics
-from ..types import ProtocolKind
+from ..types import DebateGameSpec, ProtocolKind
+from ..data.gpqa import load_gpqa_mcq_problems
 
 # --- Defaults ---
 MODEL = "Qwen/Qwen3-4B-Instruct-2507"
@@ -52,31 +50,6 @@ LOSS_FN: LossFnType = "importance_sampling"
 NUM_BATCHES = 2
 LORA_RANK = 32
 TRACE_PATH = "/tmp/tinker-examples/smoke_frozen_opponent.html"
-
-
-def _load_gpqa_problems(n: int, seed: int = 42) -> list[DebateProblem]:
-    """Load n GPQA diamond problems as free-debate 4-tuples with target."""
-    ds = datasets.load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
-    rng = random.Random(seed)
-    indices = rng.sample(range(len(ds)), min(n, len(ds)))
-
-    problems: list[DebateProblem] = []
-    for idx in indices:
-        row = ds[idx]
-        correct = row["Correct Answer"]
-        wrong = [row[f"Incorrect Answer {i}"] for i in (1, 2, 3)]
-
-        options = [correct] + wrong
-        rng.shuffle(options)
-        target_label = chr(ord("A") + options.index(correct))
-
-        question = row["Question"]
-        option_lines = "\n".join(f"{chr(ord('A') + i)}) {opt}" for i, opt in enumerate(options))
-        task_prompt = f"{question}\n\n{option_lines}"
-
-        problems.append((task_prompt, "", "", target_label))
-
-    return problems
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -112,10 +85,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def run(args: argparse.Namespace):
     # Load problems -- need at least batch_size * num_batches
     n_problems = args.batch_size * args.num_batches
-    problems = _load_gpqa_problems(n_problems)
+    problems = load_gpqa_mcq_problems(n_problems)
     print(f"Loaded {len(problems)} GPQA problems", flush=True)
-    for i, (prompt, _, _, target) in enumerate(problems):
-        print(f"  [{i}] target={target}  {prompt[:80]}...", flush=True)
+    for i, prob in enumerate(problems):
+        print(f"  [{i}] target={prob.target}  {prob.task_prompt[:80]}...", flush=True)
     print(flush=True)
 
     retry_config = RetryConfig(
@@ -178,18 +151,21 @@ async def run(args: argparse.Namespace):
         model_name=args.judge_model,
     )
 
+    game = DebateGameSpec(
+        protocol_kind=ProtocolKind.SEQUENTIAL,
+        num_rounds=args.num_rounds,
+        prompts_ref=args.prompts_ref,
+    )
     dataset = DebateDataset(
         problems=problems,
         batch_size=args.batch_size,
+        group_size=args.group_size,
+        game=game,
         renderer=renderer,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=args.num_rounds,
         judge_callback=LLMJudgeCallback(judge_completer),
         outcome_reward_fn=zero_sum_outcome_reward,
         opponent_completer=opponent_completer,
         opponent_renderer=opponent_renderer,
-        group_size=args.group_size,
-        prompts_ref=args.prompts_ref,
         metrics=mcq_debate_metrics(),
     )
 
