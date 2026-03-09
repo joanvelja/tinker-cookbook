@@ -7,7 +7,7 @@ import pytest
 from inspect_ai.scorer import Target
 from inspect_ai.solver import TaskState
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.env import DebateGroupBuilder
+from tinker_cookbook.recipes.multiplayer_rl.debate.builders import DebateGroupBuilder
 from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
     _STORE_KEY,
     _TRAINED_ROLE_KEY,
@@ -25,7 +25,9 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.facts import (
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.providers import AnswerJudgeClient
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateGameSpec,
     DebateOutcome,
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     Phase,
@@ -96,14 +98,16 @@ def _state(
         outcome = DebateOutcome(winner=winner, scores_by_role=scores)
     spec = DebateSpec(
         debate_id="debate-1",
-        task_prompt="What is the chemical formula for water?",
-        answer_by_role=None,
+        problem=DebateProblemSpec(
+            task_prompt="What is the chemical formula for water?",
+            scoring_mode=scoring_mode,
+            answer_by_role=None,
+            target=target,
+        ),
         schedule=_schedule_2_rounds(),
         open_reasoning=False,
         protocol_kind=ProtocolKind.SEQUENTIAL,
         prompts_ref=prompts_ref,
-        target=target,
-        scoring_mode=scoring_mode,
     )
     return DebateState(
         spec=spec,
@@ -175,7 +179,7 @@ def test_scoring_mode_roundtrips_through_state_json():
     )
 
     restored = _state_from_json(_state_to_json(original))
-    assert restored.spec.scoring_mode == ScoringMode.MCQ
+    assert restored.spec.problem.scoring_mode == ScoringMode.MCQ
 
 
 @pytest.mark.asyncio
@@ -197,9 +201,9 @@ async def test_resolve_debate_facts_open_ended_dedupes_calls_and_aligns_metrics(
     grader = prompts.get_binary_judge_template("grader")
     assert matcher is not None and grader is not None
 
-    matcher_user = matcher.user.render(question=state.spec.task_prompt, a="H2O", b="water")
+    matcher_user = matcher.user.render(question=state.spec.problem.task_prompt, a="H2O", b="water")
     grader_user = grader.user.render(
-        question=state.spec.task_prompt,
+        question=state.spec.problem.task_prompt,
         target="water",
         response="H2O",
     )
@@ -276,7 +280,7 @@ async def test_open_ended_invalid_verdict_fails_fast():
     prompts = resolve_prompts(state.spec.prompts_ref)
     matcher = prompts.get_binary_judge_template("matcher")
     assert matcher is not None
-    matcher_user = matcher.user.render(question=state.spec.task_prompt, a="H2O", b="water")
+    matcher_user = matcher.user.render(question=state.spec.problem.task_prompt, a="H2O", b="water")
     client = _FakeJudgeClient({(matcher.system, matcher_user): "maybe"})
 
     with pytest.raises(BinaryJudgeError, match="Unrecognized verdict"):
@@ -346,12 +350,12 @@ async def test_group_builder_open_ended_selfplay_scores_shared_runtime_once():
         {
             (
                 matcher.system,
-                matcher.user.render(question=state.spec.task_prompt, a="H2O", b="water"),
+                matcher.user.render(question=state.spec.problem.task_prompt, a="H2O", b="water"),
             ): "same.",
             (
                 grader.system,
                 grader.user.render(
-                    question=state.spec.task_prompt,
+                    question=state.spec.problem.task_prompt,
                     target="water",
                     response="H2O",
                 ),
@@ -359,15 +363,14 @@ async def test_group_builder_open_ended_selfplay_scores_shared_runtime_once():
         }
     )
     builder = DebateGroupBuilder(
-        task_prompt=state.spec.task_prompt,
-        answer_a="",
-        answer_b="",
+        problem=DebateProblemSpec(
+            task_prompt=state.spec.problem.task_prompt,
+            scoring_mode=ScoringMode.OPEN_ENDED,
+            answer_by_role=None,
+            target="water",
+        ),
+        game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=2, prompts_ref=state.spec.prompts_ref),
         renderer=MagicMock(),
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        num_rounds=2,
-        prompts_ref=state.spec.prompts_ref,
-        target="water",
-        scoring_mode=ScoringMode.OPEN_ENDED,
         scorer=client,
     )
 
@@ -406,12 +409,12 @@ async def test_debate_scorer_open_ended_uses_semantic_facts():
         {
             (
                 matcher.system,
-                matcher.user.render(question=state.spec.task_prompt, a="H2O", b="water"),
+                matcher.user.render(question=state.spec.problem.task_prompt, a="H2O", b="water"),
             ): "SAME",
             (
                 grader.system,
                 grader.user.render(
-                    question=state.spec.task_prompt,
+                    question=state.spec.problem.task_prompt,
                     target="water",
                     response="H2O",
                 ),

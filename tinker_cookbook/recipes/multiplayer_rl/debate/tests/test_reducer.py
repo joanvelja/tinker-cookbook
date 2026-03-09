@@ -14,11 +14,13 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.core.reducer import (
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     JudgeDecision,
     ProtocolKind,
     Role,
+    ScoringMode,
 )
 
 
@@ -29,8 +31,11 @@ def _make_state(
     schedule = build_schedule(kind, num_rounds)
     spec = DebateSpec(
         debate_id="test",
-        task_prompt="Which is bigger?",
-        answer_by_role={Role.DEBATER_A: "2", Role.DEBATER_B: "3"},
+        problem=DebateProblemSpec(
+            task_prompt="Which is bigger?",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role={Role.DEBATER_A: "2", Role.DEBATER_B: "3"},
+        ),
         schedule=schedule,
         open_reasoning=False,
     )

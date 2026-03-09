@@ -19,8 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
-from tinker_cookbook.recipes.multiplayer_rl.debate.env import (
+from tinker_cookbook.recipes.multiplayer_rl.debate.builders import (
     IDENTITY_REMAP_BASES,
     _remap_to_identity,
 )
@@ -40,6 +39,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.metrics import (
     mcq_debate_metrics,
 )
+from tinker_cookbook.recipes.multiplayer_rl.debate.tests.conftest import make_spec
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
     DebateSpec,
@@ -64,16 +64,12 @@ def _make_spec(
     open_reasoning: bool = True,
     prompts_ref: str = "scientific_mcq",
 ) -> DebateSpec:
-    schedule = build_schedule(ProtocolKind.SEQUENTIAL, num_rounds)
-    return DebateSpec(
+    return make_spec(
         debate_id="parity-test-001",
-        task_prompt="What is X?\nA) Foo\nB) Bar\nC) Baz\nD) Qux",
-        answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
-        schedule=schedule,
-        open_reasoning=open_reasoning,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        prompts_ref=prompts_ref,
         target=target,
+        num_rounds=num_rounds,
+        open_reasoning=open_reasoning,
+        prompts_ref=prompts_ref,
     )
 
 

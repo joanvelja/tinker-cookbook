@@ -17,11 +17,13 @@ from ..scoring.metrics import (
 )
 from ..scoring.mcq import strip_think
 from ..types import (
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     Utterance,
 )
 from ..core.schedule import build_schedule
@@ -38,11 +40,14 @@ def _make_state(
     schedule = build_schedule(ProtocolKind.SEQUENTIAL, 1)
     spec = DebateSpec(
         debate_id="probe",
-        task_prompt="Which answer is correct?",
-        answer_by_role={Role.DEBATER_A: "C", Role.DEBATER_B: "D"},
+        problem=DebateProblemSpec(
+            task_prompt="Which answer is correct?",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role={Role.DEBATER_A: "C", Role.DEBATER_B: "D"},
+            target=target,
+        ),
         schedule=schedule,
         open_reasoning=False,
-        target=target,
     )
     return DebateState(
         spec=spec,

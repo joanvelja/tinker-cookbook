@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
-from ..env import IDENTITY_REMAP_BASES, _remap_to_identity
+from ..builders import IDENTITY_REMAP_BASES, _remap_to_identity
 from ..scoring.metrics import (
     _parse_think_answer_strict,
     loss_rate,
@@ -14,10 +14,12 @@ from ..scoring.metrics import (
 )
 from ..types import (
     DebateOutcome,
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     Phase,
     Role,
+    ScoringMode,
     TurnSlot,
     Utterance,
     VisibilityPolicy,
@@ -72,11 +74,14 @@ def _utt(
 def _spec(target: str | None = "C") -> DebateSpec:
     return DebateSpec(
         debate_id="test-gate-001",
-        task_prompt="Which option is correct?",
-        answer_by_role=None,
+        problem=DebateProblemSpec(
+            task_prompt="Which option is correct?",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role=None,
+            target=target,
+        ),
         schedule=_schedule_2_rounds(),
         open_reasoning=False,
-        target=target,
     )
 
 

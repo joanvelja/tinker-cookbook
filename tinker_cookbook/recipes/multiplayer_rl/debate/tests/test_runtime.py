@@ -10,12 +10,14 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.core.runtime import DebateRun
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.schedule import build_schedule
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     JudgeDecision,
     JudgeRequest,
     ProtocolKind,
     Role,
+    ScoringMode,
 )
 
 
@@ -26,8 +28,11 @@ def _make_state(
     schedule = build_schedule(kind, num_rounds)
     spec = DebateSpec(
         debate_id="test",
-        task_prompt="Which is bigger?",
-        answer_by_role={Role.DEBATER_A: "2", Role.DEBATER_B: "3"},
+        problem=DebateProblemSpec(
+            task_prompt="Which is bigger?",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role={Role.DEBATER_A: "2", Role.DEBATER_B: "3"},
+        ),
         schedule=schedule,
         open_reasoning=False,
     )
@@ -230,52 +235,15 @@ async def test_judge_callback():
     assert runtime.state.outcome.winner == Role.DEBATER_A
 
 
-# --- Observation caching ---
-
-
-@pytest.mark.asyncio
-async def test_obs_consistent():
-    state = _make_state(kind=ProtocolKind.SEQUENTIAL, num_rounds=1)
-    runtime = DebateRuntime(state)
-
-    ticket = await runtime.wait_for_turn(Role.DEBATER_A)
-    assert ticket is not None
-    result = await runtime.submit(ticket, "A speaks", 2)
-
-    # Messages should be consistent across calls (cache removed in V2).
-    msgs1 = result.messages
-    msgs2 = runtime._get_messages(runtime.state, Role.DEBATER_A)
-    assert msgs1 == msgs2
-
-
 # --- Snapshot ---
 
 
 def test_snapshot():
     state = _make_state()
     runtime = DebateRuntime(state)
-    snap = runtime.snapshot("llama3", ProtocolKind.SEQUENTIAL, {"num_rounds": 2})
+    snap = runtime.snapshot("llama3")
     assert snap.state is state
     assert snap.renderer_name == "llama3"
-    assert snap.protocol_kind == ProtocolKind.SEQUENTIAL
-
-
-# --- Messages in SubmitResult ---
-
-
-@pytest.mark.asyncio
-async def test_submit_result_has_messages():
-    state = _make_state(kind=ProtocolKind.SEQUENTIAL, num_rounds=1)
-    runtime = DebateRuntime(state)
-
-    ticket = await runtime.wait_for_turn(Role.DEBATER_A)
-    assert ticket is not None
-    result = await runtime.submit(ticket, "A speaks", 2)
-    # system + question + own turn (assistant) = 3
-    assert len(result.messages) == 3
-    assert result.messages[0]["role"] == "system"
-    assert result.messages[1]["role"] == "user"  # question
-    assert result.messages[2]["role"] == "assistant"  # own turn
 
 
 # --- Hybrid protocol integration ---

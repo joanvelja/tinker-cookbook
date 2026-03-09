@@ -24,6 +24,7 @@ from inspect_ai.model import ModelOutput
 from inspect_ai.scorer import Score, Target, mean
 from inspect_ai.solver import TaskState
 
+from .conftest import make_spec
 from ..core.schedule import build_schedule
 from ..eval.inspect_task import (
     _STORE_KEY,
@@ -35,12 +36,14 @@ from ..eval.inspect_task import (
 from ..scoring.metrics import mcq_debate_metrics
 from ..types import (
     DebateOutcome,
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     JudgeDecision,
     Phase,
     ProtocolKind,
     Role,
+    ScoringMode,
     Utterance,
 )
 
@@ -55,16 +58,13 @@ def _make_spec(
     target: str | None = "A",
     num_rounds: int = 2,
 ) -> DebateSpec:
-    schedule = build_schedule(ProtocolKind.SEQUENTIAL, num_rounds)
-    return DebateSpec(
+    return make_spec(
         debate_id="probe-001",
         task_prompt="What is the answer?\nA) Foo\nB) Bar\nC) Baz\nD) Qux",
-        answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
-        schedule=schedule,
-        open_reasoning=True,
-        protocol_kind=ProtocolKind.SEQUENTIAL,
-        prompts_ref="scientific_mcq",
         target=target,
+        num_rounds=num_rounds,
+        open_reasoning=True,
+        prompts_ref="scientific_mcq",
     )
 
 
@@ -167,13 +167,16 @@ def _make_minimal_state() -> DebateState:
     """Minimal state: no outcome, no target, no think blocks, 0 utterances."""
     spec = DebateSpec(
         debate_id="probe-minimal",
-        task_prompt="question?",
-        answer_by_role=None,
+        problem=DebateProblemSpec(
+            task_prompt="question?",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role=None,
+            target=None,
+        ),
         schedule=build_schedule(ProtocolKind.SEQUENTIAL, 1),
         open_reasoning=False,
         protocol_kind=ProtocolKind.SEQUENTIAL,
         prompts_ref="scientific_mcq",
-        target=None,
     )
     return DebateState(
         spec=spec,
@@ -479,7 +482,7 @@ class TestFullScorerMock:
 
         restored = _state_from_json(json_str)
 
-        assert restored.spec.target == state.spec.target
+        assert restored.spec.problem.target == state.spec.problem.target
         assert len(restored.transcript) == len(state.transcript)
         assert restored.outcome is not None
         assert restored.outcome.winner == state.outcome.winner
@@ -551,11 +554,14 @@ class TestEdgeCases:
         """
         spec = DebateSpec(
             debate_id="edge-no-outcome",
-            task_prompt="Q?",
-            answer_by_role=None,
+            problem=DebateProblemSpec(
+                task_prompt="Q?",
+                scoring_mode=ScoringMode.MCQ,
+                answer_by_role=None,
+                target=None,
+            ),
             schedule=build_schedule(ProtocolKind.SEQUENTIAL, 1),
             open_reasoning=False,
-            target=None,
         )
         state = DebateState(
             spec=spec,

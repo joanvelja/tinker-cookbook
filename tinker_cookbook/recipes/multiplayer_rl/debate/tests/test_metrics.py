@@ -23,10 +23,12 @@ from ..scoring.metrics import (
 )
 from ..types import (
     DebateOutcome,
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     Phase,
     Role,
+    ScoringMode,
     TurnSlot,
     Utterance,
     VisibilityPolicy,
@@ -86,11 +88,14 @@ def _utt(
 def _spec(target: str | None = "A") -> DebateSpec:
     return DebateSpec(
         debate_id="test-001",
-        task_prompt="Which option is correct?",
-        answer_by_role=None,
+        problem=DebateProblemSpec(
+            task_prompt="Which option is correct?",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role=None,
+            target=target,
+        ),
         schedule=_schedule_2_rounds(),
         open_reasoning=False,
-        target=target,
     )
 
 

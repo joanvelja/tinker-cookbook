@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Mapping
 
-from tinker_cookbook.renderers import Message
 from tinker_cookbook.utils import logtree
 
 from ..scoring.mcq import strip_think
@@ -21,12 +19,10 @@ from ..types import (
     DebateState,
     JudgeRequest,
     Phase,
-    ProtocolKind,
     Role,
     TurnTicket,
 )
 from .reducer import apply_action, apply_judge_event, get_current_slot, get_eligible_roles
-from .visibility import get_visible_messages
 
 # Map schedule phase values to YAML trigger keys where they differ.
 _PHASE_TO_TRIGGER: dict[str, str] = {
@@ -44,7 +40,6 @@ Logs = dict[str, str | int | float]
 class SubmitResult:
     reward: float
     episode_done: bool
-    messages: tuple[Message, ...]
     stop_condition: StopCondition
     metrics: Metrics = field(default_factory=dict)
     logs: Logs = field(default_factory=dict)
@@ -67,21 +62,8 @@ class DebateRuntime:
     def state(self) -> DebateState:
         return self._state
 
-    def snapshot(
-        self,
-        renderer_name: str,
-        protocol_kind: ProtocolKind,
-        protocol_kwargs: Mapping[str, Any],
-    ) -> DebateSnapshot:
-        return DebateSnapshot(
-            state=self._state,
-            protocol_kind=protocol_kind,
-            protocol_kwargs=protocol_kwargs,
-            renderer_name=renderer_name,
-        )
-
-    def _get_messages(self, state: DebateState, role: Role) -> tuple[Message, ...]:
-        return get_visible_messages(state, role)
+    def snapshot(self, renderer_name: str) -> DebateSnapshot:
+        return DebateSnapshot(state=self._state, renderer_name=renderer_name)
 
     async def wait_for_turn(self, role: Role) -> TurnTicket | None:
         """Block until role is eligible or episode is done. Return ticket or None."""
@@ -193,12 +175,10 @@ class DebateRuntime:
                     )
                     reward = self._step_reward_fn(before, self._state, ticket.role, utt)
 
-                messages = self._get_messages(self._state, ticket.role)
                 base_logs["time/lock_held_s"] = time.monotonic() - _lock_t0
                 return SubmitResult(
                     reward=reward,
                     episode_done=self._state.done,
-                    messages=messages,
                     stop_condition=[],
                     logs=base_logs,
                 )
@@ -250,8 +230,6 @@ class DebateRuntime:
                     utt = next((u for u in result.committed if u.role == ticket.role), None)
                     reward = self._step_reward_fn(before, self._state, ticket.role, utt)
 
-                messages = self._get_messages(self._state, ticket.role)
-
                 base_logs["time/lock_held_s"] = time.monotonic() - _lock_t0
                 if _judge_wall_s > 0:
                     base_logs["time/judge_wall_s"] = _judge_wall_s
@@ -265,7 +243,6 @@ class DebateRuntime:
         return SubmitResult(
             reward=reward,
             episode_done=result.episode_done,
-            messages=messages,
             stop_condition=[],
             logs=base_logs,
         )

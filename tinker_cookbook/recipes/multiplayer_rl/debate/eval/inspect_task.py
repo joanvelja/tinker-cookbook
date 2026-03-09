@@ -28,6 +28,7 @@ from ..scoring.metrics import MetricFn, mcq_debate_metrics
 from ..scoring.providers import AnswerJudgeClient
 from ..types import (
     DebateOutcome,
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     JudgeDecision,
@@ -39,7 +40,7 @@ from ..types import (
     Utterance,
     VisibilityPolicy,
 )
-from ..env import IDENTITY_REMAP_BASES, _remap_to_identity
+from ..builders import IDENTITY_REMAP_BASES, _remap_to_identity
 from .dataset_adapter import DatasetAdapter, resolve_adapter_scoring_mode
 
 # ---------------------------------------------------------------------------
@@ -73,18 +74,20 @@ def _encode_state(state: DebateState) -> dict[str, Any]:
 def _encode_spec(spec: DebateSpec) -> dict[str, Any]:
     return {
         "debate_id": spec.debate_id,
-        "task_prompt": spec.task_prompt,
-        "answer_by_role": (
-            {k.value: v for k, v in spec.answer_by_role.items()}
-            if spec.answer_by_role is not None
-            else None
-        ),
+        "problem": {
+            "task_prompt": spec.problem.task_prompt,
+            "scoring_mode": spec.problem.scoring_mode.value,
+            "answer_by_role": (
+                {k.value: v for k, v in spec.problem.answer_by_role.items()}
+                if spec.problem.answer_by_role is not None
+                else None
+            ),
+            "target": spec.problem.target,
+        },
         "schedule": [_encode_turn_slot(s) for s in spec.schedule],
         "open_reasoning": spec.open_reasoning,
         "protocol_kind": spec.protocol_kind.value,
         "prompts_ref": spec.prompts_ref,
-        "target": spec.target,
-        "scoring_mode": spec.scoring_mode.value,
     }
 
 
@@ -146,20 +149,24 @@ def _decode_state(d: dict[str, Any]) -> DebateState:
 
 
 def _decode_spec(d: dict[str, Any]) -> DebateSpec:
-    return DebateSpec(
-        debate_id=d["debate_id"],
-        task_prompt=d["task_prompt"],
+    p = d["problem"]
+    problem = DebateProblemSpec(
+        task_prompt=p["task_prompt"],
+        scoring_mode=ScoringMode(p.get("scoring_mode", ScoringMode.MCQ.value)),
         answer_by_role=(
-            {Role(k): v for k, v in d["answer_by_role"].items()}
-            if d["answer_by_role"] is not None
+            {Role(k): v for k, v in p["answer_by_role"].items()}
+            if p["answer_by_role"] is not None
             else None
         ),
+        target=p["target"],
+    )
+    return DebateSpec(
+        debate_id=d["debate_id"],
+        problem=problem,
         schedule=tuple(_decode_turn_slot(s) for s in d["schedule"]),
         open_reasoning=d["open_reasoning"],
         protocol_kind=ProtocolKind(d["protocol_kind"]),
         prompts_ref=d["prompts_ref"],
-        target=d["target"],
-        scoring_mode=ScoringMode(d.get("scoring_mode", ScoringMode.MCQ.value)),
     )
 
 
@@ -283,16 +290,19 @@ def debate_solver(
         if state.target is not None:
             target_text = state.target.text if hasattr(state.target, "text") else str(state.target)
 
+        problem = DebateProblemSpec(
+            task_prompt=state.input_text,
+            scoring_mode=scoring_mode,
+            answer_by_role=answer_by_role,
+            target=target_text,
+        )
         spec = DebateSpec(
             debate_id=debate_id,
-            task_prompt=state.input_text,
-            answer_by_role=answer_by_role,
+            problem=problem,
             schedule=schedule,
             open_reasoning=open_reasoning,
             protocol_kind=protocol_kind,
             prompts_ref=prompts_ref,
-            target=target_text,
-            scoring_mode=scoring_mode,
         )
 
         initial_state = DebateState(
@@ -409,7 +419,7 @@ def debate_scorer(
                     for name, value in built_in_metric_values(debate_state, facts[0]).items()
                 }
             else:
-                if debate_state.spec.scoring_mode == ScoringMode.OPEN_ENDED:
+                if debate_state.spec.problem.scoring_mode == ScoringMode.OPEN_ENDED:
                     raise ValueError(
                         "Custom MetricFn injection is unsupported with OPEN_ENDED semantic scoring."
                     )

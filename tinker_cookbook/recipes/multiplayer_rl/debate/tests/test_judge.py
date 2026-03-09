@@ -11,11 +11,13 @@ from ..scoring.judge import LLMJudgeCallback, _extract_xml_fields, zero_sum_outc
 from ..core.schedule import build_schedule
 from ..types import (
     DebateOutcome,
+    DebateProblemSpec,
     DebateSpec,
     DebateState,
     JudgeRequest,
     ProtocolKind,
     Role,
+    ScoringMode,
     Utterance,
 )
 
@@ -32,8 +34,11 @@ def _make_request() -> JudgeRequest:
     schedule = build_schedule(ProtocolKind.SEQUENTIAL, 1)
     spec = DebateSpec(
         debate_id="test",
-        task_prompt="test question",
-        answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+        problem=DebateProblemSpec(
+            task_prompt="test question",
+            scoring_mode=ScoringMode.MCQ,
+            answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+        ),
         schedule=schedule,
         open_reasoning=False,
     )
