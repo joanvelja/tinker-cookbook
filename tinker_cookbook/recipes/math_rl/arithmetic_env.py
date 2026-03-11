@@ -28,7 +28,7 @@ class ArithmeticEnv(ProblemEnv):
     def get_question(self) -> str:
         return f"What is {self.x} + {self.y}?"
 
-    def check_answer(self, sample_str: str) -> bool:
+    async def check_answer(self, sample_str: str) -> bool:
         chunks = sample_str.split()
         try:
             answer = int(chunks[0])

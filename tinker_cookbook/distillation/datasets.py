@@ -103,7 +103,7 @@ class PromptOnlyEnv(ProblemEnv):
         # Always return True - no format checking for distillation
         return True
 
-    def check_answer(self, sample_str: str) -> bool:
+    async def check_answer(self, sample_str: str) -> bool:
         # Always return False - no answer checking for distillation
         return False
 

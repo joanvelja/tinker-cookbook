@@ -1,21 +1,21 @@
+from __future__ import annotations
+
 import asyncio
 import itertools
 from collections import defaultdict
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List
 
 import numpy as np
 import tinker
-from tinker_cookbook.completers import TinkerTokenCompleter
+from tinker_cookbook.completers import TinkerTokenCompleter, TokenCompleter
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator
-from tinker_cookbook.rl.rollout_logging import (
-    RolloutSummaryExportConfig,
-    write_rollout_summaries_jsonl,
-)
 from tinker_cookbook.rl.rollouts import do_group_rollout
 from tinker_cookbook.rl.types import EnvGroupBuilder, RLDataset, TrajectoryGroup
 from tinker_cookbook.utils.misc_utils import all_same, dict_mean
 from tinker_cookbook.utils import logtree
-from tinker_cookbook.completers import TokenCompleter
+
+if TYPE_CHECKING:
+    from tinker_cookbook.usage import UsageTracker
 
 
 def _compute_by_group_metrics(trajectory_groups_P: List[TrajectoryGroup], good_thresh: float = 0.5):
@@ -114,18 +114,15 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
         max_tokens: int,
         name: str = "test",
         num_groups_to_log: int = 4,
+        model_name: str = "",
     ):
         self.env_group_builders_P = dataset_to_env_group_builders(dataset)
         self.max_tokens = max_tokens
         self.name = name
         self.num_groups_to_log = num_groups_to_log
+        self.model_name = model_name
 
-    async def eval_token_completer(
-        self,
-        policy: TokenCompleter,
-        *,
-        rollout_summary_export: RolloutSummaryExportConfig | None = None,
-    ) -> dict[str, float]:
+    async def eval_token_completer(self, policy: TokenCompleter) -> dict[str, float]:
         async def run_group_rollout(builder, i):
             enable_logging = i < self.num_groups_to_log
             with logtree.optional_enable_logging(enable=enable_logging):
@@ -135,20 +132,6 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
             *[run_group_rollout(builder, i) for i, builder in enumerate(self.env_group_builders_P)]
         )
         taglist_P = [builder.logging_tags() for builder in self.env_group_builders_P]
-        if rollout_summary_export is not None:
-            sampling_client_steps_P = (
-                [rollout_summary_export.sampling_client_step] * len(trajectory_groups_P)
-                if rollout_summary_export.sampling_client_step is not None
-                else None
-            )
-            write_rollout_summaries_jsonl(
-                rollout_summary_export.path,
-                split=rollout_summary_export.split,
-                iteration=rollout_summary_export.iteration,
-                trajectory_groups_P=trajectory_groups_P,
-                taglist_P=taglist_P,
-                sampling_client_steps_P=sampling_client_steps_P,
-            )
         metrics = compute_trajectory_metrics(trajectory_groups_P, taglist_P)
 
         metrics = {f"{self.name}/{k}": v for k, v in metrics.items()}
@@ -158,10 +141,13 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
         self,
         sampling_client: tinker.SamplingClient,
         *,
-        rollout_summary_export: RolloutSummaryExportConfig | None = None,
+        usage_tracker: UsageTracker | None = None,
     ) -> dict[str, float]:
-        policy = TinkerTokenCompleter(sampling_client, max_tokens=self.max_tokens)
-        return await self.eval_token_completer(
-            policy,
-            rollout_summary_export=rollout_summary_export,
+        policy = TinkerTokenCompleter(
+            sampling_client,
+            max_tokens=self.max_tokens,
+            usage_tracker=usage_tracker,
+            actor="trained",
+            model_name=self.model_name,
         )
+        return await self.eval_token_completer(policy)

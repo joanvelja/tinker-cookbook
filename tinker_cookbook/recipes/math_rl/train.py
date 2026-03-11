@@ -5,6 +5,7 @@ from typing import Any
 
 import chz
 from tinker_cookbook import checkpoint_utils, cli_utils
+from tinker_cookbook.recipes.gpqa_rl.env import GpqaOpenEndedBuilder
 from tinker_cookbook.recipes.math_rl import (
     arithmetic_env,
     math_env,
@@ -27,7 +28,7 @@ class CLIConfig:
     load_checkpoint_path: str | None = None
 
     # Environment configuration
-    env: str = "arithmetic"  # Options: arithmetic, math, polaris, deepmath, gsm8k
+    env: str = "arithmetic"  # Options: arithmetic, math, polaris, deepmath, gsm8k, gpqa_oe
     seed: int = 0  # Random seed for data shuffling
 
     # Training hyperparameters
@@ -91,6 +92,14 @@ def get_dataset_builder(
             model_name_for_tokenizer=model_name,
             renderer_name=renderer_name,
             group_size=group_size,
+            seed=seed,
+        )
+    elif env == "gpqa_oe":
+        return GpqaOpenEndedBuilder(
+            batch_size=batch_size,
+            group_size=group_size,
+            model_name_for_tokenizer=model_name,
+            renderer_name=renderer_name,
             seed=seed,
         )
     else:

@@ -26,10 +26,13 @@ dependencies = [
     "textarena>=0.7.4",
     "math-verify",
     "scipy",
+    "jinja2>=3.1",
+    "pyyaml>=6.0",
     "pytest>=9.0.2",
     "tiktoken>=0.12.0", # Required for Kimi tokenizer
     "tqdm",
     "modal",
+    "wandb>=0.25.0",
 ]
 
 [project.urls]
@@ -62,6 +65,10 @@ verifiers = [
     "verifiers>=0.1.9,<0.1.10",
     "openai",
 ]
+debate-scorers = [
+    "openai",
+    "anthropic",
+]
 inspect = [
     "inspect-ai",
     "inspect-evals>=0.3.106",
@@ -74,6 +81,7 @@ all = [
     "tinker_cookbook[neptune-scale]",
     "tinker_cookbook[trackio]",
     "tinker_cookbook[verifiers]",
+    "tinker_cookbook[debate-scorers]",
     "tinker_cookbook[inspect]",
     "tinker_cookbook[if_rl]",
 ]
@@ -105,3 +113,8 @@ exclude = [
 
 [tool.uv.sources]
 instruction-following-eval = { git = "https://github.com/josejg/instruction_following_eval", rev = "0c495b2f95155e8b10acb919ae283bfb4d5be6e2" }
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.10.8",
+]

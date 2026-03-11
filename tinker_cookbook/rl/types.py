@@ -4,7 +4,7 @@ Basic interfaces and types for reinforcement learning.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Sequence, TypeAlias
+from typing import Literal, Sequence, TypeAlias
 
 import chz
 import tinker
@@ -80,6 +80,9 @@ class Trajectory:
     final_ob: Observation
 
 
+AdvantageScheme = Literal["mean_center", "grpo", "maxrl", "power_mean"]
+
+
 class EnvGroupBuilder(ABC):
     """
     Builds a group of environments. The group will be used in the following way:
@@ -114,6 +117,15 @@ class EnvGroupBuilder(ABC):
         """
         return [(0.0, {}) for _ in trajectory_group]
 
+    def on_group_complete(
+        self,
+        trajectories_G: list[Trajectory],
+        env_group: Sequence[Env],
+        rewards_and_metrics_G: list[tuple[float, Metrics]],
+    ) -> None:
+        """Hook called after compute_group_rewards. Override for logging."""
+        pass
+
     def logging_tags(self) -> list[str]:
         """
         This is just used for logging. We often want to aggregate metrics (like rewards
@@ -124,6 +136,26 @@ class EnvGroupBuilder(ABC):
         e.g., ['gsm', 'math', 'rlvr']
         """
         return []
+
+    def advantage_subgroups(self, n_trajectories: int) -> tuple[tuple[int, ...], ...] | None:
+        """Return subgroup partition for advantage computation.
+
+        Override in subclasses to partition trajectories into subgroups
+        (e.g., per-role in multi-agent settings). Advantages are computed
+        independently within each subgroup.
+
+        Returns None for a single group (default — preserves current behavior).
+        """
+        return None
+
+    @staticmethod
+    def interleaved_subgroups(n: int, k: int) -> tuple[tuple[int, ...], ...]:
+        """Partition n interleaved items into k subgroups.
+
+        For envs laid out as [role0, role1, ..., role_{k-1}, role0, role1, ...],
+        returns k tuples of indices, one per role.
+        """
+        return tuple(tuple(range(r, n, k)) for r in range(k))
 
 
 @dataclass

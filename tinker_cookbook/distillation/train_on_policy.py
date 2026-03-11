@@ -186,7 +186,7 @@ async def prepare_minibatch(
 
     # Assemble training data
     with timed("assemble_training_data", metrics):
-        advantages_P = compute_advantages(trajectory_groups_P)
+        advantages_P = compute_advantages(trajectory_groups_P, env_group_builders_P)
         data_D, metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
 
     # Print one datum per dataset
@@ -423,7 +423,11 @@ async def main(
 
         # Add test dataset evaluator if present
         if maybe_test_dataset is not None:
-            evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens))
+            evaluators.append(
+                RLTestSetEvaluator(
+                    maybe_test_dataset, max_tokens=cfg.max_tokens, model_name=cfg.model_name
+                )
+            )
 
         # Create teacher sampling client
         teacher_config = dataset_config.teacher_config

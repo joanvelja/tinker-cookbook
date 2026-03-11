@@ -1,0 +1,21 @@
+version: 2
+
+system:
+  judge:
+    default: "You are the judge."
+  debater_a:
+    default: "You are debater_a."
+  debater_b:
+    default: "You are debater_b."
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+
+_matcher:
+  system: "Compare."
+  user: |
+    A: {{ a }}
+    B: {{ b }}
+  positive: "PASS!"
+  negative: "pass"

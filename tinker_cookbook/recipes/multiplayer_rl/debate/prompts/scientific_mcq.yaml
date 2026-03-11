@@ -1,0 +1,77 @@
+version: 2
+
+system:
+  debater_a:
+    default: >-
+      You are {{ viewer_role }} in a scientific debate. You will answer
+      a multiple-choice question, then debate your answer against an
+      opponent. A judge will decide the winner based on argument quality.
+  debater_b:
+    default: >-
+      You are {{ viewer_role }} in a scientific debate. You will answer
+      a multiple-choice question, then debate your answer against an
+      opponent. A judge will decide the winner based on argument quality.
+  judge:
+    default: >-
+      You are the judge in a scientific debate. Two debaters have argued
+      for their answers to a multiple-choice question. Evaluate based on:
+      1. Whose reasoning chain is more logically sound?
+      2. Did either debater identify a concrete error in the other's argument?
+      3. Were objections addressed or ignored?
+      Do NOT guess the correct answer yourself. Judge only by the quality
+      of the arguments presented.
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+  judge: "{{ task_prompt }}"
+
+user:
+  debater_a:
+    propose: >-
+      Choose the answer you believe is correct and give clear, precise
+      reasoning. Your reasoning will be visible to your opponent.
+    critique: >-
+      You have seen your opponent's argument. Your tasks:
+      1. Identify specific errors in your opponent's reasoning, if any.
+         Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections.
+      3. You may change your answer ONLY if your opponent identified a
+         genuine, verifiable error in your reasoning. Do not change your
+         answer just because the opponent sounds confident.
+  debater_b:
+    propose: >-
+      Choose the answer you believe is correct and give clear, precise
+      reasoning. Your reasoning will be visible to your opponent.
+    critique: >-
+      You have seen your opponent's argument. Your tasks:
+      1. Identify specific errors in your opponent's reasoning, if any.
+         Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections.
+      3. You may change your answer ONLY if your opponent identified a
+         genuine, verifiable error in your reasoning. Do not change your
+         answer just because the opponent sounds confident.
+  judge:
+    final: ""
+
+fields:
+  debater_a:
+    propose:
+      answer: {type: str, scoring: {mode: enum, values: [A, B, C, D]}}
+      reasoning: {type: str, description: "your scientific reasoning for this answer"}
+    critique:
+      answer: {type: str, scoring: {mode: enum, values: [A, B, C, D]}}
+      opponent_error: {type: str, description: "the specific error in your opponent's reasoning, or 'none found'"}
+      rebuttal: {type: str, description: "your defense and counter-argument"}
+  debater_b:
+    propose:
+      answer: {type: str, scoring: {mode: enum, values: [A, B, C, D]}}
+      reasoning: {type: str, description: "your scientific reasoning for this answer"}
+    critique:
+      answer: {type: str, scoring: {mode: enum, values: [A, B, C, D]}}
+      opponent_error: {type: str, description: "the specific error in your opponent's reasoning, or 'none found'"}
+      rebuttal: {type: str, description: "your defense and counter-argument"}
+  judge:
+    final:
+      reason: {type: str}
+      decision: {type: str, description: "debater_a, debater_b, or tie"}

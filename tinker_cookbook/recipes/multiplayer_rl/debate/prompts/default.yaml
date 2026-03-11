@@ -1,0 +1,58 @@
+version: 2
+
+system:
+  judge:
+    default: "You are the judge. Evaluate the debaters' arguments."
+  debater_a:
+    default: "You are {{ viewer_role }}.{% if has_assigned_answer %} Your goal is to defend your assigned position.{% endif %}"
+  debater_b:
+    default: "You are {{ viewer_role }}.{% if has_assigned_answer %} Your goal is to defend your assigned position.{% endif %}"
+
+question:
+  judge: "{{ task_prompt }}"
+  debater_a: "{{ task_prompt }}{% if has_assigned_answer %}\n\nYour assigned position: {{ answer }}{% endif %}"
+  debater_b: "{{ task_prompt }}{% if has_assigned_answer %}\n\nYour assigned position: {{ answer }}{% endif %}"
+
+user:
+  judge:
+    final: "Which debater was more convincing?"
+  debater_a:
+    default: ""
+  debater_b:
+    default: ""
+
+fields:
+  judge:
+    final:
+      decision: {type: str, description: "debater_a or debater_b or tie"}
+      reason: {type: str, description: "your reasoning"}
+
+_matcher:
+  system: |
+    Compare two answers for semantic equivalence.
+    SAME = same identity, value, or conclusion. Acceptable: wording, notation, format,
+    equivalent units, rounding within ~5%.
+    DIFFERENT = different identity, value, or conclusion.
+    Reply with exactly one word: SAME or DIFFERENT.
+  user: |
+    {% if question %}Question: "{{ question }}"
+    {% endif %}Answer A: "{{ a }}"
+    Answer B: "{{ b }}"
+  positive: SAME
+  negative: DIFFERENT
+
+_grader:
+  system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
+  user: |
+    Question: {{ question }}
+    Correct answer: {{ target }}
+    Student's response: {{ response }}
+
+    Is the student's response semantically equivalent to the correct answer?
+    Answers that differ only in format, notation, or phrasing are CORRECT
+    (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
+    Answers that are factually wrong are INCORRECT.
+
+    Reply with exactly "CORRECT" or "INCORRECT".
+  positive: CORRECT
+  negative: INCORRECT

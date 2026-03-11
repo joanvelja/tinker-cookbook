@@ -13,6 +13,7 @@ class CLIConfig:
     renderer_name: str | None = None
     game_name: str = "TicTacToe-v0"
     batch_size: int = 512
+    group_size: int = 1
     num_train_datapoints: int = 131072
     num_test_datapoints: int = 128
     learning_rate: float = 3e-5
@@ -22,6 +23,9 @@ class CLIConfig:
     wandb_project: str | None = None
     wandb_name: str | None = None
     log_path: str | None = None
+    use_advantage_subgroups: bool = True
+    advantage_scheme: str = "mean_center"
+    advantage_alpha: float = 0.5
 
     behavior_if_log_dir_exists: cli_utils.LogdirBehavior = "ask"
 
@@ -50,6 +54,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         num_train_datapoints=cli_config.num_train_datapoints,
         num_test_datapoints=cli_config.num_test_datapoints,
         renderer_name=renderer_name,
+        group_size=cli_config.group_size,
     )
 
     return train.Config(
@@ -62,6 +67,9 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         eval_every=cli_config.eval_every,
         wandb_project=cli_config.wandb_project,
         wandb_name=wandb_name,
+        use_advantage_subgroups=cli_config.use_advantage_subgroups,
+        advantage_scheme=cli_config.advantage_scheme,
+        advantage_alpha=cli_config.advantage_alpha,
     )
 
 
