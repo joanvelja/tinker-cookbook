@@ -34,6 +34,8 @@ class AsyncLLMClient:
         extra: dict = {}
         if self._config.reasoning_effort is not None:
             extra["reasoning_effort"] = self._config.reasoning_effort
+        else:
+            extra["temperature"] = 0
         async with self._semaphore:
             response = await self._client.chat.completions.create(
                 model=self._config.model,
@@ -41,7 +43,6 @@ class AsyncLLMClient:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                temperature=0,
                 **extra,
             )
         content = response.choices[0].message.content
