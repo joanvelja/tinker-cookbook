@@ -4,8 +4,10 @@ from datetime import datetime
 
 import chz
 from tinker_cookbook import checkpoint_utils, cli_utils
+from tinker_cookbook.hyperparam_utils import get_lr
 from tinker_cookbook.recipes.gpqa_rl.env import GpqaOpenEndedBuilder
 from tinker_cookbook.rl.train import Config, main
+from tinker_cookbook.rl.types import AdvantageScheme
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +16,17 @@ logger = logging.getLogger(__name__)
 class CLIConfig:
     """Command-line configuration for GPQA open-ended RL training."""
 
-    model_name: str = "meta-llama/Llama-3.1-8B-Instruct"
+    model_name: str = "Qwen/Qwen3-30B-A3B"
     lora_rank: int = 32
     renderer_name: str | None = None
     batch_size: int = 16
     group_size: int = 4
+    n_batches: int | None = None
     seed: int = 42
-    learning_rate: float = 4e-5
-    max_tokens: int = 512
+    learning_rate: float | None = None
+    max_tokens: int = 8192
     temperature: float = 1.0
-    n_batches: int = 20
+    advantage_scheme: AdvantageScheme = "maxrl"
     eval_every: int = 5
     save_every: int = 20
     log_path: str | None = None
@@ -42,8 +45,9 @@ async def cli_main(cli_config: CLIConfig):
         load_checkpoint_path=cli_config.load_checkpoint_path,
         base_url=cli_config.base_url,
     )
-    model_name = cli_config.model_name.replace("/", "-")
-    run_name = f"gpqa_oe-{model_name}-{cli_config.lora_rank}rank-{cli_config.learning_rate}lr-{datetime.now().strftime('%Y-%m-%d-%H-%M')}"
+    learning_rate = cli_config.learning_rate or get_lr(cli_config.model_name)
+    model_slug = cli_config.model_name.replace("/", "-")
+    run_name = f"gpqa_oe-{model_slug}-{cli_config.lora_rank}rank-{learning_rate}lr-{datetime.now().strftime('%Y-%m-%d-%H-%M')}"
 
     log_path = cli_config.log_path or f"/tmp/tinker-examples/gpqa_rl/{run_name}"
     wandb_name = cli_config.wandb_name or run_name
@@ -54,16 +58,18 @@ async def cli_main(cli_config: CLIConfig):
         model_name_for_tokenizer=cli_config.model_name,
         renderer_name=renderer_name,
         seed=cli_config.seed,
+        n_batches=cli_config.n_batches,
     )
 
     config = Config(
-        learning_rate=cli_config.learning_rate,
+        learning_rate=learning_rate,
         dataset_builder=dataset_builder,
         model_name=cli_config.model_name,
         renderer_name=renderer_name,
         lora_rank=cli_config.lora_rank,
         max_tokens=cli_config.max_tokens,
         temperature=cli_config.temperature,
+        advantage_scheme=cli_config.advantage_scheme,
         wandb_project=cli_config.wandb_project,
         wandb_name=wandb_name,
         log_path=log_path,

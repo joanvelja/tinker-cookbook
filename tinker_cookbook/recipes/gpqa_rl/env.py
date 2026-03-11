@@ -73,6 +73,7 @@ class LLMGradedDataset(RLDataset):
         convo_prefix: list[renderers.Message] | None = None,
         answer_format_instruction: str = "",
         dataset_name: str = "llm_graded",
+        n_batches: int | None = None,
     ):
         self._rows = rows
         self.batch_size = batch_size
@@ -82,6 +83,7 @@ class LLMGradedDataset(RLDataset):
         self.convo_prefix = convo_prefix
         self.answer_format_instruction = answer_format_instruction
         self.dataset_name = dataset_name
+        self._n_batches = n_batches
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         n = len(self._rows)
@@ -103,6 +105,8 @@ class LLMGradedDataset(RLDataset):
         ]
 
     def __len__(self) -> int:
+        if self._n_batches is not None:
+            return self._n_batches
         return math.ceil(len(self._rows) / self.batch_size)
 
 
@@ -117,6 +121,7 @@ class LLMGradedDatasetBuilder(RLDatasetBuilder):
     convo_prefix: list[renderers.Message] | None = None
     answer_format_instruction: str = ANSWER_FORMAT_INSTRUCTION
     dataset_name: str = "llm_graded"
+    n_batches: int | None = None
 
     def _load_rows(self) -> list[dict[str, str]]:
         raise NotImplementedError
@@ -132,9 +137,10 @@ class LLMGradedDatasetBuilder(RLDatasetBuilder):
 
         grader_config = self.grader_config
         if grader_config.client.max_concurrent is None:
-            grader_config = chz.replace(
-                grader_config, client__max_concurrent=self.batch_size * self.group_size
+            new_client = chz.replace(
+                grader_config.client, max_concurrent=self.batch_size * self.group_size
             )
+            grader_config = chz.replace(grader_config, client=new_client)
         grader = AsyncLLMGrader(grader_config)
 
         train_ds = LLMGradedDataset(
@@ -146,6 +152,7 @@ class LLMGradedDatasetBuilder(RLDatasetBuilder):
             convo_prefix=self.convo_prefix,
             answer_format_instruction=self.answer_format_instruction,
             dataset_name=self.dataset_name,
+            n_batches=self.n_batches,
         )
         eval_ds = LLMGradedDataset(
             rows=eval_rows,
