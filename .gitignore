@@ -3,6 +3,7 @@
 .env
 .env.*
 .venv
+.red-team/
 uv.lock
 artifacts/
 tmp/

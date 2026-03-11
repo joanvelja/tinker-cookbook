@@ -47,7 +47,7 @@ class MathEnv(ProblemEnv):
         except ValueError:
             return False
 
-    def check_answer(self, sample_str: str) -> bool:
+    async def check_answer(self, sample_str: str) -> bool:
         try:
             answer = extract_boxed(sample_str)
         except ValueError:

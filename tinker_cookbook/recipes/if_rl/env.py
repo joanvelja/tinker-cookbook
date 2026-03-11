@@ -46,7 +46,7 @@ class IfBenchEnv(ProblemEnv):
     def get_question(self) -> str:
         return self.sample.prompt
 
-    def check_answer(self, sample_str: str) -> bool:
+    async def check_answer(self, sample_str: str) -> bool:
         _, scores = evaluate_output_for_sample("ifbench", self.sample, sample_str)
         if self.reward_type in (RewardType.FULL_LOOSE, RewardType.PARTIAL_LOOSE):
             return bool(scores.binary_loose)
