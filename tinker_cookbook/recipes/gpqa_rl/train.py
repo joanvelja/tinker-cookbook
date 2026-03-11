@@ -61,6 +61,8 @@ async def cli_main(cli_config: CLIConfig):
         n_batches=cli_config.n_batches,
     )
 
+    sampling_max_connections = max(16, cli_config.batch_size * cli_config.group_size)
+
     config = Config(
         learning_rate=learning_rate,
         dataset_builder=dataset_builder,
@@ -77,6 +79,7 @@ async def cli_main(cli_config: CLIConfig):
         load_checkpoint_path=cli_config.load_checkpoint_path,
         eval_every=cli_config.eval_every,
         save_every=cli_config.save_every,
+        sampling_max_connections=sampling_max_connections,
     )
 
     cli_utils.check_log_dir(log_path, behavior_if_exists=cli_config.behavior_if_log_dir_exists)

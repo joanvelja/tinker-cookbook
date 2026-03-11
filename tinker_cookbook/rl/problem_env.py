@@ -1,4 +1,5 @@
 import logging
+import time
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Callable, Sequence
@@ -62,7 +63,9 @@ class ProblemEnv(Env):
         message, parse_success = self.renderer.parse_response(action)
         content = renderers.get_text_content(message)
         correct_format = float(parse_success) and float(self.check_format(content))
+        t0 = time.monotonic()
         correct_answer = float(await self.check_answer(content))
+        check_answer_s = time.monotonic() - t0
         total_reward = self.format_coef * (correct_format - 1) + correct_answer
 
         # Log the attempt
@@ -81,6 +84,7 @@ class ProblemEnv(Env):
             metrics={
                 "format": correct_format,
                 "correct": correct_answer,
+                "time/check_answer_s": check_answer_s,
             },
         )
 
