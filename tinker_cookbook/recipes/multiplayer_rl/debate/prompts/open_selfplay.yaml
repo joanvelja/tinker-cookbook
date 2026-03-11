@@ -89,35 +89,31 @@ fields:
       reasoning: {type: str}
       decision: {type: str, description: "A, B, or tie"}
 
+_grader:
+  system: |
+    Grade: CORRECT or INCORRECT.
+    CORRECT = same claim (format/verbosity/notation differences are fine).
+    INCORRECT = different claim (even subtly: wrong number, name, sign, mechanism).
+    Examples:
+      CORRECT: '6' vs 'Six hydrogen atoms' — same value.
+      CORRECT: 'Fe2O3' vs 'iron(III) oxide' — same compound.
+      INCORRECT: '0.32' vs '0.33' — different number.
+      INCORRECT: '(1S,2S)' vs '(1R,2S)' — different stereochemistry.
+    One word.
+  user: |
+    Target: {{ target }}
+    Response: {{ response }}
+  positive: CORRECT
+  negative: INCORRECT
+
 _matcher:
   system: |
-    Compare two answers for semantic equivalence.
-    SAME = same referent, value, set, or conclusion at the same granularity.
-    Accept wording, notation, format, equivalent units, rounding within ~5%, and aliases or
-    abbreviations only when they unambiguously denote the same referent.
-    DIFFERENT = different referent, value, set, or conclusion; related but non-identical
-    entity; broader or narrower scope; part vs whole; role vs holder; time, version, or
-    qualifier mismatch; or unresolved ambiguity.
-    Reply with exactly one word: SAME or DIFFERENT.
+    Compare two answers for factual equivalence.
+    SAME = identical claim (format/notation differences OK).
+    DIFFERENT = any factual difference (wrong name, number, sign, mechanism).
+    One word: SAME or DIFFERENT.
   user: |
-    {% if question %}Question: "{{ question }}"
-    {% endif %}Answer A: "{{ a }}"
+    Answer A: "{{ a }}"
     Answer B: "{{ b }}"
   positive: SAME
   negative: DIFFERENT
-
-_grader:
-  system: "You are a grading assistant. Judge semantic equivalence, not string matching. Reply only CORRECT or INCORRECT."
-  user: |
-    Question: {{ question }}
-    Correct answer: {{ target }}
-    Student's response: {{ response }}
-
-    Is the student's response semantically equivalent to the correct answer?
-    Answers that differ only in format, notation, or phrasing are CORRECT
-    (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
-    Answers that are factually wrong are INCORRECT.
-
-    Reply with exactly "CORRECT" or "INCORRECT".
-  positive: CORRECT
-  negative: INCORRECT

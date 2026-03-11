@@ -16,14 +16,18 @@ class AmbiguousVerdictError(GradingError):
     pass
 
 
-_DEFAULT_SYSTEM = (
-    "You are a grading assistant. Compare the student's response to the target answer. "
-    "Respond with exactly one word: CORRECT or INCORRECT."
-)
+_DEFAULT_SYSTEM = """\
+Grade: CORRECT or INCORRECT.
+CORRECT = same claim (format/verbosity/notation differences are fine).
+INCORRECT = different claim (even subtly: wrong number, name, sign, mechanism).
+Examples:
+  CORRECT: '6' vs 'Six hydrogen atoms' — same value.
+  CORRECT: 'Fe2O3' vs 'iron(III) oxide' — same compound.
+  INCORRECT: '0.32' vs '0.33' — different number.
+  INCORRECT: '(1S,2S)' vs '(1R,2S)' — different stereochemistry.
+One word."""
 
-_DEFAULT_USER = (
-    "Question: {question}\n\nTarget answer: {target}\n\nStudent response: {response}\n\nVerdict:"
-)
+_DEFAULT_USER = "Target: {target}\nResponse: {response}"
 
 
 @chz.chz
