@@ -17,13 +17,12 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import resolve_prompts
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.facts import (
-    BinaryJudgeError,
     ResolvedDebateFacts,
     built_in_metric_values,
-    normalize_binary_verdict_token,
     resolve_debate_facts_for_states,
 )
-from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.providers import AnswerJudgeClient
+from tinker_cookbook.scoring import BinaryJudgeClient
+from tinker_cookbook.scoring.types import normalize_binary_verdict_token
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateGameSpec,
     DebateOutcome,
@@ -121,19 +120,13 @@ def _state(
     )
 
 
-class _FakeJudgeClient(AnswerJudgeClient):
+class _FakeJudgeClient(BinaryJudgeClient):
     def __init__(self, responses: dict[tuple[str, str], str]) -> None:
         self.responses = responses
-        self.calls: list[tuple[str | None, str, str]] = []
+        self.calls: list[tuple[str, str]] = []
 
-    async def complete_binary(
-        self,
-        *,
-        system: str,
-        user: str,
-        kind: str | None = None,
-    ) -> str:
-        self.calls.append((kind, system, user))
+    async def complete(self, system: str, user: str) -> str:
+        self.calls.append((system, user))
         key = (system, user)
         if key not in self.responses:
             raise AssertionError(f"Unexpected scorer prompt: {key!r}")
@@ -201,8 +194,8 @@ async def test_resolve_debate_facts_open_ended_dedupes_calls_and_aligns_metrics(
     grader = prompts.get_binary_judge_template("grader")
     assert matcher is not None and grader is not None
 
-    matcher_user = matcher.user.render(question=state.spec.problem.task_prompt, a="H2O", b="water")
-    grader_user = grader.user.render(
+    _, matcher_user = matcher.render(question=state.spec.problem.task_prompt, a="H2O", b="water")
+    _, grader_user = grader.render(
         question=state.spec.problem.task_prompt,
         target="water",
         response="H2O",
@@ -218,7 +211,6 @@ async def test_resolve_debate_facts_open_ended_dedupes_calls_and_aligns_metrics(
         [state],
         scorer=client,
         prompts_for_ref=resolve_prompts,
-        parallelism=8,
     )
 
     assert len(facts) == 1
@@ -231,7 +223,6 @@ async def test_resolve_debate_facts_open_ended_dedupes_calls_and_aligns_metrics(
     assert metrics["judge_quality"] == 1.0
     # One matcher call and one grader call. B-vs-target is exact-fast-pathed.
     assert len(client.calls) == 2
-    assert {kind for kind, _system, _user in client.calls} == {"matcher", "grader"}
 
 
 @pytest.mark.asyncio
@@ -254,7 +245,6 @@ async def test_resolve_debate_facts_mcq_uses_zero_external_calls():
         [state],
         scorer=client,
         prompts_for_ref=resolve_prompts,
-        parallelism=8,
     )
 
     assert isinstance(facts[0], ResolvedDebateFacts)
@@ -265,8 +255,81 @@ async def test_resolve_debate_facts_mcq_uses_zero_external_calls():
     assert client.calls == []
 
 
+class _PartialFailureClient(BinaryJudgeClient):
+    """Client that succeeds on matcher calls but raises on grader calls."""
+
+    def __init__(
+        self,
+        responses: dict[tuple[str, str], str],
+        *,
+        fail_keys: set[tuple[str, str]],
+    ) -> None:
+        self.responses = responses
+        self.fail_keys = fail_keys
+        self.calls: list[tuple[str, str]] = []
+
+    async def complete(self, system: str, user: str) -> str:
+        self.calls.append((system, user))
+        key = (system, user)
+        if key in self.fail_keys:
+            raise RuntimeError("synthetic grader failure")
+        if key not in self.responses:
+            raise AssertionError(f"Unexpected scorer prompt: {key!r}")
+        return self.responses[key]
+
+
 @pytest.mark.asyncio
-async def test_open_ended_invalid_verdict_fails_fast():
+async def test_open_ended_grader_error_produces_none_metrics():
+    """Grader failure should yield None accuracy metrics, not crash."""
+    state = _state(
+        target="water",
+        prompts_ref="tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/semantic_prompts.yaml",
+        scoring_mode=ScoringMode.OPEN_ENDED,
+        transcript=(
+            _utt(Role.DEBATER_A, 0, Phase.PROPOSE, "A", answer="H2O", slot_id=0),
+            _utt(Role.DEBATER_B, 0, Phase.PROPOSE, "B", answer="water", slot_id=1),
+            _utt(Role.DEBATER_A, 1, Phase.CRITIQUE, "A2", answer="H2O", slot_id=2),
+            _utt(Role.DEBATER_B, 1, Phase.CRITIQUE, "B2", answer="water", slot_id=3),
+        ),
+        winner=Role.DEBATER_A,
+    )
+    prompts = resolve_prompts(state.spec.prompts_ref)
+    matcher = prompts.get_binary_judge_template("matcher")
+    grader = prompts.get_binary_judge_template("grader")
+    assert matcher is not None and grader is not None
+
+    _, matcher_user = matcher.render(question=state.spec.problem.task_prompt, a="H2O", b="water")
+    _, grader_user = grader.render(
+        question=state.spec.problem.task_prompt,
+        target="water",
+        response="H2O",
+    )
+    # Matcher succeeds; grader raises.
+    client = _PartialFailureClient(
+        {(matcher.system, matcher_user): "same."},
+        fail_keys={(grader.system, grader_user)},
+    )
+
+    facts = await resolve_debate_facts_for_states(
+        [state],
+        scorer=client,
+        prompts_for_ref=resolve_prompts,
+    )
+
+    assert len(facts) == 1
+    metrics = built_in_metric_values(state, facts[0])
+    # Matcher succeeded: disagreement is resolved.
+    assert metrics["disagreement"] == 0.0
+    # Grader failed: accuracy should be None (error projected to missing key).
+    assert metrics["accuracy.debater_a"] is None
+    # B matched target exactly ("water" == "water") so gets exact-path correctness.
+    assert metrics["accuracy.debater_b"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_open_ended_ambiguous_verdict_produces_none_metrics():
+    """An ambiguous verdict (e.g. 'maybe') is absorbed by JudgeBatch and
+    projected to None in metrics, not raised as an exception."""
     state = _state(
         target="water",
         prompts_ref="tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/semantic_prompts.yaml",
@@ -280,40 +343,31 @@ async def test_open_ended_invalid_verdict_fails_fast():
     prompts = resolve_prompts(state.spec.prompts_ref)
     matcher = prompts.get_binary_judge_template("matcher")
     assert matcher is not None
-    matcher_user = matcher.user.render(question=state.spec.problem.task_prompt, a="H2O", b="water")
+    _, matcher_user = matcher.render(question=state.spec.problem.task_prompt, a="H2O", b="water")
     client = _FakeJudgeClient({(matcher.system, matcher_user): "maybe"})
 
-    with pytest.raises(BinaryJudgeError, match="Unrecognized verdict"):
-        await resolve_debate_facts_for_states(
-            [replace(state, outcome=None)],
-            scorer=client,
-            prompts_for_ref=resolve_prompts,
-            parallelism=4,
-        )
-
-
-@pytest.mark.asyncio
-async def test_open_ended_missing_grader_fails_fast():
-    state = _state(
-        target="water",
-        prompts_ref=(
-            "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/"
-            "semantic_prompts_missing_grader.yaml"
-        ),
-        scoring_mode=ScoringMode.OPEN_ENDED,
-        transcript=(
-            _utt(Role.DEBATER_A, 0, Phase.PROPOSE, "A", answer="H2O", slot_id=0),
-        ),
-        winner=Role.DEBATER_A,
+    facts = await resolve_debate_facts_for_states(
+        [replace(state, outcome=None)],
+        scorer=client,
+        prompts_for_ref=resolve_prompts,
     )
 
-    with pytest.raises(ValueError, match="requires _grader"):
-        await resolve_debate_facts_for_states(
-            [replace(state, outcome=None)],
-            scorer=_FakeJudgeClient({}),
-            prompts_for_ref=resolve_prompts,
-            parallelism=4,
-        )
+    assert len(facts) == 1
+    metrics = built_in_metric_values(state, facts[0])
+    # Ambiguous matcher verdict → error → missing key → None disagreement.
+    assert metrics["disagreement"] is None
+
+
+def test_missing_grader_yaml_gets_default_grader():
+    """A YAML without _grader still produces a grader via built-in default."""
+    prompts = resolve_prompts(
+        "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/"
+        "semantic_prompts_missing_grader.yaml"
+    )
+    grader = prompts.get_binary_judge_template("grader")
+    assert grader is not None
+    assert grader.positive == "CORRECT"
+    assert grader.negative == "INCORRECT"
 
 
 def _store_getter(json_str: str, trained_role: Role | None = None):
@@ -348,17 +402,11 @@ async def test_group_builder_open_ended_selfplay_scores_shared_runtime_once():
 
     client = _FakeJudgeClient(
         {
-            (
-                matcher.system,
-                matcher.user.render(question=state.spec.problem.task_prompt, a="H2O", b="water"),
-            ): "same.",
-            (
-                grader.system,
-                grader.user.render(
-                    question=state.spec.problem.task_prompt,
-                    target="water",
-                    response="H2O",
-                ),
+            matcher.render(question=state.spec.problem.task_prompt, a="H2O", b="water"): "same.",
+            grader.render(
+                question=state.spec.problem.task_prompt,
+                target="water",
+                response="H2O",
             ): "PASS!",
         }
     )
@@ -407,17 +455,11 @@ async def test_debate_scorer_open_ended_uses_semantic_facts():
 
     client = _FakeJudgeClient(
         {
-            (
-                matcher.system,
-                matcher.user.render(question=state.spec.problem.task_prompt, a="H2O", b="water"),
-            ): "SAME",
-            (
-                grader.system,
-                grader.user.render(
-                    question=state.spec.problem.task_prompt,
-                    target="water",
-                    response="H2O",
-                ),
+            matcher.render(question=state.spec.problem.task_prompt, a="H2O", b="water"): "SAME",
+            grader.render(
+                question=state.spec.problem.task_prompt,
+                target="water",
+                response="H2O",
             ): "pass",
         }
     )
@@ -427,7 +469,7 @@ async def test_debate_scorer_open_ended_uses_semantic_facts():
         side_effect=_store_getter(_state_to_json(state), trained_role=Role.DEBATER_A)
     )
 
-    score = await debate_scorer(scorer_client=client, scorer_parallelism=8)(
+    score = await debate_scorer(scorer_client=client)(
         task_state,
         Target("water"),
     )

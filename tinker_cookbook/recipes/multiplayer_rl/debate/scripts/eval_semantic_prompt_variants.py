@@ -14,8 +14,8 @@ import chz
 import yaml
 from jinja2 import Environment, StrictUndefined
 
-from ..scoring.facts import normalize_binary_verdict_token
-from ..scoring.providers import DebateScorerBuilder
+from tinker_cookbook.scoring import BinaryJudgeBuilder
+from tinker_cookbook.scoring.types import normalize_binary_verdict_token
 
 TaskKind = Literal["grader", "matcher"]
 
@@ -68,7 +68,7 @@ class CaseResult:
 class Config:
     bank_path: str
     variants_path: str
-    scorer_builder: DebateScorerBuilder
+    scorer_builder: BinaryJudgeBuilder
     parallelism: int | None = None
     output_path: str | None = None
 
@@ -214,7 +214,7 @@ async def _evaluate_case(
     user = _render_user(block, case)
     try:
         async with semaphore:
-            raw_response = await scorer.complete_binary(system=block.system, user=user)
+            raw_response = await scorer.complete(block.system, user)
     except Exception as exc:
         raw_response = f"[ERROR] {type(exc).__name__}: {exc}"
         return CaseResult(

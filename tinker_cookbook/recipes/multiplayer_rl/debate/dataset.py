@@ -27,7 +27,7 @@ from .types import (
 from .builders import DebateGroupBuilder
 
 if TYPE_CHECKING:
-    from .scoring.providers import AnswerJudgeClient
+    from tinker_cookbook.scoring import BinaryJudgeClient
 
 
 class DebateDataset(RLDataset):
@@ -49,8 +49,7 @@ class DebateDataset(RLDataset):
         opponent_renderer: Renderer | None = None,
         randomize_position: bool = False,
         metrics: dict[str, MetricFn] | None = None,
-        scorer: AnswerJudgeClient | None = None,
-        scorer_parallelism: int = 64,
+        scorer: BinaryJudgeClient | None = None,
         episode_log_dir: str | None = None,
     ) -> None:
         # Homogeneity validation: all problems must share scoring_mode.
@@ -81,7 +80,6 @@ class DebateDataset(RLDataset):
         self.randomize_position = randomize_position
         self.metrics = metrics
         self.scorer = scorer
-        self.scorer_parallelism = scorer_parallelism
         self.episode_log_dir = episode_log_dir
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
@@ -106,7 +104,6 @@ class DebateDataset(RLDataset):
                 randomize_position=self.randomize_position,
                 metrics=self.metrics,
                 scorer=self.scorer,
-                scorer_parallelism=self.scorer_parallelism,
                 episode_log_dir=self.episode_log_dir,
             )
             for problem in batch_problems
@@ -129,8 +126,7 @@ class DebateDatasetBuilder(RLDatasetBuilder):
     batch_size: int = 4
     group_size: int = 1
     prompts_ref: str = "default"
-    scorer: AnswerJudgeClient | None = field(default=None, repr=False)
-    scorer_parallelism: int = 64
+    scorer: BinaryJudgeClient | None = field(default=None, repr=False)
     train_problems: list[DebateProblemSpec] = field(default_factory=list)
     test_problems: list[DebateProblemSpec] = field(default_factory=list)
 
@@ -150,7 +146,6 @@ class DebateDatasetBuilder(RLDatasetBuilder):
             game=game,
             renderer=renderer,
             scorer=self.scorer,
-            scorer_parallelism=self.scorer_parallelism,
         )
         test = None
         if self.test_problems:
@@ -161,6 +156,5 @@ class DebateDatasetBuilder(RLDatasetBuilder):
                 game=game,
                 renderer=renderer,
                 scorer=self.scorer,
-                scorer_parallelism=self.scorer_parallelism,
             )
         return train, test

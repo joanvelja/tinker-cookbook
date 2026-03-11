@@ -32,7 +32,8 @@ from ..env import DebateEnv
 from ..dataset import DebateDataset
 from ..data.gpqa import load_gpqa_open_ended_problems, problem_to_sample
 from ..progress import run_with_heartbeat
-from ..scoring import AnswerJudgeClient, DebateScorerBuilder, RecordingAnswerJudgeClient
+from tinker_cookbook.scoring import BinaryJudgeBuilder, BinaryJudgeClient
+from tinker_cookbook.scoring.providers import RecordingBinaryJudgeClient
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from ..types import DebateGameSpec, ProtocolKind
 from .trace_fmt import DebateTraceCSSInjector, render_rollout_html
@@ -66,7 +67,7 @@ def _render_scorer_calls_html(problem_calls) -> str:
     for idx, call in enumerate(problem_calls, start=1):
         parts.append('<details class="db-io">')
         parts.append(
-            f"<summary>Call {idx}: {html.escape(call.kind or 'unknown')} → "
+            f"<summary>Call {idx}: {html.escape(call.name or 'unknown')} → "
             f"{html.escape(call.response.strip() or '<empty>')}</summary>"
         )
         parts.append(f'<pre class="db-pre">{html.escape(call.system)}</pre>')
@@ -163,8 +164,8 @@ async def run(args: argparse.Namespace) -> None:
         actor="judge",
         model_name=args.judge_model,
     )
-    scorer = RecordingAnswerJudgeClient(
-        DebateScorerBuilder(
+    scorer = RecordingBinaryJudgeClient(
+        BinaryJudgeBuilder(
             provider="openai_compatible",
             model=args.scorer_model,
             base_url=args.scorer_base_url,
@@ -192,7 +193,6 @@ async def run(args: argparse.Namespace) -> None:
         opponent_renderer=None,
         randomize_position=False,
         scorer=scorer,
-        scorer_parallelism=args.max_connections,
         episode_log_dir=str(episode_log_dir),
     )
 
@@ -233,10 +233,10 @@ async def run(args: argparse.Namespace) -> None:
         idx: int,
         sample,
         builder,
-        inner_scorer: AnswerJudgeClient,
+        inner_scorer: BinaryJudgeClient,
         heartbeat_s: int,
     ):
-        recorder = RecordingAnswerJudgeClient(inner_scorer)
+        recorder = RecordingBinaryJudgeClient(inner_scorer)
         builder.scorer = recorder
         n = len(samples)
         record_id = str(sample.metadata["record_id"])

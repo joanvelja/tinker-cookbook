@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Callable, Mapping
 
-from ..prompts import BinaryJudgeTemplate, DebatePrompts, normalize_binary_verdict_token
+from tinker_cookbook.scoring import AsyncBinaryJudge, BatchResult, BinaryJudgeClient, JudgeBatch
+
+from ..prompts import DebatePrompts
 from ..types import DebateState, Phase, Role, ScoringMode
 from .mcq import THINK_RE, normalize_mcq
 from .metrics import (
@@ -15,17 +16,12 @@ from .metrics import (
     _parse_think_answer_strict,
     parse_success,
 )
-from .providers import AnswerJudgeClient
 from .trajectory import answer_from_utterance
 
 MatcherKey = tuple[str, str, str, str]
 GraderKey = tuple[str, str, str, str]
 
 _DEBATER_ROLES = (Role.DEBATER_A, Role.DEBATER_B)
-
-
-class BinaryJudgeError(ValueError):
-    """Raised when a binary judge returns an invalid verdict."""
 
 
 @dataclass(frozen=True)
@@ -146,71 +142,50 @@ def _grader_key(
     )
 
 
-async def _binary_judge(
-    scorer: AnswerJudgeClient,
-    template: BinaryJudgeTemplate,
-    *,
-    judge_kind: str,
-    render_kwargs: dict[str, str],
-) -> bool:
-    user = template.user.render(**render_kwargs)
-    response_text = await scorer.complete_binary(
-        system=template.system,
-        user=user,
-        kind=judge_kind,
-    )
-    verdict = normalize_binary_verdict_token(response_text)
-    if verdict == template.positive:
-        return True
-    if verdict == template.negative:
-        return False
-    raise BinaryJudgeError(
-        f"Unrecognized verdict: {response_text!r}. "
-        f"Expected {template.positive!r} or {template.negative!r}."
-    )
-
-
-def _require_binary_template(
-    prompts: DebatePrompts,
-    name: str,
-) -> BinaryJudgeTemplate:
-    template = prompts.get_binary_judge_template(name)  # type: ignore[arg-type]
-    if template is None:
-        raise ValueError(
-            f"Open-ended scoring requires _{name} in {prompts.source_ref}, but it is missing."
-        )
-    return template
-
-
-def _freeze_mapping(mapping: dict) -> Mapping:
-    return MappingProxyType(dict(mapping))
-
-
 async def resolve_debate_facts_for_states(
     states: list[DebateState],
     *,
-    scorer: AnswerJudgeClient | None,
+    scorer: BinaryJudgeClient | None,
     prompts_for_ref: Callable[[str], DebatePrompts],
-    parallelism: int,
 ) -> list[ResolvedDebateFacts]:
-    semaphore = asyncio.Semaphore(max(1, parallelism))
-    equivalence_results: dict[MatcherKey, bool] = {}
-    correctness_results: dict[GraderKey, bool] = {}
-    equivalence_tasks: dict[MatcherKey, asyncio.Task[bool]] = {}
-    correctness_tasks: dict[GraderKey, asyncio.Task[bool]] = {}
     prompt_cache: dict[str, DebatePrompts] = {}
-    telemetry = {"llm_calls": 0, "cache_hits": 0, "cache_misses": 0}
+    telemetry: dict[str, int] = {"llm_calls": 0, "cache_hits": 0, "cache_misses": 0}
     plans: list[_StatePlan] = []
+
+    # Local dicts for MCQ/exact-match results (no LLM needed).
+    equivalence_local: dict[MatcherKey, bool] = {}
+    correctness_local: dict[GraderKey, bool] = {}
+
+    # Lazy judge/batch construction — one per template kind.
+    eq_batch: JudgeBatch[MatcherKey] | None = None
+    corr_batch: JudgeBatch[GraderKey] | None = None
 
     def _prompts(ref: str) -> DebatePrompts:
         if ref not in prompt_cache:
             prompt_cache[ref] = prompts_for_ref(ref)
         return prompt_cache[ref]
 
-    def _store_result(mapping: dict, key: tuple, value: bool) -> None:
-        existing = mapping.get(key)
-        if existing is None:
-            mapping[key] = value
+    def _ensure_eq_batch(prompts: DebatePrompts) -> JudgeBatch[MatcherKey]:
+        nonlocal eq_batch
+        if eq_batch is None:
+            assert scorer is not None
+            template = prompts.get_binary_judge_template("matcher")
+            assert template is not None, "matcher template missing (defaults should always provide one)"
+            eq_batch = JudgeBatch(AsyncBinaryJudge(scorer, template))
+        return eq_batch
+
+    def _ensure_corr_batch(prompts: DebatePrompts) -> JudgeBatch[GraderKey]:
+        nonlocal corr_batch
+        if corr_batch is None:
+            assert scorer is not None
+            template = prompts.get_binary_judge_template("grader")
+            assert template is not None, "grader template missing (defaults should always provide one)"
+            corr_batch = JudgeBatch(AsyncBinaryJudge(scorer, template))
+        return corr_batch
+
+    # Track which keys have been seen (for dedup/cache-hit counting).
+    _seen_eq: set[MatcherKey] = set()
+    _seen_corr: set[GraderKey] = set()
 
     def _schedule_equivalence(
         state: DebateState,
@@ -221,40 +196,27 @@ async def resolve_debate_facts_for_states(
         prompts: DebatePrompts | None,
     ) -> MatcherKey:
         key = _matcher_key(state.spec.problem.scoring_mode, question, left, right)
-        if key in equivalence_results or key in equivalence_tasks:
+        if key in _seen_eq:
             telemetry["cache_hits"] += 1
             return key
-
+        _seen_eq.add(key)
         telemetry["cache_misses"] += 1
+
         if state.spec.problem.scoring_mode == ScoringMode.MCQ:
-            _store_result(equivalence_results, key, _mcq_match(left, right))
+            equivalence_local[key] = _mcq_match(left, right)
             return key
 
         if exact_match(left, right):
-            _store_result(equivalence_results, key, True)
+            equivalence_local[key] = True
             return key
 
         if scorer is None:
             raise ValueError("Open-ended scoring requires a configured scorer client.")
         assert prompts is not None
-        template = _require_binary_template(prompts, "matcher")
+        batch = _ensure_eq_batch(prompts)
         ordered_left, ordered_right = sorted((left, right), key=lambda text: text.strip())
-
-        async def _run() -> bool:
-            async with semaphore:
-                telemetry["llm_calls"] += 1
-                return await _binary_judge(
-                    scorer,
-                    template,
-                    judge_kind="matcher",
-                    render_kwargs={
-                        "question": question,
-                        "a": ordered_left,
-                        "b": ordered_right,
-                    },
-                )
-
-        equivalence_tasks[key] = asyncio.create_task(_run())
+        batch.add(key, question=question, a=ordered_left, b=ordered_right)
+        telemetry["llm_calls"] += 1
         return key
 
     def _schedule_correctness(
@@ -266,40 +228,29 @@ async def resolve_debate_facts_for_states(
         prompts: DebatePrompts | None,
     ) -> GraderKey:
         key = _grader_key(state.spec.problem.scoring_mode, question, target, response)
-        if key in correctness_results or key in correctness_tasks:
+        if key in _seen_corr:
             telemetry["cache_hits"] += 1
             return key
-
+        _seen_corr.add(key)
         telemetry["cache_misses"] += 1
+
         if state.spec.problem.scoring_mode == ScoringMode.MCQ:
-            _store_result(correctness_results, key, _mcq_match(response, target))
+            correctness_local[key] = _mcq_match(response, target)
             return key
 
         if exact_match(response, target):
-            _store_result(correctness_results, key, True)
+            correctness_local[key] = True
             return key
 
         if scorer is None:
             raise ValueError("Open-ended scoring requires a configured scorer client.")
         assert prompts is not None
-        template = _require_binary_template(prompts, "grader")
-
-        async def _run() -> bool:
-            async with semaphore:
-                telemetry["llm_calls"] += 1
-                return await _binary_judge(
-                    scorer,
-                    template,
-                    judge_kind="grader",
-                    render_kwargs={
-                        "question": question,
-                        "target": target,
-                        "response": response,
-                    },
-                )
-
-        correctness_tasks[key] = asyncio.create_task(_run())
+        batch = _ensure_corr_batch(prompts)
+        batch.add(key, question=question, target=target, response=response)
+        telemetry["llm_calls"] += 1
         return key
+
+    # --- Planning loop (same structure as before) ---
 
     for state in states:
         summary = summarize_transcript(state)
@@ -402,47 +353,40 @@ async def resolve_debate_facts_for_states(
             )
         )
 
-    async def _collect(
-        tasks: dict[tuple[str, ...], asyncio.Task[bool]],
-        sink: dict[tuple[str, ...], bool],
-    ) -> None:
-        if not tasks:
-            return
-        try:
-            completed = await asyncio.gather(*tasks.values())
-        except Exception:
-            for task in tasks.values():
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks.values(), return_exceptions=True)
-            raise
-        for key, value in zip(tasks, completed, strict=True):
-            sink[key] = value
+    # --- Execute both batches concurrently ---
+    _empty_eq: BatchResult[MatcherKey] = BatchResult(values={}, errors={})
+    _empty_corr: BatchResult[GraderKey] = BatchResult(values={}, errors={})
 
-    try:
-        await _collect(equivalence_tasks, equivalence_results)
-        await _collect(correctness_tasks, correctness_results)
-    except Exception:
-        outstanding = [*equivalence_tasks.values(), *correctness_tasks.values()]
-        for task in outstanding:
-            if not task.done():
-                task.cancel()
-        if outstanding:
-            await asyncio.gather(*outstanding, return_exceptions=True)
-        raise
+    if eq_batch is not None and corr_batch is not None:
+        eq_result, corr_result = await asyncio.gather(eq_batch.run(), corr_batch.run())
+    elif eq_batch is not None:
+        eq_result = await eq_batch.run()
+        corr_result = _empty_corr
+    elif corr_batch is not None:
+        eq_result = _empty_eq
+        corr_result = await corr_batch.run()
+    else:
+        eq_result = _empty_eq
+        corr_result = _empty_corr
 
+    # Surface LLM errors in telemetry so silent failures are visible.
+    telemetry["matcher_errors"] = len(eq_result.errors)
+    telemetry["grader_errors"] = len(corr_result.errors)
+
+    # Merge local (MCQ/exact) + batch (LLM) results.
+    # Errors in batch results are NOT in values dict, so _lookup_* returns None via .get().
+    equivalence_results: dict[MatcherKey, bool] = {**equivalence_local, **eq_result.values}
+    correctness_results: dict[GraderKey, bool] = {**correctness_local, **corr_result.values}
+
+    # --- Assemble per-state facts ---
     resolved: list[ResolvedDebateFacts] = []
     for plan in plans:
         resolved.append(
             ResolvedDebateFacts(
                 scoring_mode=plan.scoring_mode,
-                equivalence=_freeze_mapping(
-                    {key: equivalence_results[key] for key in plan.equivalence_keys}
-                ),
-                correctness=_freeze_mapping(
-                    {key: correctness_results[key] for key in plan.correctness_keys}
-                ),
-                telemetry=_freeze_mapping(dict(telemetry)),
+                equivalence={key: equivalence_results[key] for key in plan.equivalence_keys if key in equivalence_results},
+                correctness={key: correctness_results[key] for key in plan.correctness_keys if key in correctness_results},
+                telemetry=dict(telemetry),
             )
         )
     return resolved

@@ -109,7 +109,7 @@ def test_raw_case_to_bank_case_allows_grader_a_b_fallback() -> None:
 
 
 class _ExplodingScorer:
-    async def complete_binary(self, *, system: str, user: str):
+    async def complete(self, system: str, user: str) -> str:
         raise RuntimeError("synthetic scorer failure")
 
 

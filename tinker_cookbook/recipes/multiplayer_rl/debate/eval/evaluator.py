@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 from ..types import ProtocolKind
 from .dataset_adapter import DatasetAdapter
 from .inspect_task import debate_eval
-from ..scoring.providers import DebateScorerBuilder
+from tinker_cookbook.scoring import BinaryJudgeBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +57,7 @@ class DebateInspectEvaluatorBuilder:
     base_url: str | None = None
     max_connections: int = 256
     progress_timeout_s: int = 900
-    scorer_builder: DebateScorerBuilder | None = None
-    scorer_parallelism: int | None = None
+    scorer_builder: BinaryJudgeBuilder | None = None
 
     def __call__(self) -> DebateInspectEvaluator:
         return DebateInspectEvaluator(self)
@@ -166,15 +165,6 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             if cfg.scorer_builder is not None
             else None
         )
-        scorer_parallelism = (
-            cfg.scorer_parallelism
-            if cfg.scorer_parallelism is not None
-            else (
-                cfg.scorer_builder.max_connections
-                if cfg.scorer_builder is not None
-                else cfg.max_connections
-            )
-        )
 
         task = debate_eval(
             adapter=cfg.adapter,
@@ -187,7 +177,6 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             open_reasoning=cfg.open_reasoning,
             randomize_position=cfg.randomize_position,
             scorer_client=scorer_client,
-            scorer_parallelism=scorer_parallelism,
         )
 
         log_dir = cfg.log_dir or os.path.expanduser("~/inspect-logs")

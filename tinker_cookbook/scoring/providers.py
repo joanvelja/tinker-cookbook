@@ -1,4 +1,4 @@
-"""Provider adapters for binary semantic judging in debate scoring."""
+"""Provider adapters for binary semantic judging."""
 
 from __future__ import annotations
 
@@ -7,34 +7,14 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
-
-import chz
-import tinker
-from tinker.lib.public_interfaces.service_client import RetryConfig
-
-from tinker_cookbook import model_info
-from tinker_cookbook.completers import MessageCompleter, TinkerMessageCompleter
-from tinker_cookbook.renderers import format_content_as_string, get_renderer
-from tinker_cookbook.tokenizer_utils import get_tokenizer
-
-if TYPE_CHECKING:
-    from tinker_cookbook.usage import UsageTracker
-
-
-class AnswerJudgeClient(Protocol):
-    async def complete_binary(
-        self,
-        *,
-        system: str,
-        user: str,
-        kind: str | None = None,
-    ) -> str: ...
+from tinker_cookbook.completers import MessageCompleter
+from tinker_cookbook.renderers import format_content_as_string
+from tinker_cookbook.scoring.types import BinaryJudgeClient
 
 
 @dataclass(frozen=True)
 class BinaryJudgeCallRecord:
-    kind: str | None
+    name: str | None
     system: str
     user: str
     response: str
@@ -42,21 +22,16 @@ class BinaryJudgeCallRecord:
 
 
 @dataclass
-class RecordingAnswerJudgeClient:
-    inner: AnswerJudgeClient
+class RecordingBinaryJudgeClient:
+    inner: BinaryJudgeClient
     calls: list[BinaryJudgeCallRecord] = field(default_factory=list)
+    name: str | None = None
 
-    async def complete_binary(
-        self,
-        *,
-        system: str,
-        user: str,
-        kind: str | None = None,
-    ) -> str:
-        response = await self.inner.complete_binary(system=system, user=user, kind=kind)
+    async def complete(self, system: str, user: str) -> str:
+        response = await self.inner.complete(system, user)
         self.calls.append(
             BinaryJudgeCallRecord(
-                kind=kind,
+                name=self.name,
                 system=system,
                 user=user,
                 response=response,
@@ -72,7 +47,7 @@ class RecordingAnswerJudgeClient:
             json.dumps(
                 {
                     "timestamp_utc": record.timestamp_utc,
-                    "kind": record.kind,
+                    "name": record.name,
                     "system": record.system,
                     "user": record.user,
                     "response": record.response,
@@ -85,16 +60,10 @@ class RecordingAnswerJudgeClient:
 
 
 @dataclass
-class TinkerAnswerJudgeClient:
+class TinkerBinaryJudgeClient:
     completer: MessageCompleter
 
-    async def complete_binary(
-        self,
-        *,
-        system: str,
-        user: str,
-        kind: str | None = None,
-    ) -> str:
+    async def complete(self, system: str, user: str) -> str:
         response = await self.completer(
             [
                 {"role": "system", "content": system},
@@ -105,7 +74,7 @@ class TinkerAnswerJudgeClient:
 
 
 @dataclass
-class OpenAICompatibleAnswerJudgeClient:
+class OpenAIBinaryJudgeClient:
     model: str
     max_tokens: int = 8
     temperature: float = 0.0
@@ -161,9 +130,6 @@ class OpenAICompatibleAnswerJudgeClient:
     def _effective_token_budget(self, model_name: str, reasoning_effort: str | None) -> int:
         token_budget = self.max_tokens
         if model_name.startswith("gpt-5"):
-            # GPT-5 can spend the visible output budget on reasoning for long
-            # matcher/grader payloads. Use a large floor so binary verdicts
-            # remain observable even on verbose answer comparisons.
             token_budget = max(token_budget, self._GPT5_SCORER_OUTPUT_BUDGET)
         return token_budget
 
@@ -171,8 +137,9 @@ class OpenAICompatibleAnswerJudgeClient:
         if self._client is not None:
             return self._client
         try:
+            import httpx
             from openai import AsyncOpenAI
-        except ImportError as exc:  # pragma: no cover - depends on optional install
+        except ImportError as exc:
             raise ImportError(
                 "openai is required for provider='openai_compatible'. "
                 "Install tinker_cookbook[debate-scorers]."
@@ -182,17 +149,15 @@ class OpenAICompatibleAnswerJudgeClient:
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=self.base_url,
-            timeout=self.timeout_s,
+            timeout=httpx.Timeout(self.timeout_s),
+            http_client=httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+                timeout=httpx.Timeout(self.timeout_s),
+            ),
         )
         return self._client
 
-    async def complete_binary(
-        self,
-        *,
-        system: str,
-        user: str,
-        kind: str | None = None,
-    ) -> str:
+    async def complete(self, system: str, user: str) -> str:
         client = self._get_client()
         model_name = self.model.lower()
         reasoning_effort = self.reasoning_effort
@@ -226,8 +191,6 @@ class OpenAICompatibleAnswerJudgeClient:
                     )
                 return response_text
             except Exception as exc:
-                # Fall back to chat completions for OpenAI-compatible providers that
-                # do not support /responses.
                 if not self._is_responses_fallback_error(exc):
                     raise
 
@@ -318,7 +281,7 @@ class OpenAICompatibleAnswerJudgeClient:
 
 
 @dataclass
-class AnthropicAnswerJudgeClient:
+class AnthropicBinaryJudgeClient:
     model: str
     max_tokens: int = 8
     temperature: float = 0.0
@@ -331,27 +294,29 @@ class AnthropicAnswerJudgeClient:
         if self._client is not None:
             return self._client
         try:
+            import httpx
             from anthropic import AsyncAnthropic
-        except ImportError as exc:  # pragma: no cover - depends on optional install
+        except ImportError as exc:
             raise ImportError(
                 "anthropic is required for provider='anthropic'. "
                 "Install tinker_cookbook[debate-scorers]."
             ) from exc
 
         api_key = os.environ.get(self.api_key_env) if self.api_key_env else None
-        kwargs = {"api_key": api_key, "timeout": self.timeout_s}
+        kwargs: dict[str, object] = {
+            "api_key": api_key,
+            "timeout": httpx.Timeout(self.timeout_s),
+            "http_client": httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+                timeout=httpx.Timeout(self.timeout_s),
+            ),
+        }
         if self.base_url is not None:
             kwargs["base_url"] = self.base_url
         self._client = AsyncAnthropic(**kwargs)
         return self._client
 
-    async def complete_binary(
-        self,
-        *,
-        system: str,
-        user: str,
-        kind: str | None = None,
-    ) -> str:
+    async def complete(self, system: str, user: str) -> str:
         client = self._get_client()
         response = await client.messages.create(
             model=self.model,
@@ -366,67 +331,3 @@ class AnthropicAnswerJudgeClient:
             if block_text:
                 chunks.append(block_text)
         return "".join(chunks)
-
-
-@chz.chz
-class DebateScorerBuilder:
-    provider: Literal["tinker", "openai_compatible", "anthropic"]
-    model: str
-    renderer_name: str | None = None
-    reasoning_effort: str | None = None
-    base_url: str | None = None
-    api_key_env: str | None = None
-    max_tokens: int = 8
-    temperature: float = 0.0
-    max_connections: int = 64
-    timeout_s: int = 60
-
-    def build(self, *, usage_tracker: UsageTracker | None = None) -> AnswerJudgeClient:
-        if self.provider == "tinker":
-            renderer_name = self.renderer_name or model_info.get_recommended_renderer_name(
-                self.model,
-                reasoning_effort=self.reasoning_effort,
-            )
-            renderer = get_renderer(renderer_name, get_tokenizer(self.model))
-            service = tinker.ServiceClient(base_url=self.base_url)
-            retry_config = RetryConfig(
-                max_connections=self.max_connections,
-                progress_timeout=self.timeout_s,
-            )
-            sampling_client = service.create_sampling_client(
-                base_model=self.model,
-                retry_config=retry_config,
-            )
-            completer = TinkerMessageCompleter(
-                sampling_client=sampling_client,
-                renderer=renderer,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                usage_tracker=usage_tracker,
-                actor="semantic_scorer",
-                model_name=self.model,
-            )
-            return TinkerAnswerJudgeClient(completer)
-
-        if self.provider == "openai_compatible":
-            return OpenAICompatibleAnswerJudgeClient(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                reasoning_effort=self.reasoning_effort,
-                base_url=self.base_url,
-                api_key_env=self.api_key_env,
-                timeout_s=float(self.timeout_s),
-            )
-
-        if self.provider == "anthropic":
-            return AnthropicAnswerJudgeClient(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                base_url=self.base_url,
-                api_key_env=self.api_key_env,
-                timeout_s=float(self.timeout_s),
-            )
-
-        raise ValueError(f"Unsupported scorer provider: {self.provider}")

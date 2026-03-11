@@ -6,7 +6,7 @@ import functools
 import hashlib
 import logging
 import re
-import string
+
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +26,11 @@ from ..types import (
     TRIGGER_FINAL,
     current_phase,
 )
+from tinker_cookbook.scoring.types import (
+    normalize_binary_verdict_token,
+    parse_binary_verdict,
+)
+
 from ..scoring.fields import FieldSpec, _resolve_fields, validate_type_scoring, _TYPE_MAP
 from ..scoring.parsing import generate_format_instructions
 
@@ -51,13 +56,55 @@ _ALL_LOOKUP_KEYS: tuple[str, ...] = (
 
 _log = logging.getLogger(__name__)
 
+# --- Default grader/matcher prompts (v2_with_neg_examples / domain_matcher) ---
+# Used when a prompt YAML does not define its own _grader/_matcher block.
+# Custom YAMLs can override by defining their own _grader/_matcher.
+
+_DEFAULT_GRADER = {
+    "system": (
+        "Grade: CORRECT or INCORRECT.\n"
+        "CORRECT = same claim (format/verbosity/notation differences are fine).\n"
+        "INCORRECT = different claim (even subtly: wrong number, name, sign, mechanism).\n"
+        "Examples:\n"
+        "  CORRECT: '6' vs 'Six hydrogen atoms' — same value.\n"
+        "  CORRECT: 'Fe2O3' vs 'iron(III) oxide' — same compound.\n"
+        "  INCORRECT: '0.32' vs '0.33' — different number.\n"
+        "  INCORRECT: '(1S,2S)' vs '(1R,2S)' — different stereochemistry.\n"
+        "One word."
+    ),
+    "user": "Target: {{ target }}\nResponse: {{ response }}",
+    "positive": "CORRECT",
+    "negative": "INCORRECT",
+}
+
+_DEFAULT_MATCHER = {
+    "system": (
+        "Compare two answers for factual equivalence.\n"
+        "SAME = identical claim (format/notation differences OK).\n"
+        "DIFFERENT = any factual difference (wrong name, number, sign, mechanism).\n"
+        "One word: SAME or DIFFERENT."
+    ),
+    "user": 'Answer A: "{{ a }}"\nAnswer B: "{{ b }}"',
+    "positive": "SAME",
+    "negative": "DIFFERENT",
+}
+
 
 @dataclass(frozen=True)
-class BinaryJudgeTemplate:
+class JinjaBinaryJudgeTemplate:
+    """Debate-specific binary judge template using Jinja2 for user field."""
+
     system: str
-    user: jinja2.Template
+    jinja_user: jinja2.Template
     positive: str
     negative: str
+    name: str | None = None
+
+    def render(self, **kwargs: object) -> tuple[str, str]:
+        return self.system, self.jinja_user.render(**kwargs)
+
+    def parse(self, response: str) -> bool:
+        return parse_binary_verdict(response, self.positive, self.negative, name=self.name)
 
 
 @dataclass(frozen=True)
@@ -70,7 +117,7 @@ class DebatePrompts:
     fields: dict[str, dict[str, dict[str, FieldSpec]]]
     content_hash: str
     source_ref: str
-    binary_judges: dict[str, BinaryJudgeTemplate] = field(default_factory=dict)
+    binary_judges: dict[str, JinjaBinaryJudgeTemplate] = field(default_factory=dict)
     opponent_wrap: dict[str, jinja2.Template] | None = None
 
     def render_system(self, state: DebateState, viewer: Role) -> str:
@@ -209,7 +256,7 @@ class DebatePrompts:
 
     def get_binary_judge_template(
         self, name: Literal["matcher", "grader"]
-    ) -> BinaryJudgeTemplate | None:
+    ) -> JinjaBinaryJudgeTemplate | None:
         return self.binary_judges.get(name)
 
 
@@ -348,14 +395,6 @@ def _scan_block_for_removed_vars(block: object, section_name: str, path: str = "
     elif isinstance(block, dict):
         for key, val in block.items():
             _scan_block_for_removed_vars(val, section_name, f".{key}")
-
-
-def normalize_binary_verdict_token(text: str) -> str | None:
-    stripped = text.strip()
-    if not stripped:
-        return None
-    token = stripped.split()[0].rstrip(string.punctuation)
-    return token.upper() if token else None
 
 
 def _validate_binary_judge_blocks(d: dict) -> None:
@@ -559,21 +598,21 @@ def _parse_fields(block: dict) -> dict[str, dict[str, dict[str, FieldSpec]]]:
     return result
 
 
-def _compile_binary_judge_blocks(d: dict) -> dict[str, BinaryJudgeTemplate]:
-    result: dict[str, BinaryJudgeTemplate] = {}
+def _compile_binary_judge_blocks(d: dict) -> dict[str, JinjaBinaryJudgeTemplate]:
+    _defaults = {"_matcher": _DEFAULT_MATCHER, "_grader": _DEFAULT_GRADER}
+    result: dict[str, JinjaBinaryJudgeTemplate] = {}
     for block_name, short_name in (("_matcher", "matcher"), ("_grader", "grader")):
-        block = d.get(block_name)
-        if block is None:
-            continue
+        block = d.get(block_name, _defaults[block_name])
         positive = normalize_binary_verdict_token(block["positive"])
         negative = normalize_binary_verdict_token(block["negative"])
         assert positive is not None
         assert negative is not None
-        result[short_name] = BinaryJudgeTemplate(
+        result[short_name] = JinjaBinaryJudgeTemplate(
             system=block["system"],
-            user=_jinja_env.from_string(block["user"]),
+            jinja_user=_jinja_env.from_string(block["user"]),
             positive=positive,
             negative=negative,
+            name=short_name,
         )
     return result
 

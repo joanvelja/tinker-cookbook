@@ -25,7 +25,7 @@ from ..prompts import resolve_prompts
 from ..scoring.facts import built_in_metric_values, resolve_debate_facts_for_states
 from ..scoring.judge import LLMJudgeCallback
 from ..scoring.metrics import MetricFn, mcq_debate_metrics
-from ..scoring.providers import AnswerJudgeClient
+from tinker_cookbook.scoring import BinaryJudgeClient
 from ..types import (
     DebateOutcome,
     DebateProblemSpec,
@@ -373,8 +373,7 @@ def _identity_metric_keys() -> list[str]:
 def debate_scorer(
     metrics: dict[str, MetricFn] | None = None,
     *,
-    scorer_client: AnswerJudgeClient | None = None,
-    scorer_parallelism: int = 64,
+    scorer_client: BinaryJudgeClient | None = None,
 ) -> Scorer:
     """Scorer that evaluates debate outcomes via MetricFn functions.
 
@@ -412,7 +411,6 @@ def debate_scorer(
                     [debate_state],
                     scorer=scorer_client,
                     prompts_for_ref=resolve_prompts,
-                    parallelism=scorer_parallelism,
                 )
                 values = {
                     name: value if value is not None else nan
@@ -475,8 +473,7 @@ def debate_eval(
     prompts_ref: str = "scientific_mcq",
     open_reasoning: bool = False,
     randomize_position: bool = True,
-    scorer_client: AnswerJudgeClient | None = None,
-    scorer_parallelism: int = 64,
+    scorer_client: BinaryJudgeClient | None = None,
 ) -> Task:
     """Inspect AI task that runs debate eval end-to-end."""
     samples = adapter.to_samples()
@@ -510,6 +507,5 @@ def debate_eval(
         ),
         scorer=debate_scorer(
             scorer_client=scorer_client,
-            scorer_parallelism=scorer_parallelism,
         ),
     )

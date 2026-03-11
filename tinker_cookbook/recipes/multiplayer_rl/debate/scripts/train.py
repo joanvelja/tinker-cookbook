@@ -22,7 +22,7 @@ from ..dataset import DebateDataset
 from ..eval.dataset_adapter import ProblemsAdapter
 from ..eval.evaluator import DebateInspectEvaluatorBuilder
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
-from ..scoring.providers import DebateScorerBuilder
+from tinker_cookbook.scoring import BinaryJudgeBuilder
 from ..sources import GPQAProblemSource, ProblemSource
 from ..types import DebateGameSpec, DebateProblemSpec, ProtocolKind, ScoringMode
 
@@ -64,7 +64,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     episode_log_dir: str | None = None
     max_connections: int = 256
     progress_timeout_s: int = 900
-    scorer_builder: DebateScorerBuilder | None = None
+    scorer_builder: BinaryJudgeBuilder | None = None
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
         trained_name = self.renderer_name or model_info.get_recommended_renderer_name(
@@ -122,11 +122,6 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             if self.scorer_builder is not None
             else None
         )
-        scorer_parallelism = (
-            self.scorer_builder.max_connections
-            if self.scorer_builder is not None
-            else self.max_connections
-        )
 
         game = DebateGameSpec(
             protocol_kind=self.protocol_kind,
@@ -147,7 +142,6 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             opponent_renderer=opponent_renderer,
             randomize_position=self.randomize_position,
             scorer=scorer_client,
-            scorer_parallelism=scorer_parallelism,
             episode_log_dir=self.episode_log_dir,
         )
 
@@ -165,7 +159,6 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
                 opponent_renderer=opponent_renderer,
                 randomize_position=self.randomize_position,
                 scorer=scorer_client,
-                scorer_parallelism=scorer_parallelism,
                 episode_log_dir=self.episode_log_dir,
             )
 
@@ -207,7 +200,7 @@ class CLIConfig:
     base_url: str | None = None
     max_connections: int | None = None
     progress_timeout_s: int = 900
-    scorer_builder: DebateScorerBuilder | None = None
+    scorer_builder: BinaryJudgeBuilder | None = None
     num_minibatches: int | None = None  # None = sync training (default)
 
 
@@ -230,10 +223,6 @@ def build_config(cli: CLIConfig) -> train.Config:
     max_connections = cli.max_connections or _recommended_max_connections(
         cli.batch_size, cli.group_size, self_play=cli.self_play
     )
-    scorer_parallelism = (
-        cli.scorer_builder.max_connections if cli.scorer_builder is not None else max_connections
-    )
-
     # Self-play: both agents share the same policy, so randomize_position is meaningless.
     randomize_position = False if cli.self_play else cli.randomize_position
 
@@ -293,11 +282,6 @@ def build_config(cli: CLIConfig) -> train.Config:
             max_connections=eval_max_connections,
             progress_timeout_s=cli.progress_timeout_s,
             scorer_builder=cli.inspect_eval.scorer_builder or cli.scorer_builder,
-            scorer_parallelism=(
-                cli.inspect_eval.scorer_parallelism
-                if cli.inspect_eval.scorer_parallelism is not None
-                else scorer_parallelism
-            ),
         )
     else:
         # Eval draws from the test split — no contamination.
@@ -326,7 +310,6 @@ def build_config(cli: CLIConfig) -> train.Config:
             max_connections=eval_max_connections,
             progress_timeout_s=cli.progress_timeout_s,
             scorer_builder=cli.scorer_builder,
-            scorer_parallelism=scorer_parallelism,
         )
     evaluator_builders = [inspect_builder]
 

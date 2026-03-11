@@ -18,7 +18,7 @@ import tinker
 from tinker_cookbook import model_info
 
 from ..progress import run_with_heartbeat
-from ..scoring.providers import DebateScorerBuilder
+from tinker_cookbook.scoring import BinaryJudgeBuilder
 from .dataset_adapter import GPQAAdapter, GPQAOpenEndedAdapter
 from .evaluator import DebateInspectEvaluatorBuilder
 
@@ -42,8 +42,7 @@ class Config:
     log_dir: str | None = None
     artifacts_dir: str | None = None
     base_url: str | None = None
-    scorer_builder: DebateScorerBuilder | None = None
-    scorer_parallelism: int | None = None
+    scorer_builder: BinaryJudgeBuilder | None = None
     open_reasoning: bool = False
     randomize_position: bool = True
     reasoning_effort: str | None = None
@@ -110,7 +109,6 @@ async def main(config: Config) -> None:
         limit=config.limit,
         base_url=config.base_url,
         scorer_builder=config.scorer_builder,
-        scorer_parallelism=config.scorer_parallelism,
         open_reasoning=config.open_reasoning,
         randomize_position=config.randomize_position,
     )

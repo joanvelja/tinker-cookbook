@@ -40,7 +40,7 @@ from .types import (
 from .env import DebateEnv
 
 if TYPE_CHECKING:
-    from .scoring.providers import AnswerJudgeClient
+    from tinker_cookbook.scoring import BinaryJudgeClient
 
 _EPISODE_LOG_LOCK = threading.Lock()
 
@@ -105,8 +105,7 @@ def _compute_metrics_sync(
 
 async def _compute_builtin_metrics_batch(
     states: Sequence[DebateState],
-    scorer: AnswerJudgeClient | None,
-    scorer_parallelism: int,
+    scorer: BinaryJudgeClient | None,
 ) -> list[Metrics]:
     from .scoring.facts import built_in_metric_values, resolve_debate_facts_for_states
 
@@ -114,7 +113,6 @@ async def _compute_builtin_metrics_batch(
         states,
         scorer=scorer,
         prompts_for_ref=resolve_prompts,
-        parallelism=scorer_parallelism,
     )
     return [
         {
@@ -129,12 +127,11 @@ async def _compute_builtin_metrics_batch(
 async def _compute_metrics(
     states: Sequence[DebateState],
     metrics: dict[str, MetricFn] | None,
-    scorer: AnswerJudgeClient | None,
-    scorer_parallelism: int,
+    scorer: BinaryJudgeClient | None,
 ) -> list[Metrics]:
     """Dispatch to builtin batch scorer or sync per-state MetricFns."""
     if metrics is None:
-        return await _compute_builtin_metrics_batch(states, scorer, scorer_parallelism)
+        return await _compute_builtin_metrics_batch(states, scorer)
     return [_compute_metrics_sync(state, metrics) for state in states]
 
 
@@ -164,8 +161,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
     opponent_renderer: Renderer | None = None
     randomize_position: bool = False
     metrics: dict[str, MetricFn] | None = field(default=None, repr=False)
-    scorer: AnswerJudgeClient | None = field(default=None, repr=False)
-    scorer_parallelism: int = 64
+    scorer: BinaryJudgeClient | None = field(default=None, repr=False)
     episode_log_dir: str | None = None
 
     # Set after make_envs
@@ -397,7 +393,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
             )
 
         metrics_by_runtime = await _compute_metrics(
-            states, self.metrics, self.scorer, self.scorer_parallelism
+            states, self.metrics, self.scorer
         )
 
         results = []
@@ -434,8 +430,7 @@ class DebateBranchGroupBuilder(EnvGroupBuilder):
     outcome_reward_fn: OutcomeRewardFn | None = None
     include_roles: tuple[Role, ...] = (Role.DEBATER_A, Role.DEBATER_B)
     metrics: dict[str, MetricFn] | None = field(default=None, repr=False)
-    scorer: AnswerJudgeClient | None = field(default=None, repr=False)
-    scorer_parallelism: int = 64
+    scorer: BinaryJudgeClient | None = field(default=None, repr=False)
 
     _runtime: DebateRuntime | None = field(default=None, repr=False)
 
@@ -461,7 +456,7 @@ class DebateBranchGroupBuilder(EnvGroupBuilder):
             raise ValueError(
                 "Custom MetricFn injection is unsupported with OPEN_ENDED semantic scoring."
             )
-        m = (await _compute_metrics([state], self.metrics, self.scorer, self.scorer_parallelism))[0]
+        m = (await _compute_metrics([state], self.metrics, self.scorer))[0]
         if self.outcome_reward_fn is None:
             return [(0.0, m) for _ in trajectory_group]
         outcome = state.outcome

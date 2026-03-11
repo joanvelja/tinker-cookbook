@@ -5,9 +5,7 @@ import asyncio
 import httpx
 from openai import BadRequestError
 
-from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.providers import (
-    OpenAICompatibleAnswerJudgeClient,
-)
+from tinker_cookbook.scoring.providers import OpenAIBinaryJudgeClient
 
 
 class _FakeMessage:
@@ -225,11 +223,11 @@ class _FakeOpenAIFallbackClient:
 
 
 def test_openai_compatible_client_falls_back_to_max_tokens():
-    client = OpenAICompatibleAnswerJudgeClient(model="gpt-test")
+    client = OpenAIBinaryJudgeClient(model="gpt-test")
     fake = _FakeOpenAIClient()
     client._client = fake
 
-    result = asyncio.run(client.complete_binary(system="sys", user="usr"))
+    result = asyncio.run(client.complete("sys", "usr"))
 
     assert result == "SAME"
     assert len(fake.chat.completions.calls) == 2
@@ -238,7 +236,7 @@ def test_openai_compatible_client_falls_back_to_max_tokens():
 
 
 def test_openai_compatible_client_bumps_gpt5_high_reasoning_budget():
-    client = OpenAICompatibleAnswerJudgeClient(
+    client = OpenAIBinaryJudgeClient(
         model="gpt-5-mini",
         max_tokens=32,
         reasoning_effort="high",
@@ -246,7 +244,7 @@ def test_openai_compatible_client_bumps_gpt5_high_reasoning_budget():
     fake = _FakeOpenAIResponsesClient()
     client._client = fake
 
-    result = asyncio.run(client.complete_binary(system="sys", user="usr"))
+    result = asyncio.run(client.complete("sys", "usr"))
 
     assert result == "SAME"
     assert len(fake.responses.calls) == 1
@@ -254,7 +252,7 @@ def test_openai_compatible_client_bumps_gpt5_high_reasoning_budget():
 
 
 def test_openai_compatible_client_retries_responses_before_chat_fallback():
-    client = OpenAICompatibleAnswerJudgeClient(
+    client = OpenAIBinaryJudgeClient(
         model="gpt-5-mini",
         max_tokens=32,
         reasoning_effort="high",
@@ -262,7 +260,7 @@ def test_openai_compatible_client_retries_responses_before_chat_fallback():
     fake = _FakeOpenAIRetryingResponsesClient()
     client._client = fake
 
-    result = asyncio.run(client.complete_binary(system="sys", user="usr"))
+    result = asyncio.run(client.complete("sys", "usr"))
 
     assert result == "SAME"
     assert [call["max_output_tokens"] for call in fake.responses.calls] == [16_384, 16_384]
@@ -274,7 +272,7 @@ def test_openai_compatible_client_retries_responses_before_chat_fallback():
 
 
 def test_openai_compatible_client_does_not_fall_back_to_chat_for_empty_responses():
-    client = OpenAICompatibleAnswerJudgeClient(
+    client = OpenAIBinaryJudgeClient(
         model="gpt-5-mini",
         max_tokens=32,
         reasoning_effort="high",
@@ -282,7 +280,7 @@ def test_openai_compatible_client_does_not_fall_back_to_chat_for_empty_responses
     fake = _FakeOpenAIIncompleteResponsesClient()
     client._client = fake
 
-    result = asyncio.run(client.complete_binary(system="sys", user="usr"))
+    result = asyncio.run(client.complete("sys", "usr"))
 
     assert result == ""
     assert [call["max_output_tokens"] for call in fake.responses.calls] == [16_384, 16_384]
@@ -294,7 +292,7 @@ def test_openai_compatible_client_does_not_fall_back_to_chat_for_empty_responses
 
 
 def test_openai_compatible_client_retries_minimal_reasoning_after_empty_high_response():
-    client = OpenAICompatibleAnswerJudgeClient(
+    client = OpenAIBinaryJudgeClient(
         model="gpt-5-mini",
         max_tokens=32,
         reasoning_effort="high",
@@ -302,7 +300,7 @@ def test_openai_compatible_client_retries_minimal_reasoning_after_empty_high_res
     fake = _FakeOpenAIHighThenMinimalResponsesClient()
     client._client = fake
 
-    result = asyncio.run(client.complete_binary(system="sys", user="usr"))
+    result = asyncio.run(client.complete("sys", "usr"))
 
     assert result == "SAME"
     assert [call.get("reasoning", {}).get("effort") for call in fake.responses.calls] == [
@@ -314,7 +312,7 @@ def test_openai_compatible_client_retries_minimal_reasoning_after_empty_high_res
 
 
 def test_openai_compatible_client_returns_empty_after_long_prompt_responses_budget_exhaustion():
-    client = OpenAICompatibleAnswerJudgeClient(
+    client = OpenAIBinaryJudgeClient(
         model="gpt-5-mini",
         max_tokens=32,
         reasoning_effort="high",
@@ -326,7 +324,7 @@ def test_openai_compatible_client_returns_empty_after_long_prompt_responses_budg
     )
     client._client = fake
 
-    result = asyncio.run(client.complete_binary(system=long_system, user=long_user))
+    result = asyncio.run(client.complete(long_system, long_user))
 
     assert result == ""
     assert [call["max_output_tokens"] for call in fake.responses.calls] == [16_384, 16_384]
@@ -338,7 +336,7 @@ def test_openai_compatible_client_returns_empty_after_long_prompt_responses_budg
 
 
 def test_openai_compatible_client_chat_fallback_recovers_from_output_limit_bad_request():
-    client = OpenAICompatibleAnswerJudgeClient(
+    client = OpenAIBinaryJudgeClient(
         model="gpt-5-mini",
         max_tokens=32,
         reasoning_effort="high",
@@ -346,7 +344,7 @@ def test_openai_compatible_client_chat_fallback_recovers_from_output_limit_bad_r
     fake = _FakeOpenAIFallbackClient(accepted_max_tokens=32)
     client._client = fake
 
-    result = asyncio.run(client.complete_binary(system="sys", user="usr"))
+    result = asyncio.run(client.complete("sys", "usr"))
 
     assert result == "SAME"
     assert len(fake.responses.calls) == 1

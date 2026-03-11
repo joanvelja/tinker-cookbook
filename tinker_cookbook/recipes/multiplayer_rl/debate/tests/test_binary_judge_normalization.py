@@ -4,9 +4,7 @@ import os
 import tempfile
 
 from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import resolve_prompts
-from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.facts import (
-    normalize_binary_verdict_token,
-)
+from tinker_cookbook.scoring.types import normalize_binary_verdict_token
 
 
 def _tmp_prompt_yaml() -> str:

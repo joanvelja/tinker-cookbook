@@ -5,7 +5,7 @@ from .builders import DebateGroupBuilder, DebateBranchGroupBuilder
 from .dataset import DebateDataset, DebateDatasetBuilder
 from .scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from .scoring.metrics import MetricFn, MetricResult, mcq_debate_metrics
-from .scoring.providers import DebateScorerBuilder
+from tinker_cookbook.scoring import BinaryJudgeBuilder
 from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
 from .prompts import DebatePrompts, resolve_prompts
 from .scoring.fields import FieldSpec
@@ -72,7 +72,7 @@ __all__ = [
     # Concrete implementations
     "LLMJudgeCallback",
     "zero_sum_outcome_reward",
-    "DebateScorerBuilder",
+    "BinaryJudgeBuilder",
     # Prompts
     "DebatePrompts",
     "FieldSpec",

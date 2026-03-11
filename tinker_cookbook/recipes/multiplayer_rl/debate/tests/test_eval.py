@@ -23,7 +23,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.eval.inspect_task import (
     debate_scorer,
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.builders import IDENTITY_REMAP_BASES
-from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.providers import DebateScorerBuilder
+from tinker_cookbook.scoring import BinaryJudgeBuilder
 from tinker_cookbook.recipes.multiplayer_rl.debate.tests.conftest import make_spec
 from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     DebateOutcome,
@@ -666,8 +666,8 @@ def test_smoke_gpqa_open_ended_passes_explicit_open_ended_mode(monkeypatch):
         def build(self, *, usage_tracker=None):
             return MagicMock()
 
-    monkeypatch.setattr(smoke_gpqa_open_ended, "DebateScorerBuilder", _FakeScorerBuilder)
-    monkeypatch.setattr(smoke_gpqa_open_ended, "RecordingAnswerJudgeClient", lambda inner: inner)
+    monkeypatch.setattr(smoke_gpqa_open_ended, "BinaryJudgeBuilder", _FakeScorerBuilder)
+    monkeypatch.setattr(smoke_gpqa_open_ended, "RecordingBinaryJudgeClient", lambda inner: inner)
 
     args = smoke_gpqa_open_ended.parse_args(
         [
@@ -1160,24 +1160,21 @@ def test_debate_eval_open_ended_requires_scorer_client():
         )
 
 
-def test_debate_eval_open_ended_requires_binary_prompt_blocks():
-    adapter = _dummy_open_ended_adapter()
+def test_debate_eval_open_ended_uses_default_grader_when_yaml_omits_it():
+    """A YAML without _grader still works — built-in default grader kicks in."""
+    from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import resolve_prompts
 
-    with pytest.raises(ValueError, match="requires _grader"):
-        debate_eval(
-            adapter=adapter,
-            sampling_client=MagicMock(),
-            opponent_client=MagicMock(),
-            judge_client=MagicMock(),
-            prompts_ref=(
-                "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/"
-                "semantic_prompts_missing_grader.yaml"
-            ),
-            scorer_client=MagicMock(),
-        )
+    prompts = resolve_prompts(
+        "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/"
+        "semantic_prompts_missing_grader.yaml"
+    )
+    grader = prompts.get_binary_judge_template("grader")
+    assert grader is not None
+    assert grader.positive == "CORRECT"
+    assert grader.negative == "INCORRECT"
 
 
-def test_build_config_scorer_parallelism_defaults_to_scorer_builder_connections():
+def test_build_config_scorer_builder_passes_through_to_eval_builder():
     from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
         DebateInspectEvaluatorBuilder,
     )
@@ -1186,43 +1183,14 @@ def test_build_config_scorer_parallelism_defaults_to_scorer_builder_connections(
         build_config,
     )
 
-    cli = CLIConfig(
-        scorer_builder=DebateScorerBuilder(
-            provider="openai_compatible",
-            model="gpt-5-mini",
-            max_connections=17,
-        )
+    scorer_builder = BinaryJudgeBuilder(
+        provider="openai_compatible",
+        model="gpt-5-mini",
+        max_connections=17,
     )
+    cli = CLIConfig(scorer_builder=scorer_builder)
     config = build_config(cli)
 
     eval_builder = config.evaluator_builders[0]
     assert isinstance(eval_builder, DebateInspectEvaluatorBuilder)
-    assert eval_builder.scorer_parallelism == 17
-
-
-def test_build_config_preserves_explicit_inspect_eval_scorer_parallelism_override():
-    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
-        DebateInspectEvaluatorBuilder,
-    )
-    from tinker_cookbook.recipes.multiplayer_rl.debate.scripts.train import (
-        CLIConfig,
-        build_config,
-    )
-
-    custom_eval = DebateInspectEvaluatorBuilder(
-        adapter=GPQAAdapter(free_debate=True, limit=5),
-        scorer_parallelism=9,
-    )
-    cli = CLIConfig(
-        scorer_builder=DebateScorerBuilder(
-            provider="openai_compatible",
-            model="gpt-5-mini",
-            max_connections=17,
-        ),
-        inspect_eval=custom_eval,
-    )
-    config = build_config(cli)
-
-    eval_builder = config.evaluator_builders[0]
-    assert isinstance(eval_builder, DebateInspectEvaluatorBuilder)
-    assert eval_builder.scorer_parallelism == 9
+    assert eval_builder.scorer_builder is scorer_builder

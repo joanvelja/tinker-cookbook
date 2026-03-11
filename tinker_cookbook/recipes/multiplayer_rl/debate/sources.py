@@ -12,7 +12,7 @@ Example CLI usage::
 
     uv run python -m ... \\
         --problem_source=GPQAOpenEndedProblemSource \\
-        --scorer_builder=DebateScorerBuilder \\
+        --scorer_builder=BinaryJudgeBuilder \\
         --scorer_builder.model=openai/gpt-oss-120b
 """
 
