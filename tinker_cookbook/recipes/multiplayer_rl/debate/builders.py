@@ -117,7 +117,11 @@ async def _compute_builtin_metrics_batch(
         parallelism=scorer_parallelism,
     )
     return [
-        {name: value for name, value in built_in_metric_values(state, facts).items() if value is not None}
+        {
+            name: value
+            for name, value in built_in_metric_values(state, facts).items()
+            if value is not None
+        }
         for state, facts in zip(states, facts_by_state, strict=True)
     ]
 
@@ -410,6 +414,11 @@ class DebateGroupBuilder(EnvGroupBuilder):
                 results.append((rewards_by_role.get(env.role, 0.0), m))
         return results
 
+    def advantage_subgroups(self, n_trajectories: int) -> tuple[tuple[int, ...], ...] | None:
+        if self.opponent_completer is not None:
+            return None  # frozen-opp: single side, default behavior
+        return self.interleaved_subgroups(n_trajectories, len(self.include_roles))
+
     def logging_tags(self) -> list[str]:
         return ["debate", self.game.protocol_kind.value]
 
@@ -452,9 +461,7 @@ class DebateBranchGroupBuilder(EnvGroupBuilder):
             raise ValueError(
                 "Custom MetricFn injection is unsupported with OPEN_ENDED semantic scoring."
             )
-        m = (await _compute_metrics(
-            [state], self.metrics, self.scorer, self.scorer_parallelism
-        ))[0]
+        m = (await _compute_metrics([state], self.metrics, self.scorer, self.scorer_parallelism))[0]
         if self.outcome_reward_fn is None:
             return [(0.0, m) for _ in trajectory_group]
         outcome = state.outcome
@@ -467,6 +474,10 @@ class DebateBranchGroupBuilder(EnvGroupBuilder):
             reward = rewards_by_role.get(env.role, 0.0)
             results.append((reward, m))
         return results
+
+    def advantage_subgroups(self, n_trajectories: int) -> tuple[tuple[int, ...], ...] | None:
+        # Branch builder is always self-play (no frozen-opponent variant)
+        return self.interleaved_subgroups(n_trajectories, len(self.include_roles))
 
     def logging_tags(self) -> list[str]:
         return ["debate", "branch", self.snapshot.state.spec.protocol_kind.value]

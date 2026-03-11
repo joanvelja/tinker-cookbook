@@ -200,7 +200,7 @@ async def run(args: argparse.Namespace):
             all_batch_metrics.append(batch_metrics)
 
             # Advantages + training data
-            advantages_P = compute_advantages(trajectory_groups_P)
+            advantages_P = compute_advantages(trajectory_groups_P, builders)
             data_D, _metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
 
             # Train step

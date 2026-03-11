@@ -193,6 +193,8 @@ class CLIConfig:
     prompts_ref: str | None = None
     open_reasoning: bool = False
     kl_penalty_coef: float = 0.0
+    advantage_scheme: str = "mean_center"
+    advantage_alpha: float = 0.5
     inspect_eval: DebateInspectEvaluatorBuilder | None = None
     eval_limit: int | None = 25
     eval_every: int = 10
@@ -335,6 +337,8 @@ def build_config(cli: CLIConfig) -> train.Config:
         learning_rate=cli.learning_rate,
         max_tokens=cli.max_tokens,
         kl_penalty_coef=cli.kl_penalty_coef,
+        advantage_scheme=cli.advantage_scheme,
+        advantage_alpha=cli.advantage_alpha,
         eval_every=cli.eval_every,
         eval_on_start=cli.eval_on_start,
         save_every=cli.save_every,

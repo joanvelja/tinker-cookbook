@@ -6,12 +6,13 @@ and assembling training batches.
 """
 
 import logging
-from typing import List
+from typing import List, Sequence
 
 import tinker
 import torch
+from torch import Tensor
 from tinker import TensorData
-from tinker_cookbook.rl.types import Trajectory, TrajectoryGroup
+from tinker_cookbook.rl.types import AdvantageScheme, EnvGroupBuilder, Trajectory, TrajectoryGroup
 from tinker_cookbook.supervised.common import (
     create_rightshifted_model_input_and_leftshifted_targets,
 )
@@ -20,14 +21,81 @@ from tinker_cookbook.utils.misc_utils import all_same, safezip
 logger = logging.getLogger(__name__)
 
 
-def compute_advantages(trajectory_groups_P: List[TrajectoryGroup]) -> List[torch.Tensor]:
-    """Compute advantages for each trajectory, centered within groups."""
+def _normalize_subgroup(rewards: Tensor, scheme: AdvantageScheme, alpha: float) -> Tensor:
+    """Normalize advantages within a subgroup using the specified scheme.
+
+    For power_mean/maxrl, computes effective win rate p_eff = (mean - r_min) / (r_max - r_min)
+    and divides centered rewards by p_eff^alpha. This is encoding-agnostic:
+    - {0,1} rewards: p_eff = mean = p, denom = p^alpha (matches MaxRL paper exactly)
+    - {-1,+1} rewards: p_eff = (mean+1)/2 = p, denom = p^alpha (same weighting)
+    """
+    if len(rewards) < 2:
+        return torch.zeros_like(rewards)
+
+    mean = rewards.mean()
+    centered = rewards - mean
+
+    if scheme == "mean_center":
+        return centered
+
+    if scheme == "grpo":
+        std = rewards.std()
+        return centered / std if std > 0 else torch.zeros_like(rewards)
+
+    if scheme not in ("maxrl", "power_mean"):
+        raise ValueError(f"Unknown advantage scheme: {scheme!r}")
+
+    # power_mean family (includes maxrl as alpha=1)
+    eff_alpha = alpha if scheme == "power_mean" else 1.0
+    r_min = rewards.min()
+    r_max = rewards.max()
+    r_range = r_max - r_min
+    if r_range < 1e-8:
+        return torch.zeros_like(rewards)  # constant rewards
+    p_eff = (mean - r_min) / r_range
+    if p_eff <= 1e-8:
+        return torch.zeros_like(rewards)  # all-lose
+    return centered / p_eff**eff_alpha
+
+
+def compute_advantages(
+    trajectory_groups_P: List[TrajectoryGroup],
+    env_group_builders_P: Sequence[EnvGroupBuilder] | None = None,
+    *,
+    scheme: AdvantageScheme = "mean_center",
+    alpha: float = 0.5,
+) -> List[torch.Tensor]:
+    """Compute advantages for each trajectory, centered within groups or subgroups.
+
+    Args:
+        trajectory_groups_P: Trajectory groups to compute advantages for.
+        env_group_builders_P: Builders providing subgroup partitions (structural).
+            None = single group per trajectory group.
+        scheme: Normalization scheme (training-level objective choice).
+        alpha: Exponent for power_mean. maxrl ignores this (uses α=1).
+    """
     advantages_P: list[torch.Tensor] = []
 
-    for traj_group in trajectory_groups_P:
-        rewards_G = torch.tensor(traj_group.get_total_rewards())
-        # Center advantages within the group
-        advantages_G = rewards_G - rewards_G.mean()
+    for i, traj_group in enumerate(trajectory_groups_P):
+        rewards_G = torch.tensor(traj_group.get_total_rewards(), dtype=torch.float32)
+        n = len(rewards_G)
+
+        subgroups = (
+            env_group_builders_P[i].advantage_subgroups(n)
+            if env_group_builders_P is not None
+            else None
+        )
+
+        if subgroups is None:
+            advantages_G = _normalize_subgroup(rewards_G, scheme, alpha)
+        else:
+            advantages_G = torch.zeros_like(rewards_G)
+            for sub_indices in subgroups:
+                idx = torch.tensor(sub_indices, dtype=torch.long)
+                sub_rewards = rewards_G[idx]
+                sub_adv = _normalize_subgroup(sub_rewards, scheme, alpha)
+                advantages_G[idx] = sub_adv
+
         advantages_P.append(advantages_G)
 
     return advantages_P

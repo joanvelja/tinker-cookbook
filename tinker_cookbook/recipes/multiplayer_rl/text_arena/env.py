@@ -188,6 +188,11 @@ class TwoPlayerEnvGroupBuilder(EnvGroupBuilder):
     num_players: ClassVar[int] = 2
     opponent_policy: TinkerMessageCompleter | None = None
 
+    def advantage_subgroups(self, n_trajectories: int) -> tuple[tuple[int, ...], ...] | None:
+        if not self.self_play:
+            return None  # frozen opponent: single side, default behavior
+        return self.interleaved_subgroups(n_trajectories, self.num_players)
+
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of environments sharing the same TextArena game."""
         if self.num_envs % 2 != 0:
@@ -229,15 +234,18 @@ class TwoPlayerTextArenaDataset(RLDataset):
         self.batch_size = batch_size
         self.builder = builder
         self.num_datapoints = num_datapoints
-        assert self.num_datapoints % self.builder.num_players == 0, (
-            "num_datapoints must be divisible by num_players"
+        assert self.batch_size % self.builder.num_envs == 0, (
+            f"batch_size ({batch_size}) must be divisible by num_envs ({builder.num_envs})"
+        )
+        assert self.num_datapoints % self.batch_size == 0, (
+            f"num_datapoints ({num_datapoints}) must be divisible by batch_size ({batch_size})"
         )
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         return [
             self.builder
-            for i in range(self.batch_size // self.builder.num_players)
-            if (index * self.batch_size + self.builder.num_players * i) < self.num_datapoints
+            for i in range(self.batch_size // self.builder.num_envs)
+            if (index * self.batch_size + self.builder.num_envs * i) < self.num_datapoints
         ]
 
     def __len__(self) -> int:
@@ -253,6 +261,7 @@ class TwoPlayerTextArenaDatasetBuilder(RLDatasetBuilder):
     model_name: str
     game_name: str
     renderer_name: str
+    group_size: int = 1
 
     def _construct_opponent_policy(self, renderer: Renderer) -> TinkerMessageCompleter:
         """Play against a fixed policy during testing."""
@@ -270,10 +279,11 @@ class TwoPlayerTextArenaDatasetBuilder(RLDatasetBuilder):
         renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
 
         # The training dataset performs self-play
+        num_envs = self.group_size * 2  # 2 players per game
         train_builder = TwoPlayerEnvGroupBuilder(
             game_name=self.game_name,
             renderer=renderer,
-            num_envs=2,
+            num_envs=num_envs,
             self_play=True,
         )
         train_dataset = TwoPlayerTextArenaDataset(

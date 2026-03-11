@@ -170,7 +170,9 @@ async def run(args: argparse.Namespace):
     )
 
     print(f"Model:     {args.model} (renderer={renderer_name})", flush=True)
-    print(f"Opponent:  {args.opponent_model} (renderer={opponent_renderer_name}) [frozen]", flush=True)
+    print(
+        f"Opponent:  {args.opponent_model} (renderer={opponent_renderer_name}) [frozen]", flush=True
+    )
     print(f"Judge:     {args.judge_model} (renderer={judge_renderer_name})", flush=True)
     print(f"Prompts:   {args.prompts_ref}  reasoning_effort={args.reasoning_effort}", flush=True)
     print(
@@ -222,7 +224,7 @@ async def run(args: argparse.Namespace):
             all_batch_metrics.append(batch_metrics)
 
             # Advantages + training data
-            advantages_P = compute_advantages(trajectory_groups_P)
+            advantages_P = compute_advantages(trajectory_groups_P, builders)
             data_D, _metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
 
             # Train step

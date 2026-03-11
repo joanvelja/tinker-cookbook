@@ -186,7 +186,7 @@ async def prepare_minibatch(
 
     # Assemble training data
     with timed("assemble_training_data", metrics):
-        advantages_P = compute_advantages(trajectory_groups_P)
+        advantages_P = compute_advantages(trajectory_groups_P, env_group_builders_P)
         data_D, metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
 
     # Print one datum per dataset

@@ -37,6 +37,7 @@ from tinker_cookbook.rl.metrics import (
 )
 from tinker_cookbook.rl.rollouts import do_group_rollout
 from tinker_cookbook.rl.types import (
+    AdvantageScheme,
     EnvGroupBuilder,
     RLDataset,
     RLDatasetBuilder,
@@ -343,6 +344,15 @@ class Config:
     # See https://tinker-docs.thinkingmachines.ai/losses
     loss_fn: LossFnType = "importance_sampling"
     loss_fn_config: dict[str, Any] | None = None
+    # Advantage normalization scheme: mean_center | grpo | maxrl | power_mean.
+    # Defines the RL objective — mean_center is standard REINFORCE with baseline,
+    # maxrl is truncated ML, power_mean(α) interpolates.
+    advantage_scheme: AdvantageScheme = "mean_center"
+    # Exponent for power_mean normalization. maxrl ignores this (uses α=1).
+    advantage_alpha: float = 0.5
+    # When False, disables per-role/per-player advantage subgroups from builders.
+    # Useful for A/B experiments comparing with/without subgroup splitting.
+    use_advantage_subgroups: bool = True
 
     # Number of optimizer steps per training iteration.
     # Useful for very large batch sizes.
@@ -897,6 +907,9 @@ async def prepare_minibatch(
     kl_reference_client: tinker.SamplingClient | None,
     kl_penalty_coef: float,
     kl_discount_factor: float,
+    advantage_scheme: AdvantageScheme = "mean_center",
+    advantage_alpha: float = 0.5,
+    use_advantage_subgroups: bool = True,
 ) -> tuple[list[tinker.Datum], dict[str, Any]]:
     """Converts the trajectories into a minibatch, and provides metrics about the minibatch"""
 
@@ -906,7 +919,12 @@ async def prepare_minibatch(
     metrics.update(compute_trajectory_metrics(trajectory_groups_P, taglist_P))
 
     # Compute advantages once for the full batch (used for both display and training)
-    advantages_P = compute_advantages(trajectory_groups_P)
+    advantages_P = compute_advantages(
+        trajectory_groups_P,
+        env_group_builders_P if use_advantage_subgroups else None,
+        scheme=advantage_scheme,
+        alpha=advantage_alpha,
+    )
 
     # Print up to two trajectory groups with correctly-centered advantages
     for i, traj_group in enumerate(trajectory_groups_P[:2]):
@@ -1044,6 +1062,9 @@ async def do_train_step_streaming_and_get_sampling_client(
                 kl_reference_client,
                 kl_penalty_coef=cfg.kl_penalty_coef,
                 kl_discount_factor=cfg.kl_discount_factor,
+                advantage_scheme=cfg.advantage_scheme,
+                advantage_alpha=cfg.advantage_alpha,
+                use_advantage_subgroups=cfg.use_advantage_subgroups,
             )
             metrics.update(prepare_minibatch_metrics)
 
@@ -1140,6 +1161,9 @@ async def do_train_step_and_get_sampling_client(
         kl_reference_client,
         kl_penalty_coef=cfg.kl_penalty_coef,
         kl_discount_factor=cfg.kl_discount_factor,
+        advantage_scheme=cfg.advantage_scheme,
+        advantage_alpha=cfg.advantage_alpha,
+        use_advantage_subgroups=cfg.use_advantage_subgroups,
     )
     metrics.update(prepare_minibatch_metrics)
 
