@@ -41,6 +41,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.metrics import (
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.parsing import extract_fields
 from tinker_cookbook.recipes.multiplayer_rl.debate.prompts import resolve_prompts
+from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.fields import EnumScoring, FieldSpec
 from tinker_cookbook.recipes.multiplayer_rl.debate.scoring.judge import _parse_verdict
 
 
@@ -336,20 +337,28 @@ class TestNoOutcome:
 
 
 class TestJudgeVerdictParsing:
+    _SPECS: dict[str, FieldSpec] = {
+        "reason": FieldSpec(type=str),
+        "decision": FieldSpec(
+            type=str,
+            scoring=EnumScoring(values=("debater_a", "debater_b", "tie")),
+        ),
+    }
+
     def test_schema_debater_a(self):
-        outcome = _parse_verdict("", fields={"decision": "debater_a"})
+        outcome = _parse_verdict("", self._SPECS, fields={"decision": "debater_a"})
         assert outcome.winner == Role.DEBATER_A
 
     def test_schema_tie(self):
-        outcome = _parse_verdict("", fields={"decision": "tie"})
+        outcome = _parse_verdict("", self._SPECS, fields={"decision": "tie"})
         assert outcome.winner is None
 
-    def test_regex_fallback(self):
-        outcome = _parse_verdict("<decision>debater_b</decision>", fields=None)
-        assert outcome.winner == Role.DEBATER_B
+    def test_none_fields_is_tie(self):
+        outcome = _parse_verdict("some text", self._SPECS, fields=None)
+        assert outcome.winner is None
 
     def test_garbage_decision(self):
-        outcome = _parse_verdict("", fields={"decision": "idk"})
+        outcome = _parse_verdict("", self._SPECS, fields={"decision": "idk"})
         assert outcome.winner is None
 
 

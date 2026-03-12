@@ -36,7 +36,7 @@ fields:
       answer: {type: str}
   judge:
     final:
-      decision: {type: str}
+      decision: {type: str, scoring: {mode: enum, values: [debater_a, debater_b, tie]}}
 
 _matcher:
   system: "Compare two answers. Reply with SAME or DIFFERENT."

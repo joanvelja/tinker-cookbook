@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from typing import Any
@@ -9,15 +10,27 @@ from typing import Any
 from tinker_cookbook.completers import MessageCompleter
 from tinker_cookbook.renderers import format_content_as_string
 
-from .mcq import strip_think
+from .fields import EnumScoring, FieldSpec, classify_enum
+from ..think import strip_think
 from .parsing import extract_fields
 from ..prompts import resolve_prompts
-from ..types import DebateOutcome, JudgeDecision, JudgeRequest, Role
+from ..types import DebateOutcome, JudgeRequest, Role
 from ..core.visibility import build_generation_messages
 
-_XML_TAG_RE = re.compile(r"<(\w+)>(.*?)</\1>", re.DOTALL)
-_VALID_DECISIONS = {"debater_a": Role.DEBATER_A, "debater_b": Role.DEBATER_B}
+logger = logging.getLogger(__name__)
+
+_ENUM_TO_ROLE: dict[str, Role | None] = {
+    "A": Role.DEBATER_A,
+    "B": Role.DEBATER_B,
+    "debater_a": Role.DEBATER_A,
+    "debater_b": Role.DEBATER_B,
+    "tie": None,
+}
+
 _TIE_SCORES: dict[Role, float] = {Role.DEBATER_A: 0.0, Role.DEBATER_B: 0.0}
+
+# Regex to strip punctuation for pre-classify cleanup.
+_PUNCT_RE = re.compile(r"[^\w\s]")
 
 
 class LLMJudgeCallback:
@@ -26,7 +39,7 @@ class LLMJudgeCallback:
     def __init__(self, judge_completer: MessageCompleter) -> None:
         self._completer = judge_completer
 
-    async def on_boundary(self, request: JudgeRequest) -> JudgeDecision | None:
+    async def on_boundary(self, request: JudgeRequest) -> None:
         return None
 
     async def on_final(self, request: JudgeRequest) -> DebateOutcome:
@@ -46,36 +59,64 @@ class LLMJudgeCallback:
         else:
             fields = None
 
-        return _parse_verdict(text, fields)
+        return _parse_verdict(text, specs or {}, fields)
 
 
-def _extract_xml_fields(text: str) -> dict[str, str]:
-    """Extract all <tag>value</tag> pairs from text."""
-    return {m.group(1): m.group(2).strip() for m in _XML_TAG_RE.finditer(text)}
+def _parse_verdict(
+    text: str,
+    specs: dict[str, FieldSpec],
+    fields: dict[str, Any] | None = None,
+) -> DebateOutcome:
+    """Parse verdict from judge response using schema-driven enum classification.
 
+    Discovers the decision field by finding the one with EnumScoring,
+    then classifies the raw value against the enum vocabulary.
+    """
+    verdict_text, _ = strip_think(text)
 
-def _parse_verdict(text: str, fields: dict[str, Any] | None = None) -> DebateOutcome:
-    """Parse verdict from judge response. Uses schema-extracted fields if available, else regex fallback."""
     if fields is None:
-        fields = _extract_xml_fields(text)
-    elif "decision" not in fields:
-        # Schema extraction succeeded but missed decision — merge with regex fallback.
-        fallback = _extract_xml_fields(text)
-        fallback.update(fields)
-        fields = fallback
+        logger.warning("Judge fields extraction failed; defaulting to tie")
+        return DebateOutcome(winner=None, scores_by_role=_TIE_SCORES, verdict_text=verdict_text)
 
-    decision_raw = str(fields.get("decision", "")).strip().lower()
-    reason = str(fields.get("reason", ""))
+    # Find the decision field: the one with EnumScoring
+    decision_key: str | None = None
+    decision_spec: FieldSpec | None = None
+    for key, spec in specs.items():
+        if isinstance(spec.scoring, EnumScoring):
+            decision_key = key
+            decision_spec = spec
+            break
 
-    winner = _VALID_DECISIONS.get(decision_raw)
+    if decision_key is None or decision_spec is None:
+        logger.warning("No EnumScoring field in judge specs; defaulting to tie")
+        return DebateOutcome(winner=None, scores_by_role=_TIE_SCORES, verdict_text=verdict_text)
+
+    raw = fields.get(decision_key)
+    if raw is None:
+        logger.warning(
+            "Decision field %r missing from extracted fields; defaulting to tie", decision_key
+        )
+        return DebateOutcome(winner=None, scores_by_role=_TIE_SCORES, verdict_text=verdict_text)
+
+    # Strip punctuation before classification — classify_enum/_canon_enum does NOT strip punctuation
+    stripped = _PUNCT_RE.sub("", str(raw)).strip()
+    assert isinstance(decision_spec.scoring, EnumScoring)
+    classification = classify_enum(stripped, decision_spec.scoring.values)
+
+    if not classification.is_valid or classification.canonical is None:
+        logger.warning("Could not classify decision %r; defaulting to tie", raw)
+        return DebateOutcome(winner=None, scores_by_role=_TIE_SCORES, verdict_text=verdict_text)
+
+    winner = _ENUM_TO_ROLE.get(classification.canonical)
     if winner is None:
-        return DebateOutcome(winner=None, scores_by_role=_TIE_SCORES, verdict_text=reason or text)
+        # Tie
+        return DebateOutcome(winner=None, scores_by_role=_TIE_SCORES, verdict_text=verdict_text)
 
     loser = Role.DEBATER_B if winner == Role.DEBATER_A else Role.DEBATER_A
     return DebateOutcome(
         winner=winner,
         scores_by_role={winner: 1.0, loser: -1.0},
-        verdict_text=reason,
+        verdict_text=verdict_text,
     )
 
 

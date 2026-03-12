@@ -128,7 +128,7 @@ fields:
   judge:
     final:
       reasoning: {type: str}
-      decision: {type: str, description: "debater_a, debater_b, or tie"}
+      decision: {type: str, description: "debater_a, debater_b, or tie", scoring: {mode: enum, values: [debater_a, debater_b, tie]}}
 
 _grader:
   system: |

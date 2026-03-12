@@ -6,7 +6,8 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from .mcq import THINK_RE, normalize_mcq, strip_think
+from ..think import THINK_RE, strip_think
+from .mcq import normalize_mcq
 from .trajectory import answer_from_utterance, answers_by_round, filter_utterances, final_answer
 from ..types import DebateState, Phase, Role
 

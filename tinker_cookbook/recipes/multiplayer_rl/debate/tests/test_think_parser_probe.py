@@ -15,7 +15,7 @@ from ..scoring.metrics import (
     _latest_think_answer,
     think_correct_public_wrong,
 )
-from ..scoring.mcq import strip_think
+from ..think import strip_think, has_think_block
 from ..types import (
     DebateProblemSpec,
     DebateSpec,
@@ -363,3 +363,23 @@ def test_think_correct_public_wrong_no_thinking():
     state = _make_state(transcript, target="C")
     result = think_correct_public_wrong(Role.DEBATER_A)(state)
     assert result.value is None
+
+
+# ── 10. has_think_block detection ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "label,text,expected",
+    [
+        ("closed thinking", "<thinking>foo</thinking>bar", True),
+        ("closed think", "<think>foo</think>bar", True),
+        ("unclosed thinking", "<thinking>truncated content", True),
+        ("unclosed think", "<think>truncated content", True),
+        ("no tags", "plain text with no think tags", False),
+        ("empty", "", False),
+        ("case insensitive", "<THINK>FOO</THINK>bar", True),
+        ("unclosed uppercase", "<THINKING>truncated", True),
+    ],
+)
+def test_has_think_block(label: str, text: str, expected: bool):
+    assert has_think_block(text) == expected, f"has_think_block for '{label}'"

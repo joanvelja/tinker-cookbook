@@ -4,29 +4,8 @@ from __future__ import annotations
 
 import re
 
+from ..think import strip_think
 from .parsing import _XML_STRIP_RE
-
-# ---------------------------------------------------------------------------
-# Think-tag stripping
-# ---------------------------------------------------------------------------
-
-THINK_RE = re.compile(r"<think(?:ing)?[^>]*>(.*?)</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
-_THINK_UNCLOSED_RE = re.compile(r"<think(?:ing)?[^>]*>(.*)$", re.DOTALL | re.IGNORECASE)
-
-
-def strip_think(text: str) -> tuple[str, str | None]:
-    """Strip <think> blocks, return (cleaned_text, reasoning)."""
-    matches = THINK_RE.findall(text)
-    cleaned = THINK_RE.sub("", text).strip()
-    if not matches:
-        unclosed = _THINK_UNCLOSED_RE.search(text)
-        if unclosed:
-            matches = [unclosed.group(1)]
-            cleaned = text[: unclosed.start()].strip()
-        else:
-            return text, None
-    reasoning = "\n".join(part.strip() for part in matches if part.strip())
-    return cleaned, reasoning or None
 
 
 # ---------------------------------------------------------------------------

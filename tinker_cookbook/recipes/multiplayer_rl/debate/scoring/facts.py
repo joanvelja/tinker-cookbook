@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Callable, Mapping
 
 from ..prompts import BinaryJudgeTemplate, DebatePrompts, normalize_binary_verdict_token
 from ..types import DebateState, Phase, Role, ScoringMode
-from .mcq import THINK_RE, normalize_mcq
+from ..think import has_think_block
+from .mcq import normalize_mcq
 from .metrics import (
     _extract_thinking_text,
     _parse_think_answer_strict,
@@ -17,6 +20,8 @@ from .metrics import (
 )
 from .providers import AnswerJudgeClient
 from .trajectory import answer_from_utterance
+
+logger = logging.getLogger(__name__)
 
 MatcherKey = tuple[str, str, str, str]
 GraderKey = tuple[str, str, str, str]
@@ -68,7 +73,7 @@ def summarize_transcript(state: DebateState) -> TranscriptSummary:
             if u.round_index < num_rounds:
                 answers_by_round[role][u.round_index] = ans
 
-        if THINK_RE.search(u.text):
+        if has_think_block(u.text):
             think_block_count[role] += 1
             reasoning = _extract_thinking_text(u.text)
             if reasoning is not None:
@@ -146,6 +151,40 @@ def _grader_key(
     )
 
 
+_NEGATION_CUES = re.compile(r"\b(?:not|isn't|neither|no)\b", re.IGNORECASE)
+
+
+def _tolerant_extract(response_text: str, positive: str, negative: str) -> str | None:
+    """Fallback extraction: scan for standalone canonical tokens with negation awareness.
+
+    Returns the canonical token (positive/negative) ONLY IF exactly one is found
+    with zero negation cues within ~3 preceding tokens. Otherwise returns None.
+    """
+    tokens = response_text.split()
+    counts: dict[str, int] = {positive: 0, negative: 0}
+    negated = False
+
+    for i, token in enumerate(tokens):
+        normalized = token.strip().upper().rstrip(".,!?;:'\"")
+        if normalized not in (positive, negative):
+            continue
+        # Check for negation cues within ~3 preceding tokens.
+        window_start = max(0, i - 3)
+        preceding = " ".join(tokens[window_start:i])
+        if _NEGATION_CUES.search(preceding):
+            negated = True
+            break
+        counts[normalized] += 1
+
+    if negated:
+        return None
+
+    found = [canon for canon, n in counts.items() if n > 0]
+    if len(found) == 1 and counts[found[0]] >= 1:
+        return found[0]
+    return None
+
+
 async def _binary_judge(
     scorer: AnswerJudgeClient,
     template: BinaryJudgeTemplate,
@@ -164,6 +203,14 @@ async def _binary_judge(
         return True
     if verdict == template.negative:
         return False
+
+    # Tolerant fallback: word-boundary scan with negation check.
+    tolerant = _tolerant_extract(response_text, template.positive, template.negative)
+    if tolerant == template.positive:
+        return True
+    if tolerant == template.negative:
+        return False
+
     raise BinaryJudgeError(
         f"Unrecognized verdict: {response_text!r}. "
         f"Expected {template.positive!r} or {template.negative!r}."
@@ -192,6 +239,7 @@ async def resolve_debate_facts_for_states(
     scorer: AnswerJudgeClient | None,
     prompts_for_ref: Callable[[str], DebatePrompts],
     parallelism: int,
+    strict: bool = True,
 ) -> list[ResolvedDebateFacts]:
     semaphore = asyncio.Semaphore(max(1, parallelism))
     equivalence_results: dict[MatcherKey, bool] = {}
@@ -405,23 +453,52 @@ async def resolve_debate_facts_for_states(
     async def _collect(
         tasks: dict[tuple[str, ...], asyncio.Task[bool]],
         sink: dict[tuple[str, ...], bool],
-    ) -> None:
+        *,
+        kind: str,
+    ) -> int:
+        """Gather task results into sink. Returns count of BinaryJudgeErrors skipped."""
         if not tasks:
-            return
-        try:
-            completed = await asyncio.gather(*tasks.values())
-        except Exception:
-            for task in tasks.values():
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks.values(), return_exceptions=True)
-            raise
-        for key, value in zip(tasks, completed, strict=True):
-            sink[key] = value
+            return 0
+        if strict:
+            try:
+                completed = await asyncio.gather(*tasks.values())
+            except Exception:
+                for task in tasks.values():
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks.values(), return_exceptions=True)
+                raise
+            for key, value in zip(tasks, completed, strict=True):
+                sink[key] = value
+            return 0
+
+        # Non-strict: isolate BinaryJudgeErrors, re-raise everything else.
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        skipped = 0
+        for key, result in zip(tasks, results, strict=True):
+            if isinstance(result, BinaryJudgeError):
+                logger.warning(
+                    "Skipping %s key %s: %s", kind, key, result,
+                )
+                skipped += 1
+            elif isinstance(result, BaseException):
+                # Infrastructure failure — cancel remaining and re-raise.
+                for task in tasks.values():
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks.values(), return_exceptions=True)
+                raise result
+            else:
+                sink[key] = result
+        return skipped
 
     try:
-        await _collect(equivalence_tasks, equivalence_results)
-        await _collect(correctness_tasks, correctness_results)
+        matcher_errors = await _collect(
+            equivalence_tasks, equivalence_results, kind="matcher",
+        )
+        grader_errors = await _collect(
+            correctness_tasks, correctness_results, kind="grader",
+        )
     except Exception:
         outstanding = [*equivalence_tasks.values(), *correctness_tasks.values()]
         for task in outstanding:
@@ -431,18 +508,38 @@ async def resolve_debate_facts_for_states(
             await asyncio.gather(*outstanding, return_exceptions=True)
         raise
 
+    if not strict:
+        telemetry["binary_judge_errors.matcher"] = matcher_errors
+        telemetry["binary_judge_errors.grader"] = grader_errors
+
     resolved: list[ResolvedDebateFacts] = []
     for plan in plans:
+        eq_dict = {
+            key: equivalence_results[key]
+            for key in plan.equivalence_keys
+            if key in equivalence_results
+        }
+        corr_dict = {
+            key: correctness_results[key]
+            for key in plan.correctness_keys
+            if key in correctness_results
+        }
+
+        plan_telemetry = dict(telemetry)
+        if not strict:
+            plan_telemetry["missing_equivalence_keys"] = (
+                len(plan.equivalence_keys) - len(eq_dict)
+            )
+            plan_telemetry["missing_correctness_keys"] = (
+                len(plan.correctness_keys) - len(corr_dict)
+            )
+
         resolved.append(
             ResolvedDebateFacts(
                 scoring_mode=plan.scoring_mode,
-                equivalence=_freeze_mapping(
-                    {key: equivalence_results[key] for key in plan.equivalence_keys}
-                ),
-                correctness=_freeze_mapping(
-                    {key: correctness_results[key] for key in plan.correctness_keys}
-                ),
-                telemetry=_freeze_mapping(dict(telemetry)),
+                equivalence=_freeze_mapping(eq_dict),
+                correctness=_freeze_mapping(corr_dict),
+                telemetry=_freeze_mapping(plan_telemetry),
             )
         )
     return resolved
@@ -561,8 +658,11 @@ def built_in_metric_values(
         "think_wrong_public_correct.debater_b": None,
     }
 
-    if a_correct is not None or b_correct is not None:
-        values["truth_surfaced"] = 1.0 if (a_correct or b_correct) else 0.0
+    if a_correct is True or b_correct is True:
+        values["truth_surfaced"] = 1.0
+    elif a_correct is False and b_correct is False:
+        values["truth_surfaced"] = 0.0
+    # else: stays None (one or both unknown)
 
     if state.outcome is not None:
         winner = state.outcome.winner
@@ -615,12 +715,20 @@ def built_in_metric_values(
         if len(answers) >= 2:
             first, last = answers[0], answers[-1]
             changed = False
+            has_unknown = False
             for later in answers[1:]:
                 same = _lookup_equivalence(facts, state, first, later)
                 if same is False:
                     changed = True
                     break
-            values[f"stance_change.{role_name}"] = 1.0 if changed else 0.0
+                if same is None:
+                    has_unknown = True
+            if changed:
+                values[f"stance_change.{role_name}"] = 1.0
+            elif has_unknown:
+                values[f"stance_change.{role_name}"] = None
+            else:
+                values[f"stance_change.{role_name}"] = 0.0
 
             if state.spec.problem.target is not None:
                 first_correct = _lookup_correctness(facts, state, first)
@@ -654,14 +762,18 @@ def built_in_metric_values(
 
     rounds_a = summary.answers_by_round[Role.DEBATER_A]
     rounds_b = summary.answers_by_round[Role.DEBATER_B]
+    prior_all_resolved = True  # All earlier non-None rounds resolved to False
     for round_index, (answer_a, answer_b) in enumerate(
         zip(rounds_a, rounds_b, strict=False)
     ):
         if answer_a is None or answer_b is None:
             continue
         same = _lookup_equivalence(facts, state, answer_a, answer_b)
-        if same:
+        if same is True and prior_all_resolved:
             values["convergence_round"] = float(round_index)
             break
+        if same is None:
+            prior_all_resolved = False
+        # same is False: prior_all_resolved stays as-is (correct: disagreement before)
 
     return values

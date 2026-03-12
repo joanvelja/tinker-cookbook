@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 
 from tinker_cookbook.utils import logtree
 
-from ..scoring.mcq import strip_think
+from ..think import strip_think
 from ..scoring.parsing import extract_fields
 from ..plugins import JudgeCallback, StepRewardFn
 from ..prompts import resolve_prompts

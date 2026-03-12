@@ -24,7 +24,7 @@ user:
 fields:
   judge:
     final:
-      decision: {type: str, description: "debater_a or debater_b or tie"}
+      decision: {type: str, description: "debater_a or debater_b or tie", scoring: {mode: enum, values: [debater_a, debater_b, tie]}}
       reason: {type: str, description: "your reasoning"}
 
 _grader:

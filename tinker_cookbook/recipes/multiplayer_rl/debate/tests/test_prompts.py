@@ -574,6 +574,7 @@ fields:
       decision:
         type: str
         description: "debater_a or debater_b or tie"
+        scoring: {mode: enum, values: [debater_a, debater_b, tie]}
 think:
   judge: true
 """
@@ -911,3 +912,148 @@ def test_opponent_wrap_validation_non_string():
     )
     with pytest.raises(ValueError, match="expected str"):
         resolve_prompts(path)
+
+
+# ---------------------------------------------------------------------------
+# Judge EnumScoring validation
+# ---------------------------------------------------------------------------
+
+
+def test_missing_judge_final_fields_accepted():
+    """YAML without fields.judge.final is accepted (validation only fires when present)."""
+    path = _tmp_yaml("""\
+version: 2
+system:
+  judge:
+    default: "judge"
+  debater_a:
+    default: "a"
+  debater_b:
+    default: "b"
+question:
+  debater_a: "q"
+  debater_b: "q"
+""")
+    p = resolve_prompts(path)
+    assert p.get_field_specs("judge", "final") is None
+
+
+def test_judge_final_no_enum_scoring_rejected():
+    """Judge final fields without any EnumScoring field is rejected."""
+    path = _tmp_yaml("""\
+version: 2
+system:
+  judge:
+    default: "judge"
+  debater_a:
+    default: "a"
+  debater_b:
+    default: "b"
+question:
+  debater_a: "q"
+  debater_b: "q"
+fields:
+  judge:
+    final:
+      decision: {type: str}
+      reason: {type: str}
+""")
+    with pytest.raises(ValueError, match="exactly one field with EnumScoring.*found 0"):
+        resolve_prompts(path)
+
+
+def test_judge_final_multiple_enum_scoring_rejected():
+    """Judge final fields with >1 EnumScoring field is rejected."""
+    path = _tmp_yaml("""\
+version: 2
+system:
+  judge:
+    default: "judge"
+  debater_a:
+    default: "a"
+  debater_b:
+    default: "b"
+question:
+  debater_a: "q"
+  debater_b: "q"
+fields:
+  judge:
+    final:
+      decision:
+        type: str
+        scoring: {mode: enum, values: [debater_a, debater_b, tie]}
+      backup:
+        type: str
+        scoring: {mode: enum, values: [A, B, tie]}
+""")
+    with pytest.raises(ValueError, match="exactly one field with EnumScoring"):
+        resolve_prompts(path)
+
+
+def test_judge_final_bad_enum_values_rejected():
+    """EnumScoring values not in allowed set is rejected."""
+    path = _tmp_yaml("""\
+version: 2
+system:
+  judge:
+    default: "judge"
+  debater_a:
+    default: "a"
+  debater_b:
+    default: "b"
+question:
+  debater_a: "q"
+  debater_b: "q"
+fields:
+  judge:
+    final:
+      decision:
+        type: str
+        scoring: {mode: enum, values: [winner, loser, tie]}
+""")
+    with pytest.raises(ValueError, match="not recognized"):
+        resolve_prompts(path)
+
+
+def test_judge_final_incomplete_role_coverage_rejected():
+    """EnumScoring values that don't cover both debaters is rejected."""
+    path = _tmp_yaml("""\
+version: 2
+system:
+  judge:
+    default: "judge"
+  debater_a:
+    default: "a"
+  debater_b:
+    default: "b"
+question:
+  debater_a: "q"
+  debater_b: "q"
+fields:
+  judge:
+    final:
+      decision:
+        type: str
+        scoring: {mode: enum, values: [A, tie]}
+""")
+    with pytest.raises(ValueError, match="both DEBATER_A and DEBATER_B"):
+        resolve_prompts(path)
+
+
+def test_all_builtin_packs_pass_validation():
+    """All built-in prompt packs pass the new validation."""
+    for pack_name in (
+        "default",
+        "selfplay",
+        "open_selfplay",
+        "open_balanced",
+        "open_exploit",
+        "scientific_mcq",
+        "judge_exploit",
+        "galaxy_brain",
+    ):
+        resolve_prompts.cache_clear()
+        p = resolve_prompts(pack_name)
+        # Verify they loaded without error and have judge fields
+        specs = p.get_field_specs("judge", "final")
+        assert specs is not None, f"{pack_name} missing judge final fields"

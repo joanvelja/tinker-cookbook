@@ -115,6 +115,7 @@ async def _compute_builtin_metrics_batch(
         scorer=scorer,
         prompts_for_ref=resolve_prompts,
         parallelism=scorer_parallelism,
+        strict=False,
     )
     return [
         {

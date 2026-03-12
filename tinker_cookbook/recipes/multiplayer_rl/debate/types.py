@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Mapping
 
-_THINK_RE = re.compile(r"<think(?:ing)?[^>]*>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+from .think import strip_think
 
 
 def _strip_reasoning(text: str) -> str:
-    return _THINK_RE.sub("", text).strip()
+    return strip_think(text)[0]
 
 
 class Role(StrEnum):

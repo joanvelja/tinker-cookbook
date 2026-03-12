@@ -26,7 +26,7 @@ from ..types import (
     TRIGGER_FINAL,
     current_phase,
 )
-from ..scoring.fields import FieldSpec, _resolve_fields, validate_type_scoring, _TYPE_MAP
+from ..scoring.fields import EnumScoring, FieldSpec, _resolve_fields, validate_type_scoring, _TYPE_MAP
 from ..scoring.parsing import generate_format_instructions
 
 _PROMPTS_DIR = Path(__file__).parent
@@ -481,6 +481,48 @@ def _validate(d: dict) -> None:
                         scoring = resolve_scoring(props["scoring"])
                         if scoring is not None:
                             validate_type_scoring(tag_name, _TYPE_MAP[type_str], scoring)
+
+    # Validate judge final fields when present: must contain exactly one EnumScoring
+    # field whose values map to known roles covering both debaters.
+    final_fields = d.get("fields", {}).get("judge", {}).get("final")
+    if final_fields is not None:
+        from ..scoring.fields import resolve_scoring as _resolve_scoring
+        from ..scoring.judge import _ENUM_TO_ROLE
+
+        allowed_values = set(_ENUM_TO_ROLE.keys())
+        role_mapping = {k: v for k, v in _ENUM_TO_ROLE.items() if v is not None}
+
+        enum_fields: list[tuple[str, dict]] = []
+        for tag_name, props in final_fields.items():
+            if isinstance(props, dict) and "scoring" in props:
+                scoring = _resolve_scoring(props["scoring"])
+                if isinstance(scoring, EnumScoring):
+                    enum_fields.append((tag_name, props))
+        if len(enum_fields) == 0:
+            raise ValueError(
+                "fields.judge.final must contain exactly one field with EnumScoring "
+                "(the decision field), found 0"
+            )
+        if len(enum_fields) > 1:
+            names = [n for n, _ in enum_fields]
+            raise ValueError(
+                f"fields.judge.final must contain exactly one field with EnumScoring, "
+                f"found {len(enum_fields)}: {names}"
+            )
+        enum_tag, enum_props = enum_fields[0]
+        enum_values = enum_props["scoring"].get("values", []) if isinstance(enum_props["scoring"], dict) else []
+        bad_values = set(enum_values) - allowed_values
+        if bad_values:
+            raise ValueError(
+                f"fields.judge.final.{enum_tag}: EnumScoring values {sorted(bad_values)} "
+                f"are not recognized. Allowed: {sorted(allowed_values)}"
+            )
+        covered_roles = {role_mapping[v] for v in enum_values if v in role_mapping}
+        if Role.DEBATER_A not in covered_roles or Role.DEBATER_B not in covered_roles:
+            raise ValueError(
+                f"fields.judge.final.{enum_tag}: EnumScoring values must map to both "
+                f"DEBATER_A and DEBATER_B. Covered roles: {covered_roles}"
+            )
 
     # Validate opponent_wrap section.
     ow = d.get("opponent_wrap")
