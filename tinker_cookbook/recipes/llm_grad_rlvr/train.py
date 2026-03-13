@@ -1,21 +1,29 @@
 import asyncio
 import logging
 from datetime import datetime
+from typing import Literal
 
 import chz
 from tinker_cookbook import checkpoint_utils, cli_utils
 from tinker_cookbook.hyperparam_utils import get_lr
-from tinker_cookbook.recipes.gpqa_rl.env import GpqaOpenEndedBuilder
+from tinker_cookbook.recipes.llm_grad_rlvr.datasets import GpqaOpenEndedBuilder, OmniMathBuilder
+from tinker_cookbook.recipes.llm_grad_rlvr.env import LLMGradedDatasetBuilder
 from tinker_cookbook.rl.train import Config, main
 from tinker_cookbook.rl.types import AdvantageScheme
 
 logger = logging.getLogger(__name__)
 
+_DATASET_BUILDERS: dict[str, type[LLMGradedDatasetBuilder]] = {
+    "gpqa_oe": GpqaOpenEndedBuilder,
+    "omni_math": OmniMathBuilder,
+}
+
+DatasetChoice = Literal["gpqa_oe", "omni_math"]
+
 
 @chz.chz
 class CLIConfig:
-    """Command-line configuration for GPQA open-ended RL training."""
-
+    dataset: DatasetChoice = "gpqa_oe"
     model_name: str = "Qwen/Qwen3-30B-A3B"
     lora_rank: int = 32
     renderer_name: str | None = None
@@ -38,7 +46,6 @@ class CLIConfig:
 
 
 async def cli_main(cli_config: CLIConfig):
-    """Convert CLI config to full config and run training."""
     renderer_name = await checkpoint_utils.resolve_renderer_name_from_checkpoint_or_default_async(
         model_name=cli_config.model_name,
         explicit_renderer_name=cli_config.renderer_name,
@@ -47,12 +54,13 @@ async def cli_main(cli_config: CLIConfig):
     )
     learning_rate = cli_config.learning_rate or get_lr(cli_config.model_name)
     model_slug = cli_config.model_name.replace("/", "-")
-    run_name = f"gpqa_oe-{model_slug}-{cli_config.lora_rank}rank-{learning_rate}lr-{datetime.now().strftime('%Y-%m-%d-%H-%M')}"
+    run_name = f"{cli_config.dataset}-{model_slug}-{cli_config.lora_rank}rank-{learning_rate}lr-{datetime.now().strftime('%Y-%m-%d-%H-%M')}"
 
-    log_path = cli_config.log_path or f"/tmp/tinker-examples/gpqa_rl/{run_name}"
+    log_path = cli_config.log_path or f"/tmp/tinker-examples/rlvr/{run_name}"
     wandb_name = cli_config.wandb_name or run_name
 
-    dataset_builder = GpqaOpenEndedBuilder(
+    builder_cls = _DATASET_BUILDERS[cli_config.dataset]
+    dataset_builder = builder_cls(
         batch_size=cli_config.batch_size,
         group_size=cli_config.group_size,
         model_name_for_tokenizer=cli_config.model_name,

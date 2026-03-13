@@ -5,7 +5,7 @@ from typing import Any
 
 import chz
 from tinker_cookbook import checkpoint_utils, cli_utils
-from tinker_cookbook.recipes.gpqa_rl.env import GpqaOpenEndedBuilder
+from tinker_cookbook.recipes.llm_grad_rlvr.datasets import GpqaOpenEndedBuilder
 from tinker_cookbook.recipes.math_rl import (
     arithmetic_env,
     math_env,
