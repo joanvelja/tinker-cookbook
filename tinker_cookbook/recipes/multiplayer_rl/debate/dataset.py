@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import field
 from typing import TYPE_CHECKING, Sequence
 
@@ -52,6 +53,8 @@ class DebateDataset(RLDataset):
         scorer: AnswerJudgeClient | None = None,
         scorer_parallelism: int = 64,
         episode_log_dir: str | None = None,
+        shuffle_seed: int = 42,
+        n_epochs: int = 1,
     ) -> None:
         # Homogeneity validation: all problems must share scoring_mode.
         if problems:
@@ -84,12 +87,25 @@ class DebateDataset(RLDataset):
         self.scorer_parallelism = scorer_parallelism
         self.episode_log_dir = episode_log_dir
 
+        self.n_epochs = n_epochs
+        self._batches_per_epoch = (len(problems) + batch_size - 1) // batch_size
+
+        # Inter-epoch shuffle state
+        self._rng = random.Random(shuffle_seed)
+        self._shuffled_indices: list[int] = list(range(len(problems)))
+        self._current_epoch: int = -1  # force initial shuffle
+
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         if not self.problems:
             return []
-        start = (index * self.batch_size) % len(self.problems)
+        n = len(self.problems)
+        epoch = index // self._batches_per_epoch
+        if epoch != self._current_epoch:
+            self._current_epoch = epoch
+            self._rng.shuffle(self._shuffled_indices)
+        start = (index % self._batches_per_epoch * self.batch_size) % n
         batch_problems = [
-            self.problems[(start + i) % len(self.problems)] for i in range(self.batch_size)
+            self.problems[self._shuffled_indices[(start + i) % n]] for i in range(self.batch_size)
         ]
         return [
             DebateGroupBuilder(
@@ -113,7 +129,7 @@ class DebateDataset(RLDataset):
         ]
 
     def __len__(self) -> int:
-        return (len(self.problems) + self.batch_size - 1) // self.batch_size
+        return self._batches_per_epoch * self.n_epochs
 
 
 @chz.chz
@@ -124,7 +140,6 @@ class DebateDatasetBuilder(RLDatasetBuilder):
     renderer_name: str
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     num_rounds: int = 2
-    open_reasoning: bool = False
     include_judge_turns: bool = False
     batch_size: int = 4
     group_size: int = 1
@@ -140,7 +155,6 @@ class DebateDatasetBuilder(RLDatasetBuilder):
             protocol_kind=self.protocol_kind,
             num_rounds=self.num_rounds,
             prompts_ref=self.prompts_ref,
-            open_reasoning=self.open_reasoning,
             include_judge_turns=self.include_judge_turns,
         )
         train = DebateDataset(

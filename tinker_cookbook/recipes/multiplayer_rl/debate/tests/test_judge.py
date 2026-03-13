@@ -60,7 +60,6 @@ def _make_request() -> JudgeRequest:
             answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
         ),
         schedule=schedule,
-        open_reasoning=False,
     )
     transcript = (
         Utterance(

@@ -5,7 +5,7 @@ version: 2
 
 think:
   judge:
-    default: true
+    default: disabled
 
 opponent_wrap:
   debater: '"""{{ text }}"""'
@@ -71,7 +71,8 @@ user:
       identified in your reasoning. Do not change just because the other
       response sounds confident.
   judge:
-    final: ""
+    final: >-
+      Briefly analyze the key arguments, then give your decision.
 
 fields:
   debater_a:
@@ -86,7 +87,6 @@ fields:
       answer: {type: str, description: "your current best final answer"}
   judge:
     final:
-      reasoning: {type: str}
       decision: {type: str, description: "A, B, or tie", scoring: {mode: enum, values: [A, B, tie]}}
 
 _grader:

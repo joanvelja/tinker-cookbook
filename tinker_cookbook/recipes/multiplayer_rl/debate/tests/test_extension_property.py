@@ -28,7 +28,6 @@ def _initial_state(num_rounds: int = 2, prompts_ref: str = "default") -> DebateS
         scoring_mode=ScoringMode.MCQ,
         answer_by_role={Role.DEBATER_A: "4", Role.DEBATER_B: "5"},
         schedule=schedule,
-        open_reasoning=False,
         prompts_ref=prompts_ref,
     )
     return DebateState(
@@ -126,17 +125,19 @@ async def test_extension_property_strips_opponent_thinking():
 
     # Before B submits, check B's view: A's thinking should be stripped
     msgs, _ = build_generation_messages(runtime.state, Role.DEBATER_B)
-    opponent_msgs = [m for m in msgs if m["role"] == "user" and "opponent_turn" in m.get("content", "")]
+    opponent_msgs = [
+        m for m in msgs if m["role"] == "user" and "opponent_turn" in m.get("content", "")
+    ]
     assert len(opponent_msgs) >= 1
     assert "<think>" not in opponent_msgs[0]["content"], (
-        "Opponent thinking must be stripped when open_reasoning=False"
+        "Opponent thinking must be stripped when think_visibility is DISABLED"
     )
 
 
 @pytest.mark.asyncio
 async def test_extension_property_selfplay_prompts():
     """Extension property holds with selfplay prompts (which have non-empty user templates)."""
-    state = _initial_state(num_rounds=2, prompts_ref="selfplay")
+    state = _initial_state(num_rounds=2, prompts_ref="open_selfplay_private")
     runtime = DebateRuntime(state)
     observations: list[list] = []
 
@@ -172,9 +173,14 @@ async def test_extension_property_gpqa_open_prompts():
         prompts_ref="open_balanced",
     )
     state = DebateState(
-        spec=spec, slot_index=0, rounds_completed=0,
-        transcript=(), pending_simultaneous={},
-        judge_trace=(), done=False, outcome=None,
+        spec=spec,
+        slot_index=0,
+        rounds_completed=0,
+        transcript=(),
+        pending_simultaneous={},
+        judge_trace=(),
+        done=False,
+        outcome=None,
     )
     runtime = DebateRuntime(state)
     observations: list[list] = []
@@ -202,4 +208,6 @@ async def test_extension_property_gpqa_open_prompts():
     user_contents = [m["content"] for m in last_msgs if m["role"] == "user"]
     all_user_text = "\n".join(user_contents)
     assert "State your answer" in all_user_text, "propose instruction should be interleaved"
-    assert "Identify the most important" in all_user_text, "critique instruction should be interleaved"
+    assert "Identify the most important" in all_user_text, (
+        "critique instruction should be interleaved"
+    )

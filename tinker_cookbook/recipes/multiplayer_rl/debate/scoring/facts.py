@@ -13,11 +13,7 @@ from ..prompts import BinaryJudgeTemplate, DebatePrompts, normalize_binary_verdi
 from ..types import DebateState, Phase, Role, ScoringMode
 from ..think import has_think_block
 from .mcq import normalize_mcq
-from .metrics import (
-    _extract_thinking_text,
-    _parse_think_answer_strict,
-    parse_success,
-)
+from .metrics import parse_success
 from .providers import AnswerJudgeClient
 from .trajectory import answer_from_utterance
 
@@ -40,11 +36,9 @@ class TranscriptSummary:
     final_answers: dict[Role, str | None]
     answers_by_round: dict[Role, list[str | None]]
     non_null_answers: dict[Role, list[str]]
-    think_answers: dict[Role, str | None]
     parse_success_count: dict[Role, int]
     total_utterance_count: dict[Role, int]
     think_block_count: dict[Role, int]
-    parseable_think_count: dict[Role, int]
 
 
 def summarize_transcript(state: DebateState) -> TranscriptSummary:
@@ -52,12 +46,12 @@ def summarize_transcript(state: DebateState) -> TranscriptSummary:
     schedule = state.spec.schedule
     num_rounds = max((s.round_index for s in schedule), default=0) + 1
 
-    answers_by_round: dict[Role, list[str | None]] = {r: [None] * num_rounds for r in _DEBATER_ROLES}
+    answers_by_round: dict[Role, list[str | None]] = {
+        r: [None] * num_rounds for r in _DEBATER_ROLES
+    }
     parse_success_count: dict[Role, int] = {r: 0 for r in _DEBATER_ROLES}
     total_utterance_count: dict[Role, int] = {r: 0 for r in _DEBATER_ROLES}
     think_block_count: dict[Role, int] = {r: 0 for r in _DEBATER_ROLES}
-    parseable_think_count: dict[Role, int] = {r: 0 for r in _DEBATER_ROLES}
-    latest_think_answer: dict[Role, str | None] = {r: None for r in _DEBATER_ROLES}
     last_answer: dict[Role, str | None] = {r: None for r in _DEBATER_ROLES}
 
     for u in state.transcript:
@@ -75,12 +69,6 @@ def summarize_transcript(state: DebateState) -> TranscriptSummary:
 
         if has_think_block(u.text):
             think_block_count[role] += 1
-            reasoning = _extract_thinking_text(u.text)
-            if reasoning is not None:
-                parsed = _parse_think_answer_strict(reasoning)
-                if parsed is not None:
-                    parseable_think_count[role] += 1
-                    latest_think_answer[role] = parsed
 
     non_null_answers: dict[Role, list[str]] = {}
     for role in _DEBATER_ROLES:
@@ -91,11 +79,9 @@ def summarize_transcript(state: DebateState) -> TranscriptSummary:
         final_answers=last_answer,
         answers_by_round=answers_by_round,
         non_null_answers=non_null_answers,
-        think_answers=latest_think_answer,
         parse_success_count=parse_success_count,
         total_utterance_count=total_utterance_count,
         think_block_count=think_block_count,
-        parseable_think_count=parseable_think_count,
     )
 
 
@@ -352,7 +338,11 @@ async def resolve_debate_facts_for_states(
     for state in states:
         summary = summarize_transcript(state)
         question = state.spec.problem.task_prompt
-        prompts = _prompts(state.spec.prompts_ref) if state.spec.problem.scoring_mode == ScoringMode.OPEN_ENDED else None
+        prompts = (
+            _prompts(state.spec.prompts_ref)
+            if state.spec.problem.scoring_mode == ScoringMode.OPEN_ENDED
+            else None
+        )
         equivalence_keys: set[MatcherKey] = set()
         correctness_keys: set[GraderKey] = set()
 
@@ -416,31 +406,6 @@ async def resolve_debate_facts_for_states(
                             prompts=prompts,
                         )
                     )
-                think_answer = summary.think_answers[role]
-                if think_answer is not None:
-                    correctness_keys.add(
-                        _schedule_correctness(
-                            state,
-                            think_answer,
-                            target,
-                            question=question,
-                            prompts=prompts,
-                        )
-                    )
-
-        for role in _DEBATER_ROLES:
-            think_answer = summary.think_answers[role]
-            public_answer = summary.final_answers[role]
-            if think_answer is not None and public_answer is not None:
-                equivalence_keys.add(
-                    _schedule_equivalence(
-                        state,
-                        think_answer,
-                        public_answer,
-                        question=question,
-                        prompts=prompts,
-                    )
-                )
 
         plans.append(
             _StatePlan(
@@ -478,7 +443,10 @@ async def resolve_debate_facts_for_states(
         for key, result in zip(tasks, results, strict=True):
             if isinstance(result, BinaryJudgeError):
                 logger.warning(
-                    "Skipping %s key %s: %s", kind, key, result,
+                    "Skipping %s key %s: %s",
+                    kind,
+                    key,
+                    result,
                 )
                 skipped += 1
             elif isinstance(result, BaseException):
@@ -494,10 +462,14 @@ async def resolve_debate_facts_for_states(
 
     try:
         matcher_errors = await _collect(
-            equivalence_tasks, equivalence_results, kind="matcher",
+            equivalence_tasks,
+            equivalence_results,
+            kind="matcher",
         )
         grader_errors = await _collect(
-            correctness_tasks, correctness_results, kind="grader",
+            correctness_tasks,
+            correctness_results,
+            kind="grader",
         )
     except Exception:
         outstanding = [*equivalence_tasks.values(), *correctness_tasks.values()]
@@ -527,12 +499,8 @@ async def resolve_debate_facts_for_states(
 
         plan_telemetry = dict(telemetry)
         if not strict:
-            plan_telemetry["missing_equivalence_keys"] = (
-                len(plan.equivalence_keys) - len(eq_dict)
-            )
-            plan_telemetry["missing_correctness_keys"] = (
-                len(plan.correctness_keys) - len(corr_dict)
-            )
+            plan_telemetry["missing_equivalence_keys"] = len(plan.equivalence_keys) - len(eq_dict)
+            plan_telemetry["missing_correctness_keys"] = len(plan.correctness_keys) - len(corr_dict)
 
         resolved.append(
             ResolvedDebateFacts(
@@ -564,7 +532,9 @@ def _lookup_correctness(
 ) -> bool | None:
     if response is None or state.spec.problem.target is None:
         return None
-    key = _grader_key(facts.scoring_mode, state.spec.problem.task_prompt, state.spec.problem.target, response)
+    key = _grader_key(
+        facts.scoring_mode, state.spec.problem.task_prompt, state.spec.problem.target, response
+    )
     return facts.correctness.get(key)
 
 
@@ -642,20 +612,6 @@ def built_in_metric_values(
             summary.think_block_count[Role.DEBATER_B],
             summary.total_utterance_count[Role.DEBATER_B],
         ),
-        "think_answer_parse_rate.debater_a": _safe_ratio(
-            summary.parseable_think_count[Role.DEBATER_A],
-            summary.think_block_count[Role.DEBATER_A],
-        ),
-        "think_answer_parse_rate.debater_b": _safe_ratio(
-            summary.parseable_think_count[Role.DEBATER_B],
-            summary.think_block_count[Role.DEBATER_B],
-        ),
-        "think_public_answer_match.debater_a": None,
-        "think_public_answer_match.debater_b": None,
-        "think_correct_public_wrong.debater_a": None,
-        "think_correct_public_wrong.debater_b": None,
-        "think_wrong_public_correct.debater_a": None,
-        "think_wrong_public_correct.debater_b": None,
     }
 
     if a_correct is True or b_correct is True:
@@ -691,7 +647,12 @@ def built_in_metric_values(
             values["loss_rate.debater_b"] = 0.0
         values["draw_rate"] = 1.0 if winner is None else 0.0
 
-        if final_same is False and a_correct is not None and b_correct is not None and a_correct != b_correct:
+        if (
+            final_same is False
+            and a_correct is not None
+            and b_correct is not None
+            and a_correct != b_correct
+        ):
             correct_winner = Role.DEBATER_A if a_correct else Role.DEBATER_B
             values["truth_win_if_disagreement"] = 1.0 if winner == correct_winner else 0.0
 
@@ -703,7 +664,9 @@ def built_in_metric_values(
         lost = values[f"loss_rate.{role_name}"]
         if final_correct is not None and won is not None:
             values[f"correct_and_wins.{role_name}"] = 1.0 if (final_correct and won == 1.0) else 0.0
-            values[f"wrong_and_wins.{role_name}"] = 1.0 if ((not final_correct) and won == 1.0) else 0.0
+            values[f"wrong_and_wins.{role_name}"] = (
+                1.0 if ((not final_correct) and won == 1.0) else 0.0
+            )
         if final_correct is not None and lost is not None:
             values[f"correct_and_loses.{role_name}"] = (
                 1.0 if (final_correct and lost == 1.0) else 0.0
@@ -735,37 +698,21 @@ def built_in_metric_values(
                 last_correct = _lookup_correctness(facts, state, last)
                 if first_correct is not None and last_correct is not None:
                     values[f"debater_accuracy_delta.{role_name}"] = (
-                        (1.0 if last_correct else 0.0) - (1.0 if first_correct else 0.0)
-                    )
+                        1.0 if last_correct else 0.0
+                    ) - (1.0 if first_correct else 0.0)
                 same = _lookup_equivalence(facts, state, first, last)
                 if first_correct is not None and same is not None:
                     if same:
                         values[f"concession_correctness.{role_name}"] = 0.0
                     else:
-                        values[f"concession_correctness.{role_name}"] = 1.0 if not first_correct else -1.0
-
-        think_answer = summary.think_answers[role]
-        public_answer = summary.final_answers[role]
-        same = _lookup_equivalence(facts, state, think_answer, public_answer)
-        if same is not None:
-            values[f"think_public_answer_match.{role_name}"] = 1.0 if same else 0.0
-        if state.spec.problem.target is not None:
-            think_correct = _lookup_correctness(facts, state, think_answer)
-            public_correct = _lookup_correctness(facts, state, public_answer)
-            if think_correct is not None and public_correct is not None:
-                values[f"think_correct_public_wrong.{role_name}"] = (
-                    1.0 if (think_correct and not public_correct) else 0.0
-                )
-                values[f"think_wrong_public_correct.{role_name}"] = (
-                    1.0 if ((not think_correct) and public_correct) else 0.0
-                )
+                        values[f"concession_correctness.{role_name}"] = (
+                            1.0 if not first_correct else -1.0
+                        )
 
     rounds_a = summary.answers_by_round[Role.DEBATER_A]
     rounds_b = summary.answers_by_round[Role.DEBATER_B]
     prior_all_resolved = True  # All earlier non-None rounds resolved to False
-    for round_index, (answer_a, answer_b) in enumerate(
-        zip(rounds_a, rounds_b, strict=False)
-    ):
+    for round_index, (answer_a, answer_b) in enumerate(zip(rounds_a, rounds_b, strict=False)):
         if answer_a is None or answer_b is None:
             continue
         same = _lookup_equivalence(facts, state, answer_a, answer_b)

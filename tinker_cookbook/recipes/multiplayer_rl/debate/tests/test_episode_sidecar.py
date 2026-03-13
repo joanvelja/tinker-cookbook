@@ -54,7 +54,6 @@ def _make_state(
             target=target,
         ),
         schedule=schedule,
-        open_reasoning=False,
         protocol_kind=ProtocolKind.SEQUENTIAL,
         prompts_ref="default",
     )
@@ -133,7 +132,10 @@ def _make_builder_with_mock_envs(
     renderer = MagicMock()
     builder = DebateGroupBuilder(
         problem=DebateProblemSpec.from_seat_answers(
-            "What is 2+2?", "A", "B", ScoringMode.MCQ,
+            "What is 2+2?",
+            "A",
+            "B",
+            ScoringMode.MCQ,
         ),
         game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
         renderer=renderer,
@@ -292,17 +294,6 @@ class TestSchemaValidation:
                 assert entry["identity"] == "trained"
             else:
                 assert entry["identity"] == "opponent"
-
-    def test_think_trained_none_without_thinking(self):
-        """answers.think_trained is None when no <thinking> block present."""
-        record = self._get_record(with_thinking=False)
-        assert record["answers"]["think_trained"] is None
-
-    def test_think_trained_populated_with_thinking(self):
-        """answers.think_trained is populated when <thinking> block present."""
-        record = self._get_record(with_thinking=True)
-        # The thinking text is "The answer is B" -> strict parser should extract "B"
-        assert record["answers"]["think_trained"] == "B"
 
     def test_signals_only_id_prefixed_frozen_opp(self):
         """In frozen-opp mode, signals dict contains only id/ prefixed keys."""

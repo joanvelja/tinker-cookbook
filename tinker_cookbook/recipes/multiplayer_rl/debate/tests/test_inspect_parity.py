@@ -4,7 +4,7 @@ Validates:
 - Lint cleanliness (run externally)
 - GPQAAdapter free_debate mode emits empty answer strings
 - Metric extraction bug fix (metric_name used as key, not score_result.name)
-- open_reasoning parameter threading through solver/eval/spec
+- think_visibility derived from prompts (replaces open_reasoning)
 - randomize_position parameter threading and store persistence
 - Identity-aware scoring (id/ prefixed keys, remap correctness)
 - Default values match training expectations
@@ -48,6 +48,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     Phase,
     ProtocolKind,
     Role,
+    ThinkVisibility,
     Utterance,
 )
 
@@ -57,18 +58,25 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
 # ---------------------------------------------------------------------------
 
 
+_ALL_OPEN: dict[Role, ThinkVisibility] = {
+    Role.DEBATER_A: ThinkVisibility.OPEN,
+    Role.DEBATER_B: ThinkVisibility.OPEN,
+    Role.JUDGE: ThinkVisibility.OPEN,
+}
+
+
 def _make_spec(
     *,
     target: str | None = "A",
     num_rounds: int = 2,
-    open_reasoning: bool = True,
+    think_visibility: dict[Role, ThinkVisibility] | None = None,
     prompts_ref: str = "scientific_mcq",
 ) -> DebateSpec:
     return make_spec(
         debate_id="parity-test-001",
         target=target,
         num_rounds=num_rounds,
-        open_reasoning=open_reasoning,
+        think_visibility=think_visibility or _ALL_OPEN,
         prompts_ref=prompts_ref,
     )
 
@@ -623,10 +631,6 @@ class TestDefaultValues:
     def test_judge_max_tokens_default(self, builder):
         """Default judge_max_tokens should be 4096."""
         assert builder.judge_max_tokens == 4096
-
-    def test_open_reasoning_default_false(self, builder):
-        """Default open_reasoning should be False."""
-        assert builder.open_reasoning is False
 
     def test_randomize_position_default_true(self, builder):
         """Default randomize_position should be True."""

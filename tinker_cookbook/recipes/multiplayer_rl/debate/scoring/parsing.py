@@ -103,7 +103,7 @@ def generate_format_instructions(fields: Mapping[str, FieldSpec]) -> str:
             lines.append(f"<{name}>{scoring.true_value} or {scoring.false_value}</{name}>")
         elif isinstance(scoring, EnumScoring):
             vals = ", ".join(scoring.values)
-            lines.append(f"<{name}>{vals}</{name}>")
+            lines.append(f"<{name}> YOUR {name.upper()} </{name}>  (exactly one of: {vals})")
         elif isinstance(scoring, NumericScoring):
             lines.append(f"<{name}>number between {scoring.min_val} and {scoring.max_val}</{name}>")
         elif spec.description:

@@ -21,7 +21,7 @@ from tinker_cookbook.rl.types import (
 from tinker_cookbook.completers import MessageCompleter
 from tinker_cookbook.renderers import Renderer
 
-from .scoring.metrics import MetricFn, _latest_think_answer, mcq_debate_metrics
+from .scoring.metrics import MetricFn, mcq_debate_metrics
 from .scoring.trajectory import final_answer
 from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
 from .prompts import check_ab_symmetry, resolve_prompts
@@ -57,10 +57,6 @@ IDENTITY_REMAP_BASES = [
     "wrong_and_loses",
     "parse_success",
     "think_block_rate",
-    "think_answer_parse_rate",
-    "think_public_answer_match",
-    "think_correct_public_wrong",
-    "think_wrong_public_correct",
 ]
 
 
@@ -199,7 +195,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
                 "debate_id": state.spec.debate_id,
                 "protocol_kind": state.spec.protocol_kind.value,
                 "prompts_ref": state.spec.prompts_ref,
-                "open_reasoning": state.spec.open_reasoning,
+                "think_visibility": state.spec.encode_think_visibility(),
                 "target": state.spec.problem.target,
                 "winner": (
                     state.outcome.winner.value if state.outcome and state.outcome.winner else None
@@ -220,12 +216,6 @@ class DebateGroupBuilder(EnvGroupBuilder):
                             f"public_{Role.DEBATER_B.value}": final_answer(
                                 state, role=Role.DEBATER_B
                             ),
-                            f"think_{Role.DEBATER_A.value}": _latest_think_answer(
-                                state, Role.DEBATER_A
-                            ),
-                            f"think_{Role.DEBATER_B.value}": _latest_think_answer(
-                                state, Role.DEBATER_B
-                            ),
                         },
                         "signals": dict(metrics),
                     }
@@ -239,8 +229,6 @@ class DebateGroupBuilder(EnvGroupBuilder):
                         "answers": {
                             "public_trained": final_answer(state, role=this_role),
                             "public_opponent": final_answer(state, role=other_role),
-                            "think_trained": _latest_think_answer(state, this_role),
-                            "think_opponent": _latest_think_answer(state, other_role),
                         },
                         "signals": {k: v for k, v in metrics.items() if k.startswith("id/")},
                     }
@@ -352,11 +340,12 @@ class DebateGroupBuilder(EnvGroupBuilder):
         return envs
 
     def _make_runtime(self, schedule: tuple) -> DebateRuntime:
+        prompts = resolve_prompts(self.game.prompts_ref)
         spec = DebateSpec(
             debate_id=uuid.uuid4().hex,
             problem=self.problem,
             schedule=schedule,
-            open_reasoning=self.game.open_reasoning,
+            think_visibility=prompts.get_think_visibility(),
             protocol_kind=self.game.protocol_kind,
             prompts_ref=self.game.prompts_ref,
         )

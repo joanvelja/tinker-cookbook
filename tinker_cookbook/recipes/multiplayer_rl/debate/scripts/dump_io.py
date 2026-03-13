@@ -85,22 +85,20 @@ def dump_debate(
     prompts_ref: str = "default",
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL,
     num_rounds: int = 2,
-    open_reasoning: bool = False,
     task_prompt: str = "Is mathematics discovered or invented? Provide your strongest argument.",
     answer_a: str = "discovered",
     answer_b: str = "invented",
 ) -> None:
-    resolve_prompts(prompts_ref)  # validate prompts_ref early
+    prompts = resolve_prompts(prompts_ref)
     schedule = build_schedule(protocol_kind, num_rounds)
+    think_visibility = prompts.get_think_visibility()
 
-    problem = DebateProblemSpec.from_seat_answers(
-        task_prompt, answer_a, answer_b, ScoringMode.MCQ
-    )
+    problem = DebateProblemSpec.from_seat_answers(task_prompt, answer_a, answer_b, ScoringMode.MCQ)
     spec = DebateSpec(
         debate_id="dump-io-test",
         problem=problem,
         schedule=schedule,
-        open_reasoning=open_reasoning,
+        think_visibility=think_visibility,
         protocol_kind=protocol_kind,
         prompts_ref=prompts_ref,
     )
@@ -124,7 +122,7 @@ def dump_debate(
     print(f"  prompts_ref:    {prompts_ref}")
     print(f"  protocol:       {protocol_kind.value}")
     print(f"  num_rounds:     {num_rounds}")
-    print(f"  open_reasoning: {open_reasoning}")
+    print(f"  think_visibility: {spec.encode_think_visibility()}")
     print(f"  schedule:       {len(schedule)} slots")
     print(f"  task_prompt:    {task_prompt[:80]}...")
     print(sep)
@@ -270,12 +268,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--protocol", default="sequential", choices=[k.value for k in ProtocolKind])
     parser.add_argument("--rounds", type=int, default=2)
-    parser.add_argument("--open-reasoning", action="store_true")
     args = parser.parse_args()
 
     dump_debate(
         prompts_ref=args.prompts,
         protocol_kind=ProtocolKind(args.protocol),
         num_rounds=args.rounds,
-        open_reasoning=args.open_reasoning,
     )

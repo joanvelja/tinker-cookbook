@@ -109,11 +109,15 @@ def classify_binary(value: Any, true_value: str, false_value: str) -> BinaryClas
 
 
 def classify_enum(value: Any, values: tuple[str, ...]) -> EnumClassification:
-    """Classify value against enum set. Exact-after-canon only, no prefix fallback."""
+    """Classify value against enum set. Exact match first, then first-token fallback."""
     canon_map = {_canon_enum(v): v for v in values}
     s = _canon_enum(str(value))
     if s in canon_map:
         return EnumClassification(canonical=canon_map[s], is_valid=True)
+    # First-token fallback: "A, B, tie" → try "A"; "Expert A wins" → try "expert"
+    first = s.split()[0].strip(_BINARY_STRIP_CHARS) if s else ""
+    if first in canon_map:
+        return EnumClassification(canonical=canon_map[first], is_valid=True)
     return EnumClassification(canonical=None, is_valid=False)
 
 

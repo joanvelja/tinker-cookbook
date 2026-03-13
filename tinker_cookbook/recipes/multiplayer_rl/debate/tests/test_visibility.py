@@ -13,6 +13,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     ProtocolKind,
     Role,
     ScoringMode,
+    ThinkVisibility,
     TurnSlot,
     Utterance,
     VisibilityPolicy,
@@ -27,19 +28,20 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.core.visibility import (
     build_generation_messages,
     completed_rounds_only,
     get_visible_messages,
+    should_see_thinking,
 )
 from tinker_cookbook.renderers import Message
 
 
 def _make_spec(
     schedule: tuple[TurnSlot, ...],
-    open_reasoning: bool = False,
+    think_visibility: dict[Role, ThinkVisibility] | None = None,
 ) -> DebateSpec:
     return make_spec(
         task_prompt="Which is bigger, 2 or 3?",
         answer_by_role={Role.DEBATER_A: "2", Role.DEBATER_B: "3"},
         schedule=schedule,
-        open_reasoning=open_reasoning,
+        think_visibility=think_visibility,
     )
 
 
@@ -173,7 +175,7 @@ def test_completed_rounds_only_empty_first_round():
 
 def test_wrap_opponent_turn_format():
     utt = _utt(Role.DEBATER_A, 0, "my argument")
-    wrapped = _wrap_opponent_turn(utt, open_reasoning=True)
+    wrapped = _wrap_opponent_turn(utt, see_thinking=True)
     assert '<opponent_turn agent="A" phase="propose">' in wrapped
     assert "my argument" in wrapped
     assert "</opponent_turn>" in wrapped
@@ -181,14 +183,14 @@ def test_wrap_opponent_turn_format():
 
 def test_wrap_opponent_turn_strips_reasoning_closed():
     utt = _utt(Role.DEBATER_B, 0, "visible <think>secret</think> also visible")
-    wrapped = _wrap_opponent_turn(utt, open_reasoning=False)
+    wrapped = _wrap_opponent_turn(utt, see_thinking=False)
     assert "<think>" not in wrapped
     assert "visible" in wrapped
 
 
 def test_wrap_opponent_turn_keeps_reasoning_open():
     utt = _utt(Role.DEBATER_B, 0, "visible <think>kept</think> also visible")
-    wrapped = _wrap_opponent_turn(utt, open_reasoning=True)
+    wrapped = _wrap_opponent_turn(utt, see_thinking=True)
     assert "<think>" in wrapped
 
 
@@ -336,13 +338,13 @@ def test_get_visible_messages_opponent_wrapped():
 
 def _make_spec_no_stance(
     schedule: tuple[TurnSlot, ...],
-    open_reasoning: bool = False,
+    think_visibility: dict[Role, ThinkVisibility] | None = None,
 ) -> DebateSpec:
     return make_spec(
         task_prompt="Which is bigger, 2 or 3?",
         answer_by_role=None,
         schedule=schedule,
-        open_reasoning=open_reasoning,
+        think_visibility=think_visibility,
     )
 
 
@@ -387,7 +389,6 @@ def test_build_generation_messages_structure():
             answer_by_role={Role.DEBATER_A: "yes", Role.DEBATER_B: "no"},
         ),
         schedule=schedule,
-        open_reasoning=False,
     )
     transcript = (_utt(Role.DEBATER_A, 0, "A argues", slot_id=0),)
     state = _make_state(spec, transcript=transcript, slot_index=1, rounds_completed=0)
@@ -482,7 +483,6 @@ prefill:
                 answer_by_role={Role.DEBATER_A: "yes", Role.DEBATER_B: "no"},
             ),
             schedule=build_schedule(ProtocolKind.SEQUENTIAL, 1),
-            open_reasoning=False,
             prompts_ref=f.name,
         )
         state = _make_state(spec)
@@ -504,7 +504,7 @@ prefill:
 def test_wrap_opponent_turn_fallback_no_prompts():
     """Without prompts/viewer, _wrap_opponent_turn uses hardcoded format."""
     utt = _utt(Role.DEBATER_A, 0, "hello")
-    wrapped = _wrap_opponent_turn(utt, open_reasoning=True)
+    wrapped = _wrap_opponent_turn(utt, see_thinking=True)
     assert '<opponent_turn agent="A" phase="propose">' in wrapped
     assert "hello" in wrapped
 
@@ -539,11 +539,15 @@ opponent_wrap:
         prompts = _rp(f.name)
         utt = _utt(Role.DEBATER_A, 0, "my argument")
         # Debater viewer: raw text
-        wrapped_debater = _wrap_opponent_turn(utt, open_reasoning=True, prompts=prompts, viewer=Role.DEBATER_B)
+        wrapped_debater = _wrap_opponent_turn(
+            utt, see_thinking=True, prompts=prompts, viewer=Role.DEBATER_B
+        )
         assert wrapped_debater == "my argument"
         assert "<opponent_turn" not in wrapped_debater
         # Judge viewer: wrapped with custom template
-        wrapped_judge = _wrap_opponent_turn(utt, open_reasoning=True, prompts=prompts, viewer=Role.JUDGE)
+        wrapped_judge = _wrap_opponent_turn(
+            utt, see_thinking=True, prompts=prompts, viewer=Role.JUDGE
+        )
         assert 'from="Expert A"' in wrapped_judge
         assert "my argument" in wrapped_judge
     finally:
@@ -591,7 +595,6 @@ opponent_wrap:
                 answer_by_role={Role.DEBATER_A: "yes", Role.DEBATER_B: "no"},
             ),
             schedule=schedule,
-            open_reasoning=False,
             prompts_ref=f.name,
         )
         transcript = (
@@ -601,7 +604,9 @@ opponent_wrap:
         state = _make_state(spec, transcript=transcript, slot_index=2, rounds_completed=1)
         # Debater B sees A's turn as raw text
         msgs_b = get_visible_messages(state, Role.DEBATER_B)
-        opponent_msg = [m for m in msgs_b if m["role"] == "user" and "A argues" in str(m.get("content", ""))]
+        opponent_msg = [
+            m for m in msgs_b if m["role"] == "user" and "A argues" in str(m.get("content", ""))
+        ]
         assert len(opponent_msg) == 1
         assert "<opponent_turn" not in opponent_msg[0]["content"]
         assert opponent_msg[0]["content"] == "A argues"
@@ -615,3 +620,34 @@ opponent_wrap:
 
         os.unlink(f.name)
         _rp.cache_clear()
+
+
+# --- should_see_thinking ---
+
+
+def test_should_see_thinking_disabled():
+    """DISABLED: nobody sees thinking."""
+    assert not should_see_thinking(ThinkVisibility.DISABLED, Role.DEBATER_A, Role.DEBATER_A)
+    assert not should_see_thinking(ThinkVisibility.DISABLED, Role.DEBATER_A, Role.DEBATER_B)
+    assert not should_see_thinking(ThinkVisibility.DISABLED, Role.DEBATER_A, Role.JUDGE)
+
+
+def test_should_see_thinking_private():
+    """PRIVATE: only the speaker sees their own thinking."""
+    assert should_see_thinking(ThinkVisibility.PRIVATE, Role.DEBATER_A, Role.DEBATER_A)
+    assert not should_see_thinking(ThinkVisibility.PRIVATE, Role.DEBATER_A, Role.DEBATER_B)
+    assert not should_see_thinking(ThinkVisibility.PRIVATE, Role.DEBATER_A, Role.JUDGE)
+
+
+def test_should_see_thinking_visible_to_judge():
+    """VISIBLE_TO_JUDGE: speaker + judge see thinking."""
+    assert should_see_thinking(ThinkVisibility.VISIBLE_TO_JUDGE, Role.DEBATER_A, Role.DEBATER_A)
+    assert not should_see_thinking(ThinkVisibility.VISIBLE_TO_JUDGE, Role.DEBATER_A, Role.DEBATER_B)
+    assert should_see_thinking(ThinkVisibility.VISIBLE_TO_JUDGE, Role.DEBATER_A, Role.JUDGE)
+
+
+def test_should_see_thinking_open():
+    """OPEN: everyone sees thinking."""
+    assert should_see_thinking(ThinkVisibility.OPEN, Role.DEBATER_A, Role.DEBATER_A)
+    assert should_see_thinking(ThinkVisibility.OPEN, Role.DEBATER_A, Role.DEBATER_B)
+    assert should_see_thinking(ThinkVisibility.OPEN, Role.DEBATER_A, Role.JUDGE)

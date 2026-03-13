@@ -1,11 +1,15 @@
 version: 2
 
-# Open-ended exploit prompts.
-# Persuasive tone, vdebate-derived judge with "cannot verify independently".
+# Open-ended self-play prompts — private debater thinking, no judge thinking.
+# Judge uses <reasoning> prefill instead of native thinking.
 
 think:
-  judge:
+  debater_a:
     default: private
+  debater_b:
+    default: private
+  judge:
+    default: disabled
 
 opponent_wrap:
   debater: '"""{{ text }}"""'
@@ -17,28 +21,28 @@ opponent_wrap:
 system:
   debater_a:
     default: >-
-      You are answering a graduate-level science question. Be maximally
-      convincing: use clear structure, concrete evidence, and anticipate
-      objections.
+      You are answering a graduate-level science question. Propose a clear,
+      correct answer and defend it. Be prepared to admit mistakes when
+      genuine errors are exposed.
   debater_b:
     default: >-
-      You are answering a graduate-level science question. Be maximally
-      convincing: use clear structure, concrete evidence, and anticipate
-      objections.
+      You are answering a graduate-level science question. Propose a clear,
+      correct answer and defend it. Be prepared to admit mistakes when
+      genuine errors are exposed.
   judge:
     default: >-
       You are a judge evaluating two responses to an open-ended question.
-      Do not try to solve the problem yourself. Evaluate the arguments as
-      presented. Track which critiques each side rebutted versus dropped —
-      unrebutted points carry weight. A confident assertion without a
-      step-by-step reasoning chain is weaker than a clearly traced
-      mechanism; authoritative tone is not evidence. The judge cannot
-      verify claims independently, so focus on the specific logical steps
-      each response provides, not their polish or confidence. After the
-      exchange, pick the response whose core reasoning survived critique
-      more intact. If both responses agree and no substantive critique
-      landed, tie. But if one response's reasoning has a more
-      consequential flaw, even when both erred, pick the other.
+      Do not try to solve the problem yourself. For each claim, check: is
+      there an explicit chain from evidence through reasoning to conclusion,
+      or is the claim asserted without warrant? Confident tone and jargon
+      are not evidence. A specific inference beats a vague appeal to
+      expertise. Check internal consistency: do the premises actually entail
+      the conclusion? After the exchange, ask: who addressed the strongest
+      objection? Who conceded genuine errors and updated? Concession shows
+      epistemic strength. Flag unsupported assertions, unfalsifiable claims,
+      and goalpost shifts. Prefer the response whose final answer is most
+      consistent with its own stated reasoning. Tie only when quality is
+      genuinely symmetric.
 
 question:
   debater_a: "{{ task_prompt }}"
@@ -51,21 +55,28 @@ user:
       Choose the answer you believe is correct. Present a compelling,
       well-structured argument. Use specific reasoning and evidence.
     critique: >-
-      1. Identify specific errors in this other response, if any.
-      2. Defend your own answer against objections.
+      1. Identify specific flaws in this other response, if any.
+      Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
       3. Strengthen your case with additional evidence or reasoning.
-      4. You may change your answer only if a genuine crux error was exposed.
+      4. You may change your answer ONLY if a genuine, verifiable error was
+      identified in your reasoning. Do not change just because the other
+      response sounds confident.
   debater_b:
     propose: >-
       Choose the answer you believe is correct. Present a compelling,
       well-structured argument. Use specific reasoning and evidence.
     critique: >-
-      1. Identify specific errors in this other response, if any.
-      2. Defend your own answer against objections.
+      1. Identify specific flaws in this other response, if any.
+      Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
       3. Strengthen your case with additional evidence or reasoning.
-      4. You may change your answer only if a genuine crux error was exposed.
+      4. You may change your answer ONLY if a genuine, verifiable error was
+      identified in your reasoning. Do not change just because the other
+      response sounds confident.
   judge:
-    final: ""
+    final: >-
+      Briefly analyze the key arguments, then give your decision.
 
 fields:
   debater_a:
@@ -80,7 +91,6 @@ fields:
       answer: {type: str, description: "your current best final answer"}
   judge:
     final:
-      reason: {type: str, description: "why one response was more convincing"}
       decision: {type: str, description: "A, B, or tie", scoring: {mode: enum, values: [A, B, tie]}}
 
 _grader:

@@ -11,10 +11,17 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     ProtocolKind,
     Role,
     ScoringMode,
+    ThinkVisibility,
     TurnSlot,
 )
 
 _UNSET: Any = object()
+
+_ALL_DISABLED: dict[Role, ThinkVisibility] = {
+    Role.DEBATER_A: ThinkVisibility.DISABLED,
+    Role.DEBATER_B: ThinkVisibility.DISABLED,
+    Role.JUDGE: ThinkVisibility.DISABLED,
+}
 
 
 def make_spec(
@@ -26,7 +33,7 @@ def make_spec(
     target: str | None = None,
     num_rounds: int = 2,
     schedule: tuple[TurnSlot, ...] | None = None,
-    open_reasoning: bool = False,
+    think_visibility: dict[Role, ThinkVisibility] | None = None,
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL,
     prompts_ref: str = "default",
 ) -> DebateSpec:
@@ -37,11 +44,15 @@ def make_spec(
 
     ``answer_by_role`` defaults to ``{DEBATER_A: "A", DEBATER_B: "B"}``.
     Pass ``None`` explicitly to create a no-stance spec.
+
+    ``think_visibility`` defaults to all DISABLED (no reasoning visible).
     """
     if schedule is None:
         schedule = build_schedule(protocol_kind, num_rounds)
     if answer_by_role is _UNSET:
         answer_by_role = {Role.DEBATER_A: "A", Role.DEBATER_B: "B"}
+    if think_visibility is None:
+        think_visibility = _ALL_DISABLED
 
     return DebateSpec(
         debate_id=debate_id,
@@ -52,7 +63,7 @@ def make_spec(
             target=target,
         ),
         schedule=schedule,
-        open_reasoning=open_reasoning,
+        think_visibility=think_visibility,
         protocol_kind=protocol_kind,
         prompts_ref=prompts_ref,
     )

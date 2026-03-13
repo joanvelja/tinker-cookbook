@@ -105,7 +105,6 @@ def _state(
             target=target,
         ),
         schedule=_schedule_2_rounds(),
-        open_reasoning=False,
         protocol_kind=ProtocolKind.SEQUENTIAL,
         prompts_ref=prompts_ref,
     )
@@ -301,9 +300,7 @@ async def test_open_ended_missing_grader_fails_fast():
             "semantic_prompts_missing_grader.yaml"
         ),
         scoring_mode=ScoringMode.OPEN_ENDED,
-        transcript=(
-            _utt(Role.DEBATER_A, 0, Phase.PROPOSE, "A", answer="H2O", slot_id=0),
-        ),
+        transcript=(_utt(Role.DEBATER_A, 0, Phase.PROPOSE, "A", answer="H2O", slot_id=0),),
         winner=Role.DEBATER_A,
     )
 
@@ -369,7 +366,9 @@ async def test_group_builder_open_ended_selfplay_scores_shared_runtime_once():
             answer_by_role=None,
             target="water",
         ),
-        game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=2, prompts_ref=state.spec.prompts_ref),
+        game=DebateGameSpec(
+            ProtocolKind.SEQUENTIAL, num_rounds=2, prompts_ref=state.spec.prompts_ref
+        ),
         renderer=MagicMock(),
         scorer=client,
     )

@@ -5,6 +5,8 @@ Treatment MaxRL (per-role + maxrl). Shows reward trajectory and verbosity drift.
 n=1 per arm. Entropy collapse was uniform across arms (not shown).
 """
 
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -45,13 +47,22 @@ handles = []
 for name in reward:
     s = styles[name]
     (h,) = ax1.plot(
-        batches, reward[name], color=s["color"], linestyle=s["linestyle"],
-        marker=s["marker"], label=name, **line_kw,
+        batches,
+        reward[name],
+        color=s["color"],
+        linestyle=s["linestyle"],
+        marker=s["marker"],
+        label=name,
+        **line_kw,
     )
     handles.append(h)
     ax2.plot(
-        batches, tokens[name], color=s["color"], linestyle=s["linestyle"],
-        marker=s["marker"], **line_kw,
+        batches,
+        tokens[name],
+        color=s["color"],
+        linestyle=s["linestyle"],
+        marker=s["marker"],
+        **line_kw,
     )
 
 # --- Panel A: reward ---
@@ -66,12 +77,16 @@ ax2.axvspan(5, 20, alpha=0.12, color="#888888", zorder=0)
 # Baseline reference: mean of Control tokens (batches 5-30, post-init)
 ctrl_baseline = np.mean(tokens["Control"][1:])
 ax2.axhline(ctrl_baseline, color="#999999", lw=0.7, linestyle=":", zorder=1)
-ax2.text(30.5, ctrl_baseline - 1.5, "ctrl mean", fontsize=7, color="#777777",
-         va="top", ha="right")
+ax2.text(30.5, ctrl_baseline - 1.5, "ctrl mean", fontsize=7, color="#777777", va="top", ha="right")
 
 # Drift window label with white background for contrast
 ax2.text(
-    12.5, 42, "drift window", fontsize=8, color="#444444", ha="center",
+    12.5,
+    42,
+    "drift window",
+    fontsize=8,
+    color="#444444",
+    ha="center",
     bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.8),
 )
 
@@ -81,8 +96,16 @@ ax2.set_xlim(-1.5, 31.5)
 
 # Panel labels
 for label, ax in [("A", ax1), ("B", ax2)]:
-    ax.text(0.03, 0.96, label, transform=ax.transAxes, fontsize=12,
-            fontweight="bold", ha="left", va="top")
+    ax.text(
+        0.03,
+        0.96,
+        label,
+        transform=ax.transAxes,
+        fontsize=12,
+        fontweight="bold",
+        ha="left",
+        va="top",
+    )
 
 # Legend above panels
 fig.legend(
@@ -98,8 +121,6 @@ fig.legend(
 )
 
 fig.tight_layout(rect=[0, 0.04, 1, 0.92])
-
-import os
 
 outdir = "tinker_cookbook/recipes/multiplayer_rl/debate/figures"
 os.makedirs(outdir, exist_ok=True)

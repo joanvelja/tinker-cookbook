@@ -22,11 +22,18 @@ from ..types import (
     PHASE_DONE,
     Phase,
     Role,
+    ThinkVisibility,
     TRIGGER_BOUNDARY,
     TRIGGER_FINAL,
     current_phase,
 )
-from ..scoring.fields import EnumScoring, FieldSpec, _resolve_fields, validate_type_scoring, _TYPE_MAP
+from ..scoring.fields import (
+    EnumScoring,
+    FieldSpec,
+    _resolve_fields,
+    validate_type_scoring,
+    _TYPE_MAP,
+)
 from ..scoring.parsing import generate_format_instructions
 
 _PROMPTS_DIR = Path(__file__).parent
@@ -61,11 +68,26 @@ class BinaryJudgeTemplate:
 
 
 @dataclass(frozen=True)
+class ThinkConfig:
+    """Per-phase thinking configuration for a role."""
+
+    visibility: ThinkVisibility
+    tag: str = "thinking"
+
+
+_VISIBILITY_DESCRIPTIONS: dict[ThinkVisibility, str] = {
+    ThinkVisibility.PRIVATE: "Your reasoning is private — other participants will NOT see it.",
+    ThinkVisibility.VISIBLE_TO_JUDGE: "The judge will see your reasoning but your opponent will NOT.",
+    ThinkVisibility.OPEN: "All reasoning is visible to all participants.",
+}
+
+
+@dataclass(frozen=True)
 class DebatePrompts:
     system: dict[str, dict[str, jinja2.Template]]
     user: dict[str, dict[str, jinja2.Template]]
     question: dict[str, jinja2.Template]
-    think: dict[str, dict[str, bool | jinja2.Template]]
+    think: dict[str, dict[str, ThinkConfig]]
     prefill: dict[str, dict[str, jinja2.Template]]
     fields: dict[str, dict[str, dict[str, FieldSpec]]]
     content_hash: str
@@ -99,7 +121,7 @@ class DebatePrompts:
     def get_think_instruction(
         self, state: DebateState, viewer: Role, trigger: str | None = None
     ) -> str | None:
-        """Resolve think config + open_reasoning -> instruction string or None."""
+        """Resolve think config -> instruction string or None."""
         role = viewer.value
         if role not in self.think:
             return None
@@ -107,18 +129,26 @@ class DebatePrompts:
         phase = trigger or current_phase(state)
         if phase not in cfg:
             return None
-        val = cfg[phase]
-        if val is False or val is None:
+        tc = cfg[phase]
+        if tc.visibility == ThinkVisibility.DISABLED:
             return None
-        if val is True:
-            if state.spec.open_reasoning:
-                return "Use <thinking>...</thinking> tags for your reasoning. Note: all reasoning is visible to all participants."
-            else:
-                return "Use <thinking>...</thinking> tags for private reasoning that your opponent will NOT see."
-        # Custom template string
-        assert isinstance(val, jinja2.Template)
-        ctx = _build_context(state, viewer)
-        return _two_phase_render(val, ctx, state, viewer)
+        desc = _VISIBILITY_DESCRIPTIONS.get(tc.visibility, "")
+        return f"Use <{tc.tag}>...</{tc.tag}> tags for your reasoning. {desc}"
+
+    def get_think_visibility(self) -> dict[Role, ThinkVisibility]:
+        """Extract uniform non-DISABLED visibility per role from think config."""
+        result: dict[Role, ThinkVisibility] = {}
+        for role_str, phases in self.think.items():
+            role = Role(role_str)
+            visibilities = {
+                tc.visibility for tc in phases.values() if tc.visibility != ThinkVisibility.DISABLED
+            }
+            if visibilities:
+                assert len(visibilities) == 1, (
+                    f"Mixed visibility for {role_str} should have been caught at load time"
+                )
+                result[role] = next(iter(visibilities))
+        return result
 
     def render_prefill(
         self, state: DebateState, viewer: Role, trigger: str | None = None
@@ -236,15 +266,13 @@ def check_ab_symmetry(prompts: DebatePrompts) -> list[str]:
                 f"{section_name}: debater_a phases {sorted(a_keys)} != debater_b phases {sorted(b_keys)}"
             )
 
-    # think (heterogeneous): normalize shape before comparing
+    # think: compare phase key sets (values are now ThinkConfig)
     if prompts.think:
         a_think = prompts.think.get("debater_a", {})
         b_think = prompts.think.get("debater_b", {})
-        a_shape = {k: type(v).__name__ for k, v in a_think.items()}
-        b_shape = {k: type(v).__name__ for k, v in b_think.items()}
-        if set(a_shape.keys()) != set(b_shape.keys()):
+        if set(a_think.keys()) != set(b_think.keys()):
             warnings.append(
-                f"think: debater_a phases {sorted(a_shape.keys())} != debater_b phases {sorted(b_shape.keys())}"
+                f"think: debater_a phases {sorted(a_think.keys())} != debater_b phases {sorted(b_think.keys())}"
             )
 
     # fields: compare trigger→field-name sets per role
@@ -284,6 +312,9 @@ def _build_context(state: DebateState, viewer: Role) -> dict:
     answer_by_role = state.spec.problem.answer_by_role
     has_assigned = bool(answer_by_role and viewer in answer_by_role and answer_by_role[viewer])
 
+    _tv = state.spec.think_visibility
+    _viewer_vis = _tv.get(viewer, ThinkVisibility.DISABLED)
+
     return {
         "task_prompt": _sentinel("task_prompt"),
         "viewer_role": viewer.value,
@@ -296,9 +327,8 @@ def _build_context(state: DebateState, viewer: Role) -> dict:
         "answer": _sentinel("answer"),
         "answer_a": _sentinel("answer_a"),
         "answer_b": _sentinel("answer_b"),
-        "open_reasoning": state.spec.open_reasoning,
         "has_assigned_answer": has_assigned,
-        "reasoning_is_private": not state.spec.open_reasoning,
+        "think_visibility": _viewer_vis.value,
     }
 
 
@@ -388,9 +418,7 @@ def _validate_binary_judge_blocks(d: dict) -> None:
         if negative is None:
             raise ValueError(f"{block_name}.negative: expected non-empty verdict token")
         if positive == negative:
-            raise ValueError(
-                f"{block_name}: positive/negative must normalize to distinct verdicts"
-            )
+            raise ValueError(f"{block_name}: positive/negative must normalize to distinct verdicts")
 
 
 # ---------------------------------------------------------------------------
@@ -445,20 +473,37 @@ def _validate(d: dict) -> None:
 
     # Validate think config types.
     think_block = d.get("think", {})
+    _think_reserved = {"tag", "visibility"}
     for role, val in think_block.items():
         if role not in _ROLE_NAMES:
             raise ValueError(f"Unknown role '{role}' in think")
-        if isinstance(val, (bool, str)):
+        if val is True:
+            raise ValueError(
+                f"think.{role}: bare `true` is not allowed — "
+                "specify a ThinkVisibility string (private, visible_to_judge, open) or false"
+            )
+        if val is False or isinstance(val, str):
             pass  # scalar OK
         elif isinstance(val, dict):
-            _check_no_default_mixing(val, f"think.{role}")
+            phase_keys = {k for k in val if k not in _think_reserved}
+            if phase_keys:
+                _check_no_default_mixing({k: val[k] for k in phase_keys}, f"think.{role}")
             for phase, v in val.items():
+                if phase in _think_reserved:
+                    continue  # reserved keys validated in _normalize_think
+                if v is True:
+                    raise ValueError(
+                        f"think.{role}.{phase}: bare `true` is not allowed — "
+                        "specify a ThinkVisibility string or false"
+                    )
                 if not isinstance(v, (bool, str)):
                     raise ValueError(
-                        f"think.{role}.{phase}: expected bool or str, got {type(v).__name__}"
+                        f"think.{role}.{phase}: expected false or str, got {type(v).__name__}"
                     )
         else:
-            raise ValueError(f"think.{role}: expected bool, str, or dict, got {type(val).__name__}")
+            raise ValueError(
+                f"think.{role}: expected false, str, or dict, got {type(val).__name__}"
+            )
 
     # Validate field tag names.
     for role, triggers in d.get("fields", {}).items():
@@ -510,7 +555,11 @@ def _validate(d: dict) -> None:
                 f"found {len(enum_fields)}: {names}"
             )
         enum_tag, enum_props = enum_fields[0]
-        enum_values = enum_props["scoring"].get("values", []) if isinstance(enum_props["scoring"], dict) else []
+        enum_values = (
+            enum_props["scoring"].get("values", [])
+            if isinstance(enum_props["scoring"], dict)
+            else []
+        )
         bad_values = set(enum_values) - allowed_values
         if bad_values:
             raise ValueError(
@@ -532,7 +581,9 @@ def _validate(d: dict) -> None:
         valid_keys = {"debater", "judge"}
         extra = set(ow) - valid_keys
         if extra:
-            raise ValueError(f"opponent_wrap: unknown keys {sorted(extra)} (expected 'debater' and/or 'judge')")
+            raise ValueError(
+                f"opponent_wrap: unknown keys {sorted(extra)} (expected 'debater' and/or 'judge')"
+            )
         for key, val in ow.items():
             if not isinstance(val, str):
                 raise ValueError(f"opponent_wrap.{key}: expected str, got {type(val).__name__}")
@@ -554,26 +605,126 @@ def _compile_flat_templates(block: dict[str, str]) -> dict[str, jinja2.Template]
     return {role: _jinja_env.from_string(tmpl_str) for role, tmpl_str in block.items()}
 
 
-def _normalize_think(block: dict) -> dict[str, dict[str, bool | jinja2.Template]]:
-    result: dict[str, dict[str, bool | jinja2.Template]] = {}
+def _parse_think_leaf(val: object, path: str, tag: str = "thinking") -> ThinkConfig:
+    """Parse a leaf think value into ThinkConfig."""
+    if val is False:
+        return ThinkConfig(visibility=ThinkVisibility.DISABLED, tag=tag)
+    if isinstance(val, str):
+        try:
+            vis = ThinkVisibility(val)
+        except ValueError:
+            raise ValueError(f"{path}: unknown ThinkVisibility '{val}'") from None
+        return ThinkConfig(visibility=vis, tag=tag)
+    raise ValueError(f"{path}: expected false or ThinkVisibility string, got {type(val).__name__}")
+
+
+def _normalize_think(block: dict) -> dict[str, dict[str, ThinkConfig]]:
+    _RESERVED_KEYS = {"tag", "visibility"}
+
+    result: dict[str, dict[str, ThinkConfig]] = {}
     for role, val in block.items():
-        if isinstance(val, bool):
-            result[role] = {"default": val}
-        elif isinstance(val, str):
-            result[role] = {"default": _jinja_env.from_string(val)}
-        elif isinstance(val, dict):
-            result[role] = {}
-            for phase, v in val.items():
-                if isinstance(v, bool):
-                    result[role][phase] = v
-                elif isinstance(v, str):
-                    result[role][phase] = _jinja_env.from_string(v) if v else False
-                else:
+        if val is True:
+            raise ValueError(
+                f"think.{role}: bare `true` is not allowed — "
+                "specify a ThinkVisibility string (private, visible_to_judge, open) or false"
+            )
+        if val is False:
+            result[role] = {"default": ThinkConfig(visibility=ThinkVisibility.DISABLED)}
+            continue
+        if isinstance(val, str):
+            tc = _parse_think_leaf(val, f"think.{role}")
+            result[role] = {"default": tc}
+            continue
+        if isinstance(val, dict):
+            # Extract reserved keys
+            tag = val.get("tag", "thinking")
+            if not isinstance(tag, str):
+                raise ValueError(f"think.{role}.tag: expected str, got {type(tag).__name__}")
+            role_visibility_str = val.get("visibility")
+            role_visibility: ThinkVisibility | None = None
+            if role_visibility_str is not None:
+                if not isinstance(role_visibility_str, str):
                     raise ValueError(
-                        f"think.{role}.{phase}: expected bool or str, got {type(v).__name__}"
+                        f"think.{role}.visibility: expected str, got {type(role_visibility_str).__name__}"
                     )
-        else:
-            raise ValueError(f"think.{role}: expected bool, str, or dict, got {type(val).__name__}")
+                try:
+                    role_visibility = ThinkVisibility(role_visibility_str)
+                except ValueError:
+                    raise ValueError(
+                        f"think.{role}.visibility: unknown ThinkVisibility '{role_visibility_str}'"
+                    ) from None
+
+            phase_keys = {k for k in val if k not in _RESERVED_KEYS}
+
+            if not phase_keys and role_visibility is not None:
+                # Role-level visibility, no per-phase overrides → apply to all phases
+                result[role] = {"default": ThinkConfig(visibility=role_visibility, tag=tag)}
+                continue
+
+            if not phase_keys and role_visibility is None:
+                # Empty dict with just tag → disabled
+                result[role] = {
+                    "default": ThinkConfig(visibility=ThinkVisibility.DISABLED, tag=tag)
+                }
+                continue
+
+            # Per-phase overrides
+            if role_visibility is not None:
+                # Pre-populate ALL lookup keys with role-level default, then override
+                result[role] = {
+                    k: ThinkConfig(visibility=role_visibility, tag=tag) for k in _ALL_LOOKUP_KEYS
+                }
+            else:
+                result[role] = {}
+
+            for phase_key in phase_keys:
+                phase_val = val[phase_key]
+                if phase_val is True:
+                    raise ValueError(
+                        f"think.{role}.{phase_key}: bare `true` is not allowed — "
+                        "specify a ThinkVisibility string or false"
+                    )
+                if role_visibility is not None:
+                    # Role-level visibility set: phase values are enablement bools/strings
+                    if phase_val is False:
+                        result[role][phase_key] = ThinkConfig(
+                            visibility=ThinkVisibility.DISABLED, tag=tag
+                        )
+                    elif isinstance(phase_val, str):
+                        # Phase-specific visibility override
+                        tc = _parse_think_leaf(phase_val, f"think.{role}.{phase_key}", tag=tag)
+                        result[role][phase_key] = tc
+                    else:
+                        raise ValueError(
+                            f"think.{role}.{phase_key}: expected false or ThinkVisibility string, "
+                            f"got {type(phase_val).__name__}"
+                        )
+                else:
+                    # No role-level visibility — infer from phase values
+                    result[role][phase_key] = _parse_think_leaf(
+                        phase_val, f"think.{role}.{phase_key}", tag=tag
+                    )
+            continue
+
+        raise ValueError(f"think.{role}: expected false, str, or dict, got {type(val).__name__}")
+
+    # Post-parse validation: uniform visibility per role, uniform tag per role
+    for role_str, phases in result.items():
+        visibilities = {
+            tc.visibility for tc in phases.values() if tc.visibility != ThinkVisibility.DISABLED
+        }
+        if len(visibilities) > 1:
+            raise ValueError(
+                f"think.{role_str}: mixed non-DISABLED visibility values {sorted(v.value for v in visibilities)}. "
+                "All enabled phases for a role must share the same visibility."
+            )
+        tags = {tc.tag for tc in phases.values()}
+        if len(tags) > 1:
+            raise ValueError(
+                f"think.{role_str}: mixed tag values {sorted(tags)}. "
+                "All phases for a role must use the same tag."
+            )
+
     return result
 
 
