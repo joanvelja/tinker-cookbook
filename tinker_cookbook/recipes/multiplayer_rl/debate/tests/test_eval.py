@@ -931,7 +931,13 @@ def test_evaluator_builder_defaults():
 
 @pytest.mark.asyncio
 async def test_metric_extraction_uses_metric_name():
-    """Evaluator extracts all metrics by metric_name, not score_result.name."""
+    """Evaluator keys metrics by score_result.name, not aggregation fn name.
+
+    Inspect decomposes dict-valued Scores into individual score_result objects:
+      score_result.name = "accuracy.debater_a"
+      score_result.metrics = {"mean": EvalMetric(value=0.8)}
+    The evaluator must key by score_result.name, not "mean".
+    """
     from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
         DebateInspectEvaluatorBuilder,
     )
@@ -945,37 +951,74 @@ async def test_metric_extraction_uses_metric_name():
     evaluator = builder()
     mock_sampling = MagicMock()
 
-    # Create mock score_result with 3 distinct metrics
-    mock_score_result = MagicMock()
-    mock_score_result.name = "debate_scorer"
-    mock_metric_a = MagicMock()
-    mock_metric_a.value = 0.8
-    mock_metric_b = MagicMock()
-    mock_metric_b.value = 0.6
-    mock_metric_c = MagicMock()
-    mock_metric_c.value = 0.9
-    mock_score_result.metrics = {
-        "accuracy.debater_a": mock_metric_a,
-        "judge_quality": mock_metric_b,
-        "truth_surfaced": mock_metric_c,
-    }
+    # Mock Inspect's actual output: one score_result per metric key,
+    # each with metrics={"mean": EvalMetric(value=...)}.
+    def _make_score_result(name: str, value: float):
+        sr = MagicMock()
+        sr.name = name
+        m = MagicMock()
+        m.value = value
+        sr.metrics = {"mean": m}
+        return sr
 
     mock_task_result = MagicMock()
     mock_task_result.results = MagicMock()
-    mock_task_result.results.scores = [mock_score_result]
+    mock_task_result.results.scores = [
+        _make_score_result("accuracy.debater_a", 0.8),
+        _make_score_result("judge_quality", 0.6),
+        _make_score_result("truth_surfaced", 0.9),
+        _make_score_result("id/win_rate.trained", 0.55),
+    ]
 
     stack, mock_eval = _patch_evaluator_externals()
     mock_eval.return_value = [mock_task_result]
     with stack:
         metrics = await evaluator(mock_sampling)
 
-    # All 3 metrics should be present (bug was: only last metric survived)
-    assert "accuracy.debater_a" in metrics
-    assert "judge_quality" in metrics
-    assert "truth_surfaced" in metrics
     assert metrics["accuracy.debater_a"] == 0.8
     assert metrics["judge_quality"] == 0.6
     assert metrics["truth_surfaced"] == 0.9
+    assert metrics["id/win_rate.trained"] == 0.55
+
+
+@pytest.mark.asyncio
+async def test_metric_extraction_filters_nan():
+    """Evaluator drops NaN metric values (e.g. from disabled metric families)."""
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+
+    adapter = _dummy_adapter()
+    builder = DebateInspectEvaluatorBuilder(
+        adapter=adapter,
+        renderer_name="qwen3",
+        model_name="Qwen/Qwen3-4B-Instruct-2507",
+    )
+    evaluator = builder()
+    mock_sampling = MagicMock()
+
+    def _make_score_result(name: str, value: float):
+        sr = MagicMock()
+        sr.name = name
+        m = MagicMock()
+        m.value = value
+        sr.metrics = {"mean": m}
+        return sr
+
+    mock_task_result = MagicMock()
+    mock_task_result.results = MagicMock()
+    mock_task_result.results.scores = [
+        _make_score_result("accuracy.debater_a", 0.8),
+        _make_score_result("dead_metric", float("nan")),
+    ]
+
+    stack, mock_eval = _patch_evaluator_externals()
+    mock_eval.return_value = [mock_task_result]
+    with stack:
+        metrics = await evaluator(mock_sampling)
+
+    assert metrics["accuracy.debater_a"] == 0.8
+    assert "dead_metric" not in metrics
 
 
 # ---------------------------------------------------------------------------

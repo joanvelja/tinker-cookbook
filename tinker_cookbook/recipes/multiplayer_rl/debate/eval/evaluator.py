@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import tempfile
 from typing import TYPE_CHECKING
@@ -37,11 +38,11 @@ class DebateInspectEvaluatorBuilder:
     prompts_ref: str = "judge_exploit"
     num_rounds: int = 2
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
-    open_reasoning: bool = False
     randomize_position: bool = True
 
     opponent_model: str | None = None  # None = self-play
     judge_model: str = "Qwen/Qwen3-4B-Instruct-2507"
+    judge_renderer_name: str | None = None
     opponent_max_tokens: int = 8192
     judge_max_tokens: int = 4096
     renderer_name: str | None = None
@@ -89,9 +90,7 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
 
         debater_reasoning_effort = cfg.debater_reasoning_effort or cfg.reasoning_effort
         opponent_reasoning_effort = (
-            cfg.opponent_reasoning_effort
-            or cfg.debater_reasoning_effort
-            or cfg.reasoning_effort
+            cfg.opponent_reasoning_effort or cfg.debater_reasoning_effort or cfg.reasoning_effort
         )
         judge_reasoning_effort = cfg.judge_reasoning_effort or cfg.reasoning_effort
 
@@ -144,7 +143,7 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             )
 
         # Judge completer — always gets its own sampling client.
-        judge_name = model_info.get_recommended_renderer_name(
+        judge_name = cfg.judge_renderer_name or model_info.get_recommended_renderer_name(
             cfg.judge_model, reasoning_effort=judge_reasoning_effort
         )
         judge_renderer = get_renderer(judge_name, get_tokenizer(cfg.judge_model))
@@ -184,7 +183,6 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             protocol_kind=cfg.protocol_kind,
             num_rounds=cfg.num_rounds,
             prompts_ref=cfg.prompts_ref,
-            open_reasoning=cfg.open_reasoning,
             randomize_position=cfg.randomize_position,
             scorer_client=scorer_client,
             scorer_parallelism=scorer_parallelism,
@@ -222,6 +220,9 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
                 )
 
         # Extract metrics from results.
+        # Inspect decomposes dict-valued Scores into per-key EvalScorer objects:
+        #   score_result.name = metric key (e.g. "accuracy.debater_a")
+        #   score_result.metrics = {"mean": EvalMetric(value=...)}
         metrics: dict[str, float] = {}
         for task_result in results:
             if task_result.results is None or task_result.results.scores is None:
@@ -229,8 +230,9 @@ class DebateInspectEvaluator(SamplingClientEvaluator):
             for score_result in task_result.results.scores:
                 if score_result.name is None:
                     continue
-                for metric_name, metric in score_result.metrics.items():
-                    metrics[metric_name] = metric.value
+                for metric in score_result.metrics.values():
+                    if not math.isnan(metric.value):
+                        metrics[score_result.name] = metric.value
 
         logger.info(f"Debate eval metrics (call #{self._call_count}): {metrics}")
         return metrics

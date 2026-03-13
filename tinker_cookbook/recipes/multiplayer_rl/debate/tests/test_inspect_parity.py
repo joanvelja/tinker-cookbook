@@ -300,69 +300,60 @@ class TestDriveTurnStructuredContent:
 
 
 class TestMetricExtraction:
-    """Verify evaluator metric extraction uses metric_name, not score_result.name."""
+    """Verify evaluator keys metrics by score_result.name (the metric key).
+
+    Inspect decomposes dict-valued Scores into per-key EvalScorer objects:
+      score_result.name = "accuracy.debater_a"
+      score_result.metrics = {"mean": EvalMetric(value=0.8)}
+    The evaluator must key by score_result.name, not "mean".
+    """
 
     def test_metric_extraction_source_code(self):
-        """Static check: the metric extraction loop uses metric_name as dict key."""
+        """Static check: metrics are keyed by score_result.name."""
         import tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator as mod
 
         source = inspect.getsource(mod.DebateInspectEvaluator.__call__)
         tree = ast.parse(textwrap.dedent(source))
 
-        # Find: for metric_name, metric in score_result.metrics.items():
-        #            metrics[metric_name] = metric.value
-        # The bug was: metrics[score_result.name] = metric.value
+        # The correct pattern: metrics[score_result.name] = metric.value
         found_correct = False
-        found_bug = False
-
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
-                    if isinstance(target, ast.Subscript):
-                        # Check what the subscript key is
-                        if isinstance(target.slice, ast.Name):
-                            if target.slice.id == "metric_name":
-                                found_correct = True
-                            # The bug pattern: score_result.name as key
-                        if isinstance(target.slice, ast.Attribute):
-                            if (
-                                isinstance(target.slice.value, ast.Name)
-                                and target.slice.value.id == "score_result"
-                                and target.slice.attr == "name"
-                            ):
-                                found_bug = True
+                    if isinstance(target, ast.Subscript) and isinstance(
+                        target.slice, ast.Attribute
+                    ):
+                        if (
+                            isinstance(target.slice.value, ast.Name)
+                            and target.slice.value.id == "score_result"
+                            and target.slice.attr == "name"
+                        ):
+                            found_correct = True
 
-        assert found_correct, "metric_name should be used as dict key in metric extraction loop"
-        assert not found_bug, (
-            "score_result.name must NOT be used as dict key (last-metric-wins bug)"
-        )
+        assert found_correct, "score_result.name should be used as dict key in metric extraction"
 
     @pytest.mark.asyncio
     async def test_metric_extraction_mock_3_metrics(self):
-        """Mock score_result with 3 metrics; verify all 3 appear in output."""
+        """Mock Inspect's per-key score_result objects; verify all appear in output."""
         from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
             DebateInspectEvaluatorBuilder,
         )
 
-        # Build mock eval result with 3 metrics under one score_result
-        mock_metric_a = MagicMock()
-        mock_metric_a.value = 0.75
-        mock_metric_b = MagicMock()
-        mock_metric_b.value = 0.5
-        mock_metric_c = MagicMock()
-        mock_metric_c.value = 0.9
-
-        mock_score_result = MagicMock()
-        mock_score_result.name = "debate_scorer"  # This was the bug key
-        mock_score_result.metrics = {
-            "accuracy.debater_a": mock_metric_a,
-            "judge_quality": mock_metric_b,
-            "truth_surfaced": mock_metric_c,
-        }
+        def _make_score_result(name: str, value: float):
+            sr = MagicMock()
+            sr.name = name
+            m = MagicMock()
+            m.value = value
+            sr.metrics = {"mean": m}
+            return sr
 
         mock_task_result = MagicMock()
         mock_task_result.results = MagicMock()
-        mock_task_result.results.scores = [mock_score_result]
+        mock_task_result.results.scores = [
+            _make_score_result("accuracy.debater_a", 0.75),
+            _make_score_result("judge_quality", 0.5),
+            _make_score_result("truth_surfaced", 0.9),
+        ]
 
         adapter = MagicMock()
         adapter.to_samples.return_value = [
@@ -392,64 +383,44 @@ class TestMetricExtraction:
         ):
             metrics = await evaluator(MagicMock())
 
-        # All 3 metrics must appear with correct keys (not collapsed to "debate_scorer")
         assert len(metrics) == 3, f"Expected 3 metrics, got {len(metrics)}: {metrics}"
         assert metrics["accuracy.debater_a"] == 0.75
         assert metrics["judge_quality"] == 0.5
         assert metrics["truth_surfaced"] == 0.9
-        # The bug would produce: {"debate_scorer": 0.9} (only last metric)
-        assert "debate_scorer" not in metrics
 
 
 # ===================================================================
-# 3. open_reasoning parameter threading
+# 3. think_visibility derived from prompts
 # ===================================================================
 
 
-class TestOpenReasoningThreading:
-    def test_debate_solver_accepts_open_reasoning(self):
-        """debate_solver has open_reasoning in its signature."""
-        sig = inspect.signature(debate_solver)
-        assert "open_reasoning" in sig.parameters
-
-    def test_debate_eval_accepts_open_reasoning(self):
-        """debate_eval has open_reasoning in its signature."""
-        sig = inspect.signature(debate_eval)
-        assert "open_reasoning" in sig.parameters
-
-    def test_evaluator_builder_has_open_reasoning(self):
-        """DebateInspectEvaluatorBuilder has open_reasoning field."""
-        import typing
-
-        assert hasattr(DebateInspectEvaluatorBuilder, "open_reasoning")
-        hints = typing.get_type_hints(DebateInspectEvaluatorBuilder)
-        assert "open_reasoning" in hints
-
-    def test_solver_threads_open_reasoning_to_spec(self):
-        """Static check: solver builds DebateSpec with open_reasoning param, not hardcoded."""
+class TestThinkVisibilityDerivedFromPrompts:
+    def test_solver_derives_think_visibility_from_prompts(self):
+        """Static check: solver derives think_visibility from prompts.get_think_visibility()."""
         from tinker_cookbook.recipes.multiplayer_rl.debate.eval import inspect_task as mod
 
         source = inspect.getsource(mod.debate_solver)
-        # The spec construction should use the open_reasoning parameter
-        assert "open_reasoning=open_reasoning" in source, (
-            "DebateSpec should use the open_reasoning parameter, not a hardcoded value"
+        assert "get_think_visibility" in source, (
+            "Solver should derive think_visibility from prompts.get_think_visibility()"
         )
-        # It should NOT be hardcoded True
-        assert (
-            "open_reasoning=True" not in source.split("DebateSpec(")[1].split(")")[0]
-            if "DebateSpec(" in source
-            else True
-        )
+        assert "think_visibility" in source
 
-    def test_evaluator_threads_open_reasoning(self):
-        """Static check: evaluator passes open_reasoning from config to debate_eval."""
-        from tinker_cookbook.recipes.multiplayer_rl.debate.eval import evaluator as mod
+    def test_no_open_reasoning_in_solver(self):
+        """open_reasoning param is gone from solver."""
+        sig = inspect.signature(debate_solver)
+        assert "open_reasoning" not in sig.parameters
 
-        source = inspect.getsource(mod.DebateInspectEvaluator.__call__)
-        assert (
-            "open_reasoning=cfg.open_reasoning" in source
-            or "open_reasoning=self._config.open_reasoning" in source
-        )
+    def test_no_open_reasoning_in_eval(self):
+        """open_reasoning param is gone from eval."""
+        sig = inspect.signature(debate_eval)
+        assert "open_reasoning" not in sig.parameters
+
+    def test_no_open_reasoning_in_evaluator_builder(self):
+        """DebateInspectEvaluatorBuilder no longer has open_reasoning field."""
+        import typing
+
+        hints = typing.get_type_hints(DebateInspectEvaluatorBuilder)
+        assert "open_reasoning" not in hints
 
 
 # ===================================================================
