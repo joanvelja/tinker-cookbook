@@ -67,13 +67,14 @@ not 8×. Net throughput improvement: **~2-4× on sampling wall time**.
 
 ### Tier 2: More learning per sample-dollar
 
-**`num_substeps=K`** — Splits the batch into K mini-batches, does K gradient
-steps per sampling round. Each step trains on `batch_size/K` problems (single
-epoch, not repeated). Does NOT reduce wall time — adds K·t_train_per_substep.
-But since t_train << t_sample, the wall time increase is negligible while
-learning throughput increases K×. **Effectively K× faster convergence.**
+**`num_substeps=K`** — Splits the batch into K mini-batches, does K separate
+forward_backward + optim_step calls. Each step trains on `batch_size/K`
+problems. Same total data — NOT K× more learning. K smaller gradient steps
+≈ 1 large gradient step (same total signal, modulo noise).
 
-Start with K=2 for IS loss, K=2-4 for PPO. Higher risks off-distribution updates.
+**The real purpose is GPU memory**: if the full batch doesn't fit in one
+forward_backward call, split it. For B·G=64 this is unlikely to matter.
+Relevant when scaling to B·G=256+.
 
 ### Tier 3: Pipeline optimizations (single-digit %)
 
@@ -121,6 +122,9 @@ and `optim_step_async` are submitted together so they land on the same clock cyc
 | B (no-think) | 100 × 59s = **1.6h** | 100 × 84s = **2.3h** |
 | C (GPT-OSS) | 100 × 73s = **2.0h** | 100 × 104s = **2.9h** |
 
-### With `num_samples=G` + `num_substeps=2` (same wall time, 2× convergence)
+### With `num_samples=G` + larger B·G (same total samples, fewer batches)
 
-Equivalent to running 200 batches of learning in the wall time of 100 batches of sampling.
+Since t_sample is constant in B·G (all samples parallel), doubling B·G halves N
+for the same total training signal. Example: B=16, G=8 (128 samples/batch) with
+N=50 ≈ same wall time as B=8, G=8 (64 samples/batch) with N=100, but 2× the
+per-step gradient quality (larger effective batch).
