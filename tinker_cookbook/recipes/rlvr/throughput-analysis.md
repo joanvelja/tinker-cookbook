@@ -67,25 +67,37 @@ not 8×. Net throughput improvement: **~2-4× on sampling wall time**.
 
 ### Tier 2: More learning per sample-dollar
 
-**`num_substeps=K`** — Splits the batch into K mini-batches, does K separate
-forward_backward + optim_step calls. Each step trains on `batch_size/K`
-problems. Same total data — NOT K× more learning. K smaller gradient steps
-≈ 1 large gradient step (same total signal, modulo noise).
+**`num_substeps=K`** — K gradient steps per sampling round, each on a different
+slice of the batch. Crucially, each substep trains at UPDATED weights from the
+previous substep:
 
-**The real purpose is GPU memory**: if the full batch doesn't fit in one
-forward_backward call, split it. For B·G=64 this is unlikely to matter.
-Relevant when scaling to B·G=256+.
+```
+weights₀ → grad(chunk₁, w₀) → weights₁ → grad(chunk₂, w₁) → weights₂
+```
+
+Multiple SGD steps at updated weights converge faster than one large batch step
+(standard optimization theory). Cost: K extra clock cycles (~10s each). Benefit:
+>1× learning from the same expensive sampled data. At 97/3 sampling/training
+cost split, spending 6% (K=2) instead of 3% on training for meaningfully more
+learning is obviously worth it.
 
 ### Tier 3: Pipeline optimizations (single-digit %)
 
-**`StreamMinibatchConfig`** — Start training on completed trajectories while slow
-ones are still generating. Overlaps t_train with the tail of t_sample. Saves
-`min(t_train, variance_in_completion_time)` per batch. ~3-10% of t_batch.
+**`StreamMinibatchConfig`** — Start training on early-finishing groups while slow
+ones are still sampling. Eliminates dead clock cycles spent waiting for the tail.
+For thinking models with high variance in completion time (some finish at 2000
+tokens, some hit 8192), this is significant — the tail can be 3-5× slower than
+the median.
 
-**`AsyncConfig(max_steps_off_policy=K)`** — Fully decoupled sampling and training
-loops. While training on batch N, sampling for batch N+1 is already running.
-Saves ~t_train per batch (~3%). Start with max_steps_off_policy=1-2, monitor
-`kl_sample_train_v2`.
+**`AsyncConfig(max_steps_off_policy=K)`** — Fully decoupled sampling and training.
+Training loop grabs completed trajectories as they arrive — never waits for the
+slowest completion. For thinking models this eliminates tail-latency waste
+entirely. Cost: trajectories are slightly off-policy (sampled K steps ago).
+Monitor `kl_sample_train_v2` — stable training has KL < 0.01.
+
+Both exist because Tinker charges per token but schedules per clock cycle.
+Dead clock cycles (waiting for the tail, waiting between sampling and training)
+are wasted money.
 
 **`remove_constant_reward_groups=True`** — Skip groups where all G rollouts got
 the same reward (zero gradient signal). From smoke tests, ~25-50% of groups are
