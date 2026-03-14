@@ -52,6 +52,7 @@ class CLIConfig:
     load_checkpoint_path: str | None = None
     save_every: int = 20
     eval_every: int = 20
+    eval_on_start: bool = True
 
     # Advanced
     base_url: str | None = None
@@ -108,6 +109,7 @@ async def cli_main(cli_config: CLIConfig) -> None:
         base_url=cli_config.base_url,
         load_checkpoint_path=cli_config.load_checkpoint_path,
         eval_every=cli_config.eval_every,
+        eval_on_start=cli_config.eval_on_start,
         save_every=cli_config.save_every,
         sampling_max_connections=sampling_max_connections,
         kl_penalty_coef=cli_config.kl_penalty_coef,
