@@ -35,7 +35,8 @@ from tinker_cookbook.rl.metrics import (
     compute_sampling_client_metrics,
     incorporate_kl_penalty,
 )
-from tinker_cookbook.rl.rollouts import do_group_rollout
+from tinker_cookbook.rl.problem_env import ProblemGroupBuilder
+from tinker_cookbook.rl.rollouts import do_batched_group_rollout, do_group_rollout
 from tinker_cookbook.rl.types import (
     AdvantageScheme,
     EnvGroupBuilder,
@@ -849,17 +850,48 @@ async def do_group_rollout_and_filter_constant_reward(
     usage_tracker: UsageTracker | None = None,
     model_name: str = "",
 ) -> TrajectoryGroup | None:
-    policy = TinkerTokenCompleter(
-        sampling_client,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        usage_tracker=usage_tracker,
-        actor="trained",
-        model_name=model_name,
-    )
-
     with logtree.optional_enable_logging(enable_logging):
-        trajectory_group = await do_group_rollout(env_group_builder, policy)
+        # Use batched sampling for single-turn ProblemEnv groups.
+        # This makes ONE sample_async(num_samples=G) call instead of G separate calls,
+        # sharing the prompt KV-cache for 2-4x throughput.
+        if isinstance(env_group_builder, ProblemGroupBuilder):
+            # Get stop sequences from the env thunk (cheap — just reads renderer config)
+            probe_env = env_group_builder.env_thunk()
+            sampling_params = tinker.SamplingParams(
+                stop=probe_env.stop_condition,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            trajectory_group = await do_batched_group_rollout(
+                env_group_builder, sampling_client, sampling_params
+            )
+            if usage_tracker is not None:
+                # Approximate usage: prompt_len from first trajectory's ob,
+                # total output from all action lengths
+                first_traj = trajectory_group.trajectories_G[0]
+                prompt_len = first_traj.transitions[0].ob.length
+                total_output = sum(
+                    len(t.transitions[0].ac.tokens)
+                    for t in trajectory_group.trajectories_G
+                )
+                usage_tracker.record(
+                    UsageEvent(
+                        actor="trained",
+                        model_name=model_name,
+                        input_tokens=prompt_len,
+                        output_tokens=total_output,
+                    )
+                )
+        else:
+            policy = TinkerTokenCompleter(
+                sampling_client,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                usage_tracker=usage_tracker,
+                actor="trained",
+                model_name=model_name,
+            )
+            trajectory_group = await do_group_rollout(env_group_builder, policy)
 
     # Remove if all trajectories have the same reward
     if do_remove_constant_reward_groups and all_same(trajectory_group.get_total_rewards()):

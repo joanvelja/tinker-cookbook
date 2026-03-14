@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 class Grader(Protocol):
     async def grade(self, question: str, reference: str, extracted: str) -> GradeResult: ...
 
+    async def grade_batch(
+        self, requests: list[tuple[str, str, str]]
+    ) -> list[GradeResult]:
+        """Grade multiple (question, reference, extracted) tuples.
+
+        Default implementation fans out to individual ``grade`` calls.
+        """
+        return list(await asyncio.gather(*(self.grade(q, r, e) for q, r, e in requests)))
+
 
 # ---------------------------------------------------------------------------
 # Abstract config
@@ -144,3 +153,60 @@ class LLMGrader:
             raise
         except Exception as e:
             return GradeResult(correct=False, status="error", detail=f"Grading failed: {e}")
+
+    async def grade_batch(
+        self, requests: list[tuple[str, str, str]]
+    ) -> list[GradeResult]:
+        """Grade multiple answers in a single LLM call.
+
+        Falls back to individual ``grade`` calls if batch parsing fails.
+        """
+        n = len(requests)
+        if n == 0:
+            return []
+        if n == 1:
+            return [await self.grade(*requests[0])]
+
+        # Build batched prompt
+        lines = []
+        for i, (_question, reference, extracted) in enumerate(requests, 1):
+            lines.append(f"{i}. Target: {reference}, Response: {extracted}")
+        user_prompt = (
+            f"Grade each of the following {n} responses:\n\n"
+            + "\n".join(lines)
+            + f"\n\nRespond with exactly {n} lines, one per response, each either CORRECT or INCORRECT."
+        )
+
+        try:
+            raw = await self.client.complete(
+                system=self.config.system_prompt, user=user_prompt,
+            )
+            verdicts = self._parse_batch_response(raw, n)
+            if verdicts is not None:
+                return verdicts
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except Exception:
+            pass
+
+        # Fallback: individual calls
+        logger.warning("Batch grading parse failed (n=%d), falling back to individual calls", n)
+        return list(await asyncio.gather(*(self.grade(q, r, e) for q, r, e in requests)))
+
+    @staticmethod
+    def _parse_batch_response(raw: str, expected_n: int) -> list[GradeResult] | None:
+        """Parse N lines of CORRECT/INCORRECT. Returns None on failure."""
+        lines = [line.strip().upper() for line in raw.strip().splitlines() if line.strip()]
+        if len(lines) != expected_n:
+            return None
+        results: list[GradeResult] = []
+        for line in lines:
+            # Strip leading numbering like "1." or "1:"
+            cleaned = line.lstrip("0123456789").lstrip(".):- ").strip()
+            if cleaned == "CORRECT":
+                results.append(GradeResult(correct=True, status="correct"))
+            elif cleaned == "INCORRECT":
+                results.append(GradeResult(correct=False, status="incorrect"))
+            else:
+                return None  # Any ambiguous line -> abort batch parse
+        return results

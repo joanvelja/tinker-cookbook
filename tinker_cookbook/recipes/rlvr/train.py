@@ -14,7 +14,7 @@ from tinker.types import LossFnType
 from tinker_cookbook import checkpoint_utils, cli_utils
 from tinker_cookbook.hyperparam_utils import get_lr
 from tinker_cookbook.recipes.rlvr.builders import DATASET_BUILDER_MAP
-from tinker_cookbook.rl.train import AsyncConfig, Config, main
+from tinker_cookbook.rl.train import AsyncConfig, Config, StreamMinibatchConfig, main
 from tinker_cookbook.rl.types import AdvantageScheme
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,11 @@ class CLIConfig:
     compute_post_kl: bool = False
     loss_fn: LossFnType = "importance_sampling"
     loss_fn_config: dict[str, Any] | None = None
+    remove_constant_reward_groups: bool = False
+
+    # Stream minibatch settings
+    stream_groups_per_batch: int | None = None  # enables StreamMinibatchConfig when set
+    stream_num_minibatches: int = 2
 
 
 async def cli_main(cli_config: CLIConfig) -> None:
@@ -117,11 +122,18 @@ async def cli_main(cli_config: CLIConfig) -> None:
         num_substeps=cli_config.num_substeps,
         loss_fn=cli_config.loss_fn,
         loss_fn_config=cli_config.loss_fn_config,
+        remove_constant_reward_groups=cli_config.remove_constant_reward_groups,
         async_config=AsyncConfig(
             max_steps_off_policy=cli_config.max_steps_off_policy,
             groups_per_batch=cli_config.batch_size,
         )
         if cli_config.max_steps_off_policy is not None
+        else None,
+        stream_minibatch_config=StreamMinibatchConfig(
+            groups_per_batch=cli_config.stream_groups_per_batch,
+            num_minibatches=cli_config.stream_num_minibatches,
+        )
+        if cli_config.stream_groups_per_batch is not None
         else None,
     )
 
