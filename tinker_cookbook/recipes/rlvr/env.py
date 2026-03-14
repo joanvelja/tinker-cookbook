@@ -52,6 +52,7 @@ class RLVREnv(ProblemEnv):
         format_instruction: str = "",
         convo_prefix: list[renderers.Message] | None = None,
         format_coef: float = 0.1,
+        eos_coef: float = 0.0,
     ):
         super().__init__(renderer, convo_prefix, format_coef=format_coef)
         self.question = question
@@ -59,6 +60,7 @@ class RLVREnv(ProblemEnv):
         self.grader = grader
         self.extract_fn = extract_fn
         self.format_instruction = format_instruction
+        self.eos_coef = eos_coef
 
     def get_question(self) -> str:
         return self.question + self.format_instruction
@@ -85,30 +87,50 @@ class RLVREnv(ProblemEnv):
         message, parse_success = self.renderer.parse_response(action)
         content = renderers.get_text_content(message)
 
+        # Strip unclosed <think> blocks from truncated responses.
+        # When parse_success=False (truncation), the renderer may return raw
+        # text with an unclosed <think> tag. extract_fn would then find
+        # answers inside the thinking block, giving spurious rewards.
+        if not parse_success and "<think>" in content:
+            last_open = content.rfind("<think>")
+            if "</think>" not in content[last_open:]:
+                content = content[:last_open]
+
+        # Two independent format signals:
+        #   correct_boxed: did the model use the requested answer format (e.g. \boxed{})?
+        #   correct_eos:   did the response complete with a stop token (not truncated)?
+        correct_eos = float(parse_success)
+
         # Try extraction once
         try:
             extracted = self.extract_fn(content)
         except ValueError:
             # Extraction failed — skip grading entirely
-            correct_format = 0.0
+            correct_boxed = 0.0
             correct_answer = 0.0
             grade_status = "error"
             check_answer_s = 0.0
         else:
-            correct_format = float(parse_success)
+            correct_boxed = 1.0
             t0 = time.monotonic()
             result = await self.grader.grade(self.question, self.reference, extracted)
             check_answer_s = time.monotonic() - t0
             correct_answer = float(result.correct)
             grade_status = result.status
 
-        total_reward = self.format_coef * (correct_format - 1) + correct_answer
+        # reward = format_coef * (boxed - 1) + eos_coef * (eos - 1) + correct
+        total_reward = (
+            self.format_coef * (correct_boxed - 1)
+            + self.eos_coef * (correct_eos - 1)
+            + correct_answer
+        )
 
         logtree.log_text(f"Problem: {self.get_question()}")
         logtree.log_text(f"Response: {message['content']}")
         logtree.log_text(f"Reference Answer: {self.get_reference_answer()}")
         logtree.log_text(
-            f"Format Valid: {'\u2713' if correct_format else '\u2717'}, "
+            f"Boxed: {'\u2713' if correct_boxed else '\u2717'}, "
+            f"EOS: {'\u2713' if correct_eos else '\u2717'}, "
             f"Correct: {'\u2713' if correct_answer else '\u2717'}, "
             f"Reward: {total_reward:.2f}"
         )
@@ -119,7 +141,8 @@ class RLVREnv(ProblemEnv):
             next_observation=tinker.ModelInput.empty(),
             next_stop_condition=self.stop_condition,
             metrics={
-                "format": correct_format,
+                "format_boxed": correct_boxed,
+                "format_eos": correct_eos,
                 "correct": correct_answer,
                 "time/check_answer_s": check_answer_s,
             },
@@ -148,6 +171,7 @@ class RLVRDataset(RLDataset):
         dataset_name: str = "rlvr",
         n_batches: int | None = None,
         format_coef: float = 0.1,
+        eos_coef: float = 0.0,
     ):
         self.examples = examples
         self.batch_size = batch_size
@@ -160,6 +184,7 @@ class RLVRDataset(RLDataset):
         self.dataset_name = dataset_name
         self._n_batches = n_batches
         self.format_coef = format_coef
+        self.eos_coef = eos_coef
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         n = len(self.examples)
@@ -184,6 +209,7 @@ class RLVRDataset(RLDataset):
                     format_instruction=self.format_instruction,
                     convo_prefix=self.convo_prefix,
                     format_coef=self.format_coef,
+                    eos_coef=self.eos_coef,
                 ),
                 num_envs=self.group_size,
                 dataset_name=self.dataset_name,

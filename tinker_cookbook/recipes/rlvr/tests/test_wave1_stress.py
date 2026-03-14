@@ -192,8 +192,10 @@ class TestRewardParity:
         # format=1.0, answer=0.0 -> 0.1*(1-1) + 0.0 = 0.0
         assert result.reward == pytest.approx(0.0)
 
-    def test_failed_format_correct_answer(self):
-        """Parse fails but extraction succeeds + correct answer -> reward = 0.9."""
+    def test_failed_eos_correct_answer(self):
+        """Parse fails but extraction succeeds + correct answer.
+        With eos_coef=0.0 (default), truncation has no penalty.
+        format_boxed=1.0, correct=1.0 -> reward = 1.0."""
         grader = MockGrader(correct=True, status="correct")
         env = RLVREnv(
             question="q", reference="ref", renderer=FailParseRenderer(),
@@ -201,8 +203,8 @@ class TestRewardParity:
             format_coef=0.1,
         )
         result = _run(env.step(_tokens("<final_answer>42</final_answer>")))
-        # format=float(False)=0.0, answer=1.0 -> 0.1*(0-1)+1.0 = 0.9
-        assert result.reward == pytest.approx(0.9)
+        # boxed=1.0, eos=0.0, answer=1.0 -> 0.1*(1-1) + 0.0*(0-1) + 1.0 = 1.0
+        assert result.reward == pytest.approx(1.0)
 
     def test_failed_everything(self):
         """Extraction fails -> format=0, answer=0, reward = -format_coef."""
@@ -217,18 +219,32 @@ class TestRewardParity:
         assert result.reward == pytest.approx(-0.1)
 
     def test_reward_formula_custom_format_coef(self):
-        """Verify formula works with non-default format_coef."""
+        """Verify formula works with non-default format_coef (extraction fails)."""
         for fc in [0.0, 0.5, 1.0, 2.0]:
+            grader = MockGrader(correct=True, status="correct")
+            env = RLVREnv(
+                question="q", reference="ref", renderer=MockRenderer(),
+                grader=grader, extract_fn=extract_final_answer,
+                format_coef=fc,
+            )
+            result = _run(env.step(_tokens("no tags")))
+            # boxed=0.0, eos=1.0, answer=0.0 -> fc*(0-1) + 0.0*(1-1) + 0.0
+            expected = fc * (0.0 - 1.0)
+            assert result.reward == pytest.approx(expected), f"format_coef={fc}"
+
+    def test_reward_formula_custom_eos_coef(self):
+        """Verify eos_coef penalizes truncation independently."""
+        for ec in [0.0, 0.1, 0.5]:
             grader = MockGrader(correct=True, status="correct")
             env = RLVREnv(
                 question="q", reference="ref", renderer=FailParseRenderer(),
                 grader=grader, extract_fn=extract_final_answer,
-                format_coef=fc,
+                format_coef=0.1, eos_coef=ec,
             )
             result = _run(env.step(_tokens("<final_answer>42</final_answer>")))
-            # format=0.0, answer=1.0 -> fc*(0-1)+1.0
-            expected = fc * (0.0 - 1.0) + 1.0
-            assert result.reward == pytest.approx(expected), f"format_coef={fc}"
+            # boxed=1.0, eos=0.0, answer=1.0 -> 0.1*(1-1) + ec*(0-1) + 1.0
+            expected = 0.1 * 0.0 + ec * (-1.0) + 1.0
+            assert result.reward == pytest.approx(expected), f"eos_coef={ec}"
 
 
 # ===========================================================================

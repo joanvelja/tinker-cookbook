@@ -75,6 +75,8 @@ class RLVRDatasetBuilder(RLDatasetBuilder):
     convo_prefix: list[renderers.Message] | None = None
     n_batches: int | None = None
     dataset_name: str = "rlvr"
+    format_coef: float = 0.1
+    eos_coef: float = 0.0
 
     @abstractmethod
     def _load_data(self) -> tuple[list[RLVRExample], list[RLVRExample] | None]:
@@ -109,6 +111,8 @@ class RLVRDatasetBuilder(RLDatasetBuilder):
             convo_prefix=convo_prefix,
             dataset_name=self.dataset_name,
             n_batches=self.n_batches,
+            format_coef=self.format_coef,
+            eos_coef=self.eos_coef,
         )
 
         eval_ds: RLVRDataset | None = None
@@ -124,6 +128,8 @@ class RLVRDatasetBuilder(RLDatasetBuilder):
                 convo_prefix=convo_prefix,
                 dataset_name=f"{self.dataset_name}_eval",
                 n_batches=None,
+                format_coef=self.format_coef,
+                eos_coef=self.eos_coef,
             )
 
         return train_ds, eval_ds

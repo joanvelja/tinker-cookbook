@@ -159,12 +159,12 @@ def test_rlvr_env_step_correct():
     content = "<final_answer>4</final_answer>"
     result = _run(env.step(_tokens(content)))
 
-    # correct_format=1.0 (parse_success=True), correct_answer=1.0
-    # reward = 0.1*(1-1) + 1.0 = 1.0
+    # correct_boxed=1.0, correct_eos=1.0, correct_answer=1.0
+    # reward = 0.1*(1-1) + 0.0*(1-1) + 1.0 = 1.0
     assert result.reward == pytest.approx(1.0)
     assert result.episode_done is True
     assert result.metrics["correct"] == 1.0
-    assert result.metrics["format"] == 1.0
+    assert result.metrics["format_boxed"] == 1.0
     assert result.logs["grade_status"] == "correct"
     assert grader.called is True
 
@@ -175,11 +175,11 @@ def test_rlvr_env_step_incorrect():
     content = "<final_answer>5</final_answer>"
     result = _run(env.step(_tokens(content)))
 
-    # correct_format=1.0, correct_answer=0.0
-    # reward = 0.1*(1-1) + 0.0 = 0.0
+    # correct_boxed=1.0, correct_eos=1.0, correct_answer=0.0
+    # reward = 0.1*(1-1) + 0.0*(1-1) + 0.0 = 0.0
     assert result.reward == pytest.approx(0.0)
     assert result.metrics["correct"] == 0.0
-    assert result.metrics["format"] == 1.0
+    assert result.metrics["format_boxed"] == 1.0
     assert result.logs["grade_status"] == "incorrect"
 
 
@@ -189,11 +189,11 @@ def test_rlvr_env_step_extraction_fails():
     content = "no tags here at all"
     result = _run(env.step(_tokens(content)))
 
-    # Extraction failed: correct_format=0.0, correct_answer=0.0
-    # reward = 0.1*(0-1) + 0.0 = -0.1
+    # Extraction failed: correct_boxed=0.0, correct_eos=1.0, correct_answer=0.0
+    # reward = 0.1*(0-1) + 0.0*(1-1) + 0.0 = -0.1
     assert result.reward == pytest.approx(-0.1)
     assert result.metrics["correct"] == 0.0
-    assert result.metrics["format"] == 0.0
+    assert result.metrics["format_boxed"] == 0.0
     assert result.logs["grade_status"] == "error"
     # Grader should NOT have been called
     assert grader.called is False
@@ -201,16 +201,17 @@ def test_rlvr_env_step_extraction_fails():
 
 def test_rlvr_env_step_parse_fail_but_extraction_ok():
     """When renderer parse_success=False but extraction succeeds,
-    correct_format should be 0.0 (from parse_success), answer still graded."""
+    format_boxed=1.0 (extraction ok), format_eos=0.0 (truncated), answer graded."""
     grader = MockGrader(correct=True, status="correct")
     env = _make_env(grader=grader, renderer=FailParseRenderer(), format_coef=0.1)
     content = "<final_answer>4</final_answer>"
     result = _run(env.step(_tokens(content)))
 
-    # correct_format = float(False) = 0.0
-    # reward = 0.1*(0-1) + 1.0 = 0.9
-    assert result.reward == pytest.approx(0.9)
-    assert result.metrics["format"] == 0.0
+    # correct_boxed=1.0, correct_eos=0.0, correct_answer=1.0
+    # reward = 0.1*(1-1) + 0.0*(0-1) + 1.0 = 1.0  (eos_coef defaults to 0.0)
+    assert result.reward == pytest.approx(1.0)
+    assert result.metrics["format_boxed"] == 1.0
+    assert result.metrics["format_eos"] == 0.0
     assert result.metrics["correct"] == 1.0
 
 
