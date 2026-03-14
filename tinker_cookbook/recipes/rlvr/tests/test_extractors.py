@@ -2,7 +2,7 @@
 
 import pytest
 
-from tinker_cookbook.recipes.llm_grad_rlvr.env import extract_final_answer
+from tinker_cookbook.recipes.rlvr.env import extract_final_answer
 from tinker_cookbook.recipes.math_rl.math_grading import extract_boxed
 
 

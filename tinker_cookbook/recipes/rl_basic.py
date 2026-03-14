@@ -3,14 +3,14 @@ import asyncio
 import chz
 import sys
 from tinker_cookbook import cli_utils, model_info
-from tinker_cookbook.recipes.math_rl.math_env import Gsm8kDatasetBuilder
+from tinker_cookbook.recipes.rlvr.builders import Gsm8kBuilder
 from tinker_cookbook.rl import train
 
 
 def build_config_blueprint() -> chz.Blueprint[train.Config]:
     model_name = "meta-llama/Llama-3.1-8B"
     renderer_name = model_info.get_recommended_renderer_name(model_name)
-    builder = Gsm8kDatasetBuilder(
+    builder = Gsm8kBuilder(
         batch_size=128,
         group_size=16,
         renderer_name=renderer_name,

@@ -5,11 +5,8 @@ from typing import Any
 
 import chz
 from tinker_cookbook import checkpoint_utils, cli_utils
-from tinker_cookbook.recipes.llm_grad_rlvr.datasets import GpqaOpenEndedBuilder
-from tinker_cookbook.recipes.math_rl import (
-    arithmetic_env,
-    math_env,
-)
+from tinker_cookbook.recipes.math_rl import arithmetic_env
+from tinker_cookbook.recipes.rlvr.builders import DATASET_BUILDER_MAP
 from tinker_cookbook.rl.train import AsyncConfig, Config, main
 from tinker_cookbook.rl.types import RLDatasetBuilder
 from tinker.types import LossFnType
@@ -28,7 +25,7 @@ class CLIConfig:
     load_checkpoint_path: str | None = None
 
     # Environment configuration
-    env: str = "arithmetic"  # Options: arithmetic, math, polaris, deepmath, gsm8k, gpqa_oe
+    env: str = "arithmetic"  # Options: arithmetic, math, polaris, deepmath, gsm8k, gpqa_oe, omni_math
     seed: int = 0  # Random seed for data shuffling
 
     # Training hyperparameters
@@ -85,17 +82,9 @@ def get_dataset_builder(
             include_fewshot=True,
             group_size=group_size,
         )
-    elif env in ["math", "polaris", "deepmath", "gsm8k"]:
-        return math_env.get_math_dataset_builder(
-            dataset_name=env,
-            batch_size=batch_size,
-            model_name_for_tokenizer=model_name,
-            renderer_name=renderer_name,
-            group_size=group_size,
-            seed=seed,
-        )
-    elif env == "gpqa_oe":
-        return GpqaOpenEndedBuilder(
+    elif env in DATASET_BUILDER_MAP:
+        builder_cls = DATASET_BUILDER_MAP[env]
+        return builder_cls(
             batch_size=batch_size,
             group_size=group_size,
             model_name_for_tokenizer=model_name,

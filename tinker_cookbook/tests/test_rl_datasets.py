@@ -1,10 +1,10 @@
 import asyncio
 
-from tinker_cookbook.recipes.math_rl.math_env import MathDatasetBuilder
+from tinker_cookbook.recipes.rlvr.builders import MathBuilder
 
 
 def test_math_dataset_builder():
-    builder = MathDatasetBuilder(
+    builder = MathBuilder(
         batch_size=1,
         model_name_for_tokenizer="Qwen/Qwen3-4B-Instruct-2507",
         renderer_name="qwen3_instruct",
