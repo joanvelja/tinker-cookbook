@@ -192,10 +192,8 @@ class TestRewardParity:
         # format=1.0, answer=0.0 -> 0.1*(1-1) + 0.0 = 0.0
         assert result.reward == pytest.approx(0.0)
 
-    def test_failed_eos_correct_answer(self):
-        """Parse fails but extraction succeeds + correct answer.
-        With eos_coef=0.0 (default), truncation has no penalty.
-        format_boxed=1.0, correct=1.0 -> reward = 1.0."""
+    def test_failed_parse_no_reward(self):
+        """Parse fails → renderer couldn't parse → no extraction, no grading."""
         grader = MockGrader(correct=True, status="correct")
         env = RLVREnv(
             question="q", reference="ref", renderer=FailParseRenderer(),
@@ -203,8 +201,9 @@ class TestRewardParity:
             format_coef=0.1,
         )
         result = _run(env.step(_tokens("<final_answer>42</final_answer>")))
-        # boxed=1.0, eos=0.0, answer=1.0 -> 0.1*(1-1) + 0.0*(0-1) + 1.0 = 1.0
-        assert result.reward == pytest.approx(1.0)
+        # parse_success=False → no extraction → boxed=0, answer=0
+        # reward = 0.1*(0-1) + 0.0 = -0.1
+        assert result.reward == pytest.approx(-0.1)
 
     def test_failed_everything(self):
         """Extraction fails -> format=0, answer=0, reward = -format_coef."""
@@ -233,18 +232,19 @@ class TestRewardParity:
             assert result.reward == pytest.approx(expected), f"format_coef={fc}"
 
     def test_reward_formula_custom_eos_coef(self):
-        """Verify eos_coef penalizes truncation independently."""
+        """Verify eos_coef penalizes truncation. But parse_success=False
+        means no extraction regardless — eos_coef only matters on success."""
         for ec in [0.0, 0.1, 0.5]:
             grader = MockGrader(correct=True, status="correct")
+            # Use MockRenderer (parse_success=True) to test eos_coef on success path
             env = RLVREnv(
-                question="q", reference="ref", renderer=FailParseRenderer(),
+                question="q", reference="ref", renderer=MockRenderer(),
                 grader=grader, extract_fn=extract_final_answer,
                 format_coef=0.1, eos_coef=ec,
             )
             result = _run(env.step(_tokens("<final_answer>42</final_answer>")))
-            # boxed=1.0, eos=0.0, answer=1.0 -> 0.1*(1-1) + ec*(0-1) + 1.0
-            expected = 0.1 * 0.0 + ec * (-1.0) + 1.0
-            assert result.reward == pytest.approx(expected), f"eos_coef={ec}"
+            # boxed=1.0, eos=1.0, answer=1.0 -> 0.1*(1-1) + ec*(1-1) + 1.0 = 1.0
+            assert result.reward == pytest.approx(1.0), f"eos_coef={ec}"
 
 
 # ===========================================================================

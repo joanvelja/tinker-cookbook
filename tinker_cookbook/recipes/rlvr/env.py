@@ -87,36 +87,34 @@ class RLVREnv(ProblemEnv):
         message, parse_success = self.renderer.parse_response(action)
         content = renderers.get_text_content(message)
 
-        # Strip unclosed <think> blocks from truncated responses.
-        # When parse_success=False (truncation), the renderer may return raw
-        # text with an unclosed <think> tag. extract_fn would then find
-        # answers inside the thinking block, giving spurious rewards.
-        if not parse_success and "<think>" in content:
-            last_open = content.rfind("<think>")
-            if "</think>" not in content[last_open:]:
-                content = content[:last_open]
-
         # Two independent format signals:
         #   correct_boxed: did the model use the requested answer format (e.g. \boxed{})?
         #   correct_eos:   did the response complete with a stop token (not truncated)?
         correct_eos = float(parse_success)
 
-        # Try extraction once
-        try:
-            extracted = self.extract_fn(content)
-        except ValueError:
-            # Extraction failed — skip grading entirely
+        if not parse_success:
+            # Renderer couldn't parse → content is raw text with thinking
+            # potentially embedded. Don't trust it — no extraction, no grading.
             correct_boxed = 0.0
             correct_answer = 0.0
             grade_status = "error"
             check_answer_s = 0.0
         else:
-            correct_boxed = 1.0
-            t0 = time.monotonic()
-            result = await self.grader.grade(self.question, self.reference, extracted)
-            check_answer_s = time.monotonic() - t0
-            correct_answer = float(result.correct)
-            grade_status = result.status
+            # Renderer parsed successfully → content is clean visible text.
+            try:
+                extracted = self.extract_fn(content)
+            except ValueError:
+                correct_boxed = 0.0
+                correct_answer = 0.0
+                grade_status = "error"
+                check_answer_s = 0.0
+            else:
+                correct_boxed = 1.0
+                t0 = time.monotonic()
+                result = await self.grader.grade(self.question, self.reference, extracted)
+                check_answer_s = time.monotonic() - t0
+                correct_answer = float(result.correct)
+                grade_status = result.status
 
         # reward = format_coef * (boxed - 1) + eos_coef * (eos - 1) + correct
         total_reward = (

@@ -199,20 +199,21 @@ def test_rlvr_env_step_extraction_fails():
     assert grader.called is False
 
 
-def test_rlvr_env_step_parse_fail_but_extraction_ok():
-    """When renderer parse_success=False but extraction succeeds,
-    format_boxed=1.0 (extraction ok), format_eos=0.0 (truncated), answer graded."""
+def test_rlvr_env_step_parse_fail_no_reward():
+    """When renderer parse_success=False, no extraction or grading happens.
+    The renderer couldn't parse → we don't trust the content."""
     grader = MockGrader(correct=True, status="correct")
     env = _make_env(grader=grader, renderer=FailParseRenderer(), format_coef=0.1)
     content = "<final_answer>4</final_answer>"
     result = _run(env.step(_tokens(content)))
 
-    # correct_boxed=1.0, correct_eos=0.0, correct_answer=1.0
-    # reward = 0.1*(1-1) + 0.0*(0-1) + 1.0 = 1.0  (eos_coef defaults to 0.0)
-    assert result.reward == pytest.approx(1.0)
-    assert result.metrics["format_boxed"] == 1.0
+    # parse_success=False → no extraction, no grading
+    # reward = 0.1*(0-1) + 0.0*(0-1) + 0.0 = -0.1
+    assert result.reward == pytest.approx(-0.1)
+    assert result.metrics["format_boxed"] == 0.0
     assert result.metrics["format_eos"] == 0.0
-    assert result.metrics["correct"] == 1.0
+    assert result.metrics["correct"] == 0.0
+    assert grader.called is False
 
 
 # ---------------------------------------------------------------------------
