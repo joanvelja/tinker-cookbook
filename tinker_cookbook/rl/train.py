@@ -371,6 +371,8 @@ class Config:
     # for most post-trained models, and non-1 temperatures currently do not play
     # well with KL penalty.
     temperature: float = 1.0
+    # Eval sampling temperature. MaxRL uses 0.6 for eval while training at 1.0.
+    eval_temperature: float = 1.0
     # Compute extra post-update KL metrics (adds overhead).
     compute_post_kl: bool = False
     # Remove groups where all trajectories have identical reward.
@@ -1419,7 +1421,8 @@ async def main(
     if maybe_test_dataset is not None:
         evaluators.append(
             RLTestSetEvaluator(
-                maybe_test_dataset, max_tokens=cfg.max_tokens, model_name=cfg.model_name
+                maybe_test_dataset, max_tokens=cfg.max_tokens, model_name=cfg.model_name,
+                temperature=cfg.eval_temperature,
             )
         )
 

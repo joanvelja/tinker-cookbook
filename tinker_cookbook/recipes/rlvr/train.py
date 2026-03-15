@@ -39,6 +39,7 @@ class CLIConfig:
     renderer_name: str | None = None
     learning_rate: float | None = None  # None -> get_lr(model_name)
     temperature: float = 1.0
+    eval_temperature: float = 0.6
     seed: int = 42
     n_batches: int | None = None
     kl_penalty_coef: float = 0.0
@@ -108,6 +109,7 @@ async def cli_main(cli_config: CLIConfig) -> None:
         lora_rank=cli_config.lora_rank,
         max_tokens=cli_config.max_tokens,
         temperature=cli_config.temperature,
+        eval_temperature=cli_config.eval_temperature,
         advantage_scheme=cli_config.advantage_scheme,
         wandb_project=cli_config.wandb_project,
         wandb_name=wandb_name,
