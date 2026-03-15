@@ -218,6 +218,7 @@ async def train_step(
     loss_fn: LossFnType,
     loss_fn_config: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
+    grad_clip_norm: float | None = None,
 ) -> List[torch.Tensor]:
     """Train the model on collected trajectories.
 
@@ -227,7 +228,10 @@ async def train_step(
     if not batches:
         return []
 
-    adam_params = tinker.AdamParams(learning_rate=learning_rate, beta1=0.9, beta2=0.95, eps=1e-8)
+    adam_kwargs: dict[str, Any] = dict(learning_rate=learning_rate, beta1=0.9, beta2=0.95, eps=1e-8)
+    if grad_clip_norm is not None:
+        adam_kwargs["grad_clip_norm"] = grad_clip_norm
+    adam_params = tinker.AdamParams(**adam_kwargs)
     training_logprobs_D: list[torch.Tensor] = []
     optim_result: tinker.OptimStepResponse | None = None
 
@@ -359,6 +363,8 @@ class Config:
     num_substeps: int = 1
     # LoRA rank for the training adapter.
     lora_rank: int = 32
+    # Gradient clip norm for Adam optimizer (None = no clipping).
+    grad_clip_norm: float | None = None
 
     # -------------------------------------------------------------------------
     # Sampling and diagnostics (advanced)
@@ -969,20 +975,26 @@ async def compute_full_batch_metrics_and_get_sampling_client(
     """
     metrics = {}
 
-    # Compute KL metrics
+    # Fire checkpoint save FIRST (async) — overlap with local KL computation.
+    # The sooner the new sampling client exists, the sooner the next batch can start.
+    checkpoint_task = asyncio.create_task(
+        save_checkpoint_and_get_sampling_client(
+            training_client,
+            i_batch,
+            log_path,
+            save_every,
+            ttl_seconds=ttl_seconds,
+            retry_config=retry_config,
+        )
+    )
+
+    # Compute KL metrics locally while checkpoint saves in the background
     with timed("compute_kl_sample_train", metrics):
         kl_sample_train_metrics = compute_kl_sample_train(data_D, training_logprobs_D)
         metrics.update(kl_sample_train_metrics)
 
-    # Get a sampling client using the new weights
-    sampling_client, checkpoint_metrics = await save_checkpoint_and_get_sampling_client(
-        training_client,
-        i_batch,
-        log_path,
-        save_every,
-        ttl_seconds=ttl_seconds,
-        retry_config=retry_config,
-    )
+    # Now await the checkpoint
+    sampling_client, checkpoint_metrics = await checkpoint_task
     metrics.update(checkpoint_metrics)
 
     # Compute post-KL metrics if configured
@@ -1095,9 +1107,12 @@ async def do_train_step_streaming_and_get_sampling_client(
             wrapped_trajectory_groups = []
 
         # Enqueue optim_step before awaiting results (so they land on same clock cycle)
-        adam_params = tinker.AdamParams(
+        adam_kwargs: dict[str, Any] = dict(
             learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-8
         )
+        if cfg.grad_clip_norm is not None:
+            adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_params = tinker.AdamParams(**adam_kwargs)
         with timed(f"train/optim_substep_{i_substep}_enqueue", metrics):
             optim_future = await training_client.optim_step_async(adam_params)
 
@@ -1188,6 +1203,7 @@ async def do_train_step_and_get_sampling_client(
             loss_fn=cfg.loss_fn,
             loss_fn_config=cfg.loss_fn_config,
             metrics=metrics,
+            grad_clip_norm=cfg.grad_clip_norm,
         )
 
     sampling_client, full_batch_metrics = await compute_full_batch_metrics_and_get_sampling_client(

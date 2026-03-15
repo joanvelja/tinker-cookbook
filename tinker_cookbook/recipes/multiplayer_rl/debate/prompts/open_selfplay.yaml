@@ -72,7 +72,7 @@ user:
       response sounds confident.
   judge:
     final: >-
-      Briefly analyze the key arguments, then give your decision.
+      For each debater: state their core claim, assess evidence quality. Then give your verdict using <decision>A</decision>, <decision>B</decision>, or <decision>tie</decision>.
 
 fields:
   debater_a:
