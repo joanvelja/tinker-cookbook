@@ -14,7 +14,7 @@ from tinker.types import LossFnType
 from tinker_cookbook import checkpoint_utils, cli_utils
 from tinker_cookbook.hyperparam_utils import get_lr
 from tinker_cookbook.recipes.rlvr.builders import DATASET_BUILDER_MAP
-from tinker_cookbook.rl.train import AsyncConfig, Config, StreamMinibatchConfig, main
+from tinker_cookbook.rl.train import AsyncConfig, Config, KLReferenceConfig, StreamMinibatchConfig, main
 from tinker_cookbook.rl.types import AdvantageScheme
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,9 @@ async def cli_main(cli_config: CLIConfig) -> None:
         save_every=cli_config.save_every,
         sampling_max_connections=sampling_max_connections,
         kl_penalty_coef=cli_config.kl_penalty_coef,
+        kl_reference_config=KLReferenceConfig(base_model=cli_config.model_name)
+        if cli_config.kl_penalty_coef > 0
+        else None,
         compute_post_kl=cli_config.compute_post_kl,
         num_substeps=cli_config.num_substeps,
         loss_fn=cli_config.loss_fn,
