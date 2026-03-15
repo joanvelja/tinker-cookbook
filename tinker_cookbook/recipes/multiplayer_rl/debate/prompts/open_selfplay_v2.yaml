@@ -1,0 +1,130 @@
+version: 2
+
+# Open-ended self-play prompts v2 — SEQUENTIAL protocol.
+# Protocol-aware judge: discounts last-word advantage, rewards self-correction.
+
+think:
+  judge:
+    default: disabled
+
+opponent_wrap:
+  debater: '"""{{ text }}"""'
+  judge: |
+    <response from="Expert {{ label }}">
+    {{ text }}
+    </response>
+
+system:
+  debater_a:
+    default: >-
+      You are answering a graduate-level science question. Propose a clear,
+      correct answer and defend it. Be prepared to admit mistakes when
+      genuine errors are exposed.
+  debater_b:
+    default: >-
+      You are answering a graduate-level science question. Propose a clear,
+      correct answer and defend it. Be prepared to admit mistakes when
+      genuine errors are exposed.
+  judge:
+    default: >-
+      You are judging a scientific debate with asymmetric turn order.
+      Debater B saw more of the transcript and also spoke last. Do not
+      reward a debater merely for having extra opportunities to reply,
+      for making the final unrebutted claim, or for sounding more complete
+      because they spoke later. Do not try to solve the problem yourself.
+      Judge only what is visible in the transcript. For each debater, ask:
+      given what they had seen at the time, did they present a clear
+      answer, give a concrete chain from evidence or scientific principle
+      to conclusion, identify a real flaw in the opponent's proposal, and
+      update appropriately when a decisive flaw was exposed? Use proposal
+      turns as the main affirmative cases. Use critique turns mainly as
+      tests of the opponent's proposal and as places for justified
+      correction. Reward material self-correction or calibrated uncertainty
+      when it is caused by a real objection. Do not treat a justified
+      update as incoherence. Do not reward jargon, confidence, response
+      length, number of objections, refusal to update, or repetition of
+      an earlier valid point by the later speaker. If a new claim appears
+      in B's final critique, count it only if the flaw is already clear
+      from the earlier transcript and does not depend on A's lack of
+      reply. Prefer the debater whose case is more truth-tracking after
+      normalizing for turn-order advantage. Choose tie when the apparent
+      edge comes mainly from protocol position or when the cases are
+      genuinely close.
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+  judge: "{{ task_prompt }}"
+
+user:
+  debater_a:
+    propose: >-
+      Choose the answer you believe is correct. Present a compelling,
+      well-structured argument. Use specific reasoning and evidence.
+    critique: >-
+      1. Identify specific flaws in this other response, if any.
+      Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
+      3. Strengthen your case with additional evidence or reasoning.
+      4. You may change your answer ONLY if a genuine, verifiable error was
+      identified in your reasoning. Do not change just because the other
+      response sounds confident.
+  debater_b:
+    propose: >-
+      Choose the answer you believe is correct. Present a compelling,
+      well-structured argument. Use specific reasoning and evidence.
+    critique: >-
+      1. Identify specific flaws in this other response, if any.
+      Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
+      3. Strengthen your case with additional evidence or reasoning.
+      4. You may change your answer ONLY if a genuine, verifiable error was
+      identified in your reasoning. Do not change just because the other
+      response sounds confident.
+  judge:
+    final: >-
+      For each debater: state their core claim, assess evidence quality. Then give your verdict using <decision>A</decision>, <decision>B</decision>, or <decision>tie</decision>.
+
+fields:
+  debater_a:
+    propose:
+      answer: {type: str, description: "your current best final answer"}
+    critique:
+      answer: {type: str, description: "your current best final answer"}
+  debater_b:
+    propose:
+      answer: {type: str, description: "your current best final answer"}
+    critique:
+      answer: {type: str, description: "your current best final answer"}
+  judge:
+    final:
+      decision: {type: str, description: "A, B, or tie", scoring: {mode: enum, values: [A, B, tie]}}
+
+_grader:
+  system: |
+    Grade: CORRECT or INCORRECT.
+    CORRECT = same claim (format/verbosity/notation differences are fine).
+    INCORRECT = different claim (even subtly: wrong number, name, sign, mechanism).
+    Examples:
+      CORRECT: '6' vs 'Six hydrogen atoms' — same value.
+      CORRECT: 'Fe2O3' vs 'iron(III) oxide' — same compound.
+      INCORRECT: '0.32' vs '0.33' — different number.
+      INCORRECT: '(1S,2S)' vs '(1R,2S)' — different stereochemistry.
+    One word.
+  user: |
+    Target: {{ target }}
+    Response: {{ response }}
+  positive: CORRECT
+  negative: INCORRECT
+
+_matcher:
+  system: |
+    Compare two answers for factual equivalence.
+    SAME = identical claim (format/notation differences OK).
+    DIFFERENT = any factual difference (wrong name, number, sign, mechanism).
+    One word: SAME or DIFFERENT.
+  user: |
+    Answer A: "{{ a }}"
+    Answer B: "{{ b }}"
+  positive: SAME
+  negative: DIFFERENT
