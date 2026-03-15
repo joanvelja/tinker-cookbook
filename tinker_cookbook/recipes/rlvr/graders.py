@@ -127,6 +127,105 @@ class LLMGraderConfig(GraderConfig):
         return LLMGrader(config=config)
 
 
+# ---------------------------------------------------------------------------
+# Composite grader (sympy first, LLM fallback)
+# ---------------------------------------------------------------------------
+
+
+@chz.chz
+class CompositeGraderConfig(GraderConfig):
+    """Try sympy first (deterministic). If sympy says True, trust it.
+    If sympy says False, fall through to LLM for a second opinion.
+
+    Sympy's True is always reliable (exact string match or proven math equivalence).
+    Sympy's False can miss semantic equivalences (function defs, sqrt, prose).
+    The LLM catches what sympy misses.
+    """
+
+    llm: LLMClientConfig = LLMClientConfig()
+    system_prompt: str = _DEFAULT_SYSTEM
+    user_template: str = _DEFAULT_USER
+    sympy_timeout: float = 1.0
+    sympy_backend: Literal["sympy", "math_verify"] = "sympy"
+
+    def build(self, concurrency_hint: int = 1) -> "CompositeGrader":
+        llm_config = self
+        if llm_config.llm.max_concurrent is None:
+            new_client = chz.replace(llm_config.llm, max_concurrent=concurrency_hint)
+            llm_config = chz.replace(llm_config, llm=new_client)
+        return CompositeGrader(config=llm_config)
+
+
+class CompositeGrader:
+    def __init__(self, config: CompositeGraderConfig) -> None:
+        self.config = config
+        self.llm_client = AsyncLLMClient(config.llm)
+
+    def _sympy_grade(self, extracted: str, reference: str) -> bool | None:
+        """Run sympy grading. Returns True (definitely equal), or None (unsure/False)."""
+        from tinker_cookbook.recipes.math_rl.math_grading import (
+            grade_answer,
+            grade_answer_math_verify,
+            run_with_timeout_signal,
+        )
+
+        if self.config.sympy_backend == "sympy":
+            grader_func = grade_answer
+        else:
+            grader_func = grade_answer_math_verify
+
+        try:
+            out = run_with_timeout_signal(
+                grader_func,
+                args=(extracted, reference),
+                timeout_seconds=int(math.ceil(self.config.sympy_timeout)),
+            )
+        except Exception:
+            return None  # can't tell → fall through to LLM
+
+        if out is True:
+            return True  # sympy says equal → trust it
+        return None  # sympy says False or timeout → don't trust, ask LLM
+
+    async def _llm_grade(self, question: str, reference: str, extracted: str) -> GradeResult:
+        """Fall back to LLM grading."""
+        user_prompt = self.config.user_template.format(
+            question=question, target=reference, response=extracted,
+        )
+        try:
+            raw = await self.llm_client.complete(
+                system=self.config.system_prompt, user=user_prompt,
+            )
+            verdict = raw.strip().upper()
+            if verdict == "CORRECT":
+                return GradeResult(correct=True, status="correct")
+            elif verdict == "INCORRECT":
+                return GradeResult(correct=False, status="incorrect")
+            else:
+                return GradeResult(
+                    correct=False, status="ambiguous",
+                    detail=f"Expected CORRECT or INCORRECT, got: {raw!r}",
+                )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except Exception as e:
+            return GradeResult(correct=False, status="error", detail=f"Grading failed: {e}")
+
+    async def grade(self, question: str, reference: str, extracted: str) -> GradeResult:
+        # Step 1: try sympy (cheap, deterministic)
+        sympy_result = self._sympy_grade(extracted, reference)
+        if sympy_result is True:
+            return GradeResult(correct=True, status="correct", detail="sympy")
+
+        # Step 2: sympy unsure → ask LLM
+        return await self._llm_grade(question, reference, extracted)
+
+
+# ---------------------------------------------------------------------------
+# LLM-only grader
+# ---------------------------------------------------------------------------
+
+
 class LLMGrader:
     def __init__(self, config: LLMGraderConfig) -> None:
         self.config = config

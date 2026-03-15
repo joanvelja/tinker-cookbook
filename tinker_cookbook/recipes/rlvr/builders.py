@@ -20,7 +20,7 @@ from tinker_cookbook.recipes.rlvr.env import (
     RLVRDataset,
     extract_final_answer,
 )
-from tinker_cookbook.recipes.rlvr.graders import GraderConfig, LLMGraderConfig, SympyGraderConfig
+from tinker_cookbook.recipes.rlvr.graders import CompositeGraderConfig, GraderConfig, LLMGraderConfig, SympyGraderConfig
 from tinker_cookbook.recipes.rlvr.types import ExtractFn, RLVRExample
 from tinker_cookbook.rl.types import RLDatasetBuilder
 from tinker_cookbook.tokenizer_utils import get_tokenizer
@@ -384,7 +384,7 @@ One word."""
 
 @chz.chz
 class OmniMathBuilder(RLVRDatasetBuilder):
-    grader_config: GraderConfig = LLMGraderConfig(system_prompt=_MATH_GRADER_SYSTEM)
+    grader_config: GraderConfig = CompositeGraderConfig(system_prompt=_MATH_GRADER_SYSTEM)
     format_instruction: str = BOXED_FORMAT_INSTRUCTION
     eval_frac: float = 0.15
     dataset_name: str = "omni_math"

@@ -15,7 +15,7 @@ from tinker_cookbook.recipes.rlvr.builders import (
     _standard_fewshot_prefix,
 )
 from tinker_cookbook.recipes.rlvr.env import ANSWER_FORMAT_INSTRUCTION, BOXED_FORMAT_INSTRUCTION
-from tinker_cookbook.recipes.rlvr.graders import GraderConfig, LLMGraderConfig, SympyGraderConfig
+from tinker_cookbook.recipes.rlvr.graders import CompositeGraderConfig, GraderConfig, LLMGraderConfig, SympyGraderConfig
 
 
 # Shared kwargs needed to construct any builder (abstract fields with no defaults)
@@ -78,9 +78,9 @@ class TestGraderConfigInheritance:
         builder = GpqaOpenEndedBuilder(**_COMMON)
         assert isinstance(builder.grader_config, LLMGraderConfig)
 
-    def test_omnimath_defaults_to_llm_grader(self):
+    def test_omnimath_defaults_to_composite_grader(self):
         builder = OmniMathBuilder(**_COMMON)
-        assert isinstance(builder.grader_config, LLMGraderConfig)
+        assert isinstance(builder.grader_config, CompositeGraderConfig)
 
 
 # ===========================================================================
