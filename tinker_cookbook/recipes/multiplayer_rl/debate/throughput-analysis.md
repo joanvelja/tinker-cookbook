@@ -120,3 +120,53 @@ So **B=32, G=8** or **B=64, G=4** with C=256 is approximately optimal.
 
 **The #1 lever for debate is SIMULTANEOUS protocol** — it halves the dominant term.
 For RLVR it was `num_samples=G`; for debate it's parallelizing debater turns.
+
+## Stacking Knobs (Debate, SEQ self-play R=2, B=32 G=4, t_s=10s)
+
+Baseline: `t_episode = 50s`, throughput-limited at `B·G=128 → T_batch ≈ 53s`.
+
+| Knob | Mechanism | Wall Δ/batch | Learning Δ |
+|------|-----------|-------------|-----------|
+| Baseline | — | 53s | 1 step |
+| `num_minibatches=2` | Overlap training with tail | -2s | — |
+| `num_substeps=2` | 2nd gradient step | +10s | **2× learning** |
+| `remove_constant_groups` | Skip zero-gradient groups | -1s | — |
+| SIMULTANEOUS protocol | R slots instead of 2R | **-20s** | — |
+
+| Configuration | Wall/batch | Steps/batch | Steps/hour |
+|---|---|---|---|
+| SEQ baseline | 53s | 1 | 67.9 |
+| + streaming + remove_const | 50s | 1 | 72.0 (1.06×) |
+| + `num_substeps=2` | 60s | **2** | **120.0 (1.77×)** |
+| Switch to SIM protocol | 33s | 1 | **109.1 (1.61×)** |
+| SIM + `num_substeps=2` | 43s | **2** | **167.4 (2.47×)** |
+
+**Key insight**: for debate, SIMULTANEOUS protocol and `num_substeps=2` are
+multiplicative. SIM halves the critical path; substeps double learning per
+sampling round. Combined: **~2.5× effective learning throughput vs SEQ baseline**.
+
+## RLVR vs Debate: Optimization Comparison
+
+| | RLVR | Debate |
+|---|---|---|
+| **#1 lever** | `num_samples=G` (batched sampling) | SIMULTANEOUS protocol |
+| **Why** | Same prompt G times → share KV-cache | Debaters can act in parallel |
+| **Measured speedup** | 1.5× wall time | ~2× wall time (estimated) |
+| **`num_substeps`** | 2.7× learning/h | 2.5× learning/h |
+| **Async/streaming** | 3-8% wall time | 3-6% wall time |
+| **`num_samples=G`** | **Yes** (single-turn, shared prompt) | **No** (multi-turn, different prompts) |
+
+## Recommended Configs
+
+### Debate — Maximum throughput (SEQ self-play)
+```
+batch_size=32 group_size=4 num_rounds=2
+num_minibatches=2 num_substeps=2
+```
+
+### Debate — Maximum throughput (SIM self-play)
+```
+batch_size=64 group_size=4 num_rounds=2
+num_minibatches=2 num_substeps=2
+```
+(Higher B because SIM has fewer calls per episode → higher throughput limit.)

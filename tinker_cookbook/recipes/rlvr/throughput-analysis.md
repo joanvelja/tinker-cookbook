@@ -126,17 +126,70 @@ and `optim_step_async` are submitted together so they land on the same clock cyc
 | B (no-think) | 100 × 151s = **4.2h** | Sampling-bound |
 | C (GPT-OSS) | 100 × 194s = **5.4h** | Sampling-bound |
 
-### With `num_samples=G` (estimated 2-3× sampling speedup)
+### With `num_samples=G` (benchmarked: ~1.5× speedup)
 
-| Config | t_total (optimistic 3×) | t_total (conservative 2×) |
-|--------|------------------------|--------------------------|
-| A (think) | 100 × 116s = **3.2h** | 100 × 169s = **4.7h** |
-| B (no-think) | 100 × 59s = **1.6h** | 100 × 84s = **2.3h** |
-| C (GPT-OSS) | 100 × 73s = **2.0h** | 100 × 104s = **2.9h** |
+Benchmark (Qwen3-8B think, B=8, G=8, 2 batches):
 
-### With `num_samples=G` + larger B·G (same total samples, fewer batches)
+| | Baseline (64 calls) | Batched (8 calls) | Speedup |
+|---|---|---|---|
+| Batch 0 | 327s | 248s | 1.32× |
+| Batch 1 | 356s | 201s | 1.77× |
 
-Since t_sample is constant in B·G (all samples parallel), doubling B·G halves N
-for the same total training signal. Example: B=16, G=8 (128 samples/batch) with
-N=50 ≈ same wall time as B=8, G=8 (64 samples/batch) with N=100, but 2× the
-per-step gradient quality (larger effective batch).
+Projected 100-batch runs:
+
+| Config | Baseline | Batched (~1.5×) |
+|--------|----------|----------------|
+| A (think) | 9.1h | **~6.2h** |
+| B (no-think) | 4.2h | **~2.9h** |
+| C (GPT-OSS) | 5.4h | **~3.7h** |
+
+### Stacking all knobs (benchmarked + estimated)
+
+Starting from batched baseline (248s/batch for Config A):
+
+| Knob | Mechanism | Wall Δ/batch | Learning Δ | Cumulative |
+|------|-----------|-------------|-----------|------------|
+| `num_samples=G` | Batched decode, shared KV-cache | -79s | — | 248s, 1 step |
+| `AsyncConfig(mso=1)` | Overlap sample₂ with train₁ | -8.5s | — | 240s, 1 step |
+| `StreamMinibatch(k=2)` | Train at group 4/8 completion | -8s | — | 232s, 1 step |
+| `remove_constant_groups` | Skip ~62% zero-gradient groups | -5s | — | 227s, 1 step |
+| `num_substeps=2` | 2nd gradient step on same data | **+10s** | **2× learning** | 237s, **2 steps** |
+
+**Effective learning throughput:**
+
+| Configuration | Wall/batch | Steps/batch | Steps/hour |
+|---|---|---|---|
+| Baseline (old) | 327s | 1 | 11.0 |
+| + `num_samples=G` only | 248s | 1 | 14.5 (1.3×) |
+| + all pipeline opts | 227s | 1 | 15.9 (1.4×) |
+| + `num_substeps=2` | 237s | **2** | **30.4 (2.7×)** |
+
+`num_substeps=2` is the real multiplier: sampling is 97% of cost, so the 2nd
+gradient step costs ~4% more wall time but doubles learning throughput. You pay
+10s extra to get a whole extra gradient step from data you already paid 240s
+to sample.
+
+### Recommended full-throughput config
+
+```bash
+uv run --env-file .env python -m tinker_cookbook.recipes.rlvr.train \
+  model_name="Qwen/Qwen3-8B" \
+  dataset=omni_math \
+  batch_size=8 group_size=8 max_tokens=8192 \
+  n_batches=100 \
+  num_substeps=2 \
+  max_steps_off_policy=1 \
+  remove_constant_reward_groups=True \
+  eval_on_start=False \
+  eval_every=10 \
+  save_every=20 \
+  wandb_project=rlvr-experiments \
+  behavior_if_log_dir_exists=delete
+```
+
+### With larger B·G (same total signal, fewer batches)
+
+Since t_sample is approximately constant in B·G (all samples parallel),
+doubling B·G halves N for the same total training signal. But B·G is bounded
+by Tinker's service concurrency — beyond the throughput limit, wall time
+grows linearly.
