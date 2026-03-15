@@ -43,6 +43,8 @@ class CLIConfig:
     seed: int = 42
     n_batches: int | None = None
     kl_penalty_coef: float = 0.0
+    format_coef: float = 0.1
+    eos_coef: float = 0.0
 
     # Logging
     log_path: str | None = None
@@ -99,6 +101,8 @@ async def cli_main(cli_config: CLIConfig) -> None:
         renderer_name=renderer_name,
         seed=cli_config.seed,
         n_batches=cli_config.n_batches,
+        format_coef=cli_config.format_coef,
+        eos_coef=cli_config.eos_coef,
     )
 
     config = Config(
