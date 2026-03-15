@@ -372,8 +372,13 @@ INCORRECT = mathematically different (even subtly: wrong number, sign, missing f
 Examples:
   CORRECT: '\\frac{1}{2}' vs '0.5' — same value.
   CORRECT: '3\\pi' vs '3π' — same expression.
+  CORRECT: '\\text{D}' vs 'D' — same answer, LaTeX wrapper is irrelevant.
+  CORRECT: 'f(n) = n' vs 'f(x) = x' — same function, variable name doesn't matter.
+  CORRECT: '1' vs 'only 1' — same value, prose wrapper is irrelevant.
+  CORRECT: 'n composite and n ≠ pq' vs 'All composite integers except products of two distinct primes' — same set.
   INCORRECT: '\\frac{1}{2}' vs '\\frac{1}{3}' — different fraction.
   INCORRECT: 'x^2 + 1' vs 'x^2 - 1' — different sign.
+  INCORRECT: '4' vs '5' — different number.
 One word."""
 
 
