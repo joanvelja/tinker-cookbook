@@ -219,6 +219,7 @@ async def train_step(
     loss_fn: LossFnType,
     loss_fn_config: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
+    grad_clip_norm: float = 0.0,
 ) -> List[torch.Tensor]:
     """Train the model on collected trajectories.
 
@@ -228,7 +229,7 @@ async def train_step(
     if not batches:
         return []
 
-    adam_params = tinker.AdamParams(learning_rate=learning_rate, beta1=0.9, beta2=0.95, eps=1e-8)
+    adam_params = tinker.AdamParams(learning_rate=learning_rate, beta1=0.9, beta2=0.95, eps=1e-8, grad_clip_norm=grad_clip_norm)
     training_logprobs_D: list[torch.Tensor] = []
     optim_result: tinker.OptimStepResponse | None = None
 
@@ -360,6 +361,8 @@ class Config:
     num_substeps: int = 1
     # LoRA rank for the training adapter.
     lora_rank: int = 32
+    # Maximum global gradient norm (0.0 = no clipping).
+    grad_clip_norm: float = 0.0
 
     # -------------------------------------------------------------------------
     # Sampling and diagnostics (advanced)
@@ -1128,7 +1131,8 @@ async def do_train_step_streaming_and_get_sampling_client(
 
         # Enqueue optim_step before awaiting results (so they land on same clock cycle)
         adam_params = tinker.AdamParams(
-            learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-8
+            learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-8,
+            grad_clip_norm=cfg.grad_clip_norm,
         )
         with timed(f"train/optim_substep_{i_substep}_enqueue", metrics):
             optim_future = await training_client.optim_step_async(adam_params)
@@ -1220,6 +1224,7 @@ async def do_train_step_and_get_sampling_client(
             loss_fn=cfg.loss_fn,
             loss_fn_config=cfg.loss_fn_config,
             metrics=metrics,
+            grad_clip_norm=cfg.grad_clip_norm,
         )
 
     sampling_client, full_batch_metrics = await compute_full_batch_metrics_and_get_sampling_client(

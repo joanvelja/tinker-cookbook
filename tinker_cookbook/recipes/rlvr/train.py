@@ -62,6 +62,7 @@ class CLIConfig:
     compute_post_kl: bool = False
     loss_fn: LossFnType = "importance_sampling"
     loss_fn_config: dict[str, Any] | None = None
+    grad_clip_norm: float = 0.0
     remove_constant_reward_groups: bool = False
 
     # Stream minibatch settings
@@ -124,6 +125,7 @@ async def cli_main(cli_config: CLIConfig) -> None:
         compute_post_kl=cli_config.compute_post_kl,
         num_substeps=cli_config.num_substeps,
         loss_fn=cli_config.loss_fn,
+        grad_clip_norm=cli_config.grad_clip_norm,
         loss_fn_config=cli_config.loss_fn_config,
         remove_constant_reward_groups=cli_config.remove_constant_reward_groups,
         async_config=AsyncConfig(
