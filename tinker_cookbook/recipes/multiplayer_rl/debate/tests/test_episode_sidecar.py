@@ -248,7 +248,7 @@ class TestSchemaValidation:
 
     def test_schema_version(self):
         record = self._get_record()
-        assert record["schema_version"] == 1
+        assert record["schema_version"] == 2
 
     def test_trained_role_present_and_valid(self):
         record = self._get_record()
@@ -374,8 +374,8 @@ class TestSelfPlaySignals:
 
         assert record["signals"] == metrics
 
-    def test_selfplay_schema_v2_seat_based(self):
-        """Self-play records use schema_version=2 with seat-based fields."""
+    def test_selfplay_schema_v3_seat_based(self):
+        """Self-play records use schema_version=3 with seat-based fields."""
         with tempfile.TemporaryDirectory() as tmpdir:
             builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir, selfplay=True)
             builder.on_group_complete(
@@ -387,7 +387,7 @@ class TestSelfPlaySignals:
             with open(log_path) as f:
                 record = json.loads(f.readline())
 
-        assert record["schema_version"] == 2
+        assert record["schema_version"] == 3
         # Seat-based fields.
         assert "role" in record
         assert "reward" in record
@@ -417,8 +417,8 @@ class TestSelfPlaySignals:
             assert entry["identity"] in ("debater_a", "debater_b")
             assert entry["identity"] == entry["role"]
 
-    def test_frozen_opp_schema_v1_identity_based(self):
-        """Frozen-opp records use schema_version=1 with identity-based fields."""
+    def test_frozen_opp_schema_v2_identity_based(self):
+        """Frozen-opp records use schema_version=2 with identity-based fields."""
         with tempfile.TemporaryDirectory() as tmpdir:
             builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir, selfplay=False)
             builder.on_group_complete(
@@ -430,7 +430,7 @@ class TestSelfPlaySignals:
             with open(log_path) as f:
                 record = json.loads(f.readline())
 
-        assert record["schema_version"] == 1
+        assert record["schema_version"] == 2
         assert "trained_role" in record
         assert "reward_trained" in record
         assert "role" not in record
@@ -459,7 +459,72 @@ class TestSelfPlaySignals:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: File lock concurrency test
+# Test 4: Step and split fields
+# ---------------------------------------------------------------------------
+
+
+class TestStepAndSplit:
+    def test_step_written_when_set(self):
+        """step=42 on builder produces record with "step": 42."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir)
+            builder.step = 42
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+        assert record["step"] == 42
+
+    def test_step_none_by_default(self):
+        """Without setting step, record has "step": None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir)
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+        assert record["step"] is None
+
+    def test_split_written_from_builder(self):
+        """split="train" on builder produces record with "split": "train"."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir)
+            builder.split = "train"
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+        assert record["split"] == "train"
+
+    def test_split_none_by_default(self):
+        """Without setting split, record has "split": None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir)
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+        assert record["split"] is None
+
+
+# ---------------------------------------------------------------------------
+# Test 5: File lock concurrency test
 # ---------------------------------------------------------------------------
 
 
@@ -501,7 +566,7 @@ class TestConcurrency:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     pytest.fail(f"Line {i} is corrupt/interleaved: {line!r}")
-                assert record["schema_version"] == 1
+                assert record["schema_version"] == 2
 
     def test_lock_is_module_level(self):
         """_EPISODE_LOG_LOCK is a module-level threading.Lock, shared across builders."""
@@ -509,7 +574,7 @@ class TestConcurrency:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Wiring verification (CLIConfig -> DebateRLDatasetBuilder -> DebateDataset -> DebateGroupBuilder)
+# Test 6: Wiring verification (CLIConfig -> DebateRLDatasetBuilder -> DebateDataset -> DebateGroupBuilder)
 # ---------------------------------------------------------------------------
 
 
@@ -580,7 +645,7 @@ class TestWiring:
 
 
 # ---------------------------------------------------------------------------
-# Test 5: No-op when episode_log_dir is None
+# Test 7: No-op when episode_log_dir is None
 # ---------------------------------------------------------------------------
 
 

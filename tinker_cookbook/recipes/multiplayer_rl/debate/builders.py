@@ -164,6 +164,8 @@ class DebateGroupBuilder(EnvGroupBuilder):
     scorer: AnswerJudgeClient | None = field(default=None, repr=False)
     scorer_parallelism: int = 64
     episode_log_dir: str | None = None
+    split: str | None = None
+    step: int | None = None
 
     # Set after make_envs
     _runtimes: list[DebateRuntime] = field(default_factory=list, repr=False)
@@ -190,7 +192,9 @@ class DebateGroupBuilder(EnvGroupBuilder):
 
             # Shared fields across both modes.
             record: dict = {
-                "schema_version": 2 if is_selfplay else 1,
+                "schema_version": 3 if is_selfplay else 2,
+                "step": self.step,
+                "split": self.split,
                 "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
                 "debate_id": state.spec.debate_id,
                 "protocol_kind": state.spec.protocol_kind.value,

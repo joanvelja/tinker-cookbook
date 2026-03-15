@@ -53,6 +53,7 @@ class DebateDataset(RLDataset):
         scorer: AnswerJudgeClient | None = None,
         scorer_parallelism: int = 64,
         episode_log_dir: str | None = None,
+        split: str | None = None,
         shuffle_seed: int = 42,
         n_epochs: int = 1,
     ) -> None:
@@ -86,6 +87,7 @@ class DebateDataset(RLDataset):
         self.scorer = scorer
         self.scorer_parallelism = scorer_parallelism
         self.episode_log_dir = episode_log_dir
+        self.split = split
 
         self.n_epochs = n_epochs
         self._batches_per_epoch = (len(problems) + batch_size - 1) // batch_size
@@ -124,6 +126,8 @@ class DebateDataset(RLDataset):
                 scorer=self.scorer,
                 scorer_parallelism=self.scorer_parallelism,
                 episode_log_dir=self.episode_log_dir,
+                split=self.split,
+                step=index,
             )
             for problem in batch_problems
         ]
