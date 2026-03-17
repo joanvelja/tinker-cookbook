@@ -143,6 +143,7 @@ def get_renderer(
         Qwen3VLInstructRenderer,
         Qwen3VLRenderer,
     )
+    from tinker_cookbook.renderers.qwen3_5 import Qwen3_5DisableThinkingRenderer, Qwen3_5Renderer
     from tinker_cookbook.renderers.role_colon import RoleColonRenderer
 
     if name == "role_colon":
@@ -175,6 +176,10 @@ def get_renderer(
         return KimiK25Renderer(tokenizer, image_processor=image_processor)
     elif name == "kimi_k25_disable_thinking":
         return KimiK25DisableThinkingRenderer(tokenizer, image_processor=image_processor)
+    elif name == "qwen3_5":
+        return Qwen3_5Renderer(tokenizer, image_processor=image_processor)
+    elif name == "qwen3_5_disable_thinking":
+        return Qwen3_5DisableThinkingRenderer(tokenizer, image_processor=image_processor)
     elif name == "gpt_oss_no_sysprompt":
         return GptOssRenderer(tokenizer, use_system_prompt=False)
     elif name == "gpt_oss_low_reasoning":

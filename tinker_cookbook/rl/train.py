@@ -26,7 +26,6 @@ from tinker_cookbook.eval.evaluators import SamplingClientEvaluator, SamplingCli
 from tinker_cookbook.rl.data_processing import (
     assemble_training_data,
     compute_advantages,
-    remove_constant_reward_groups,
 )
 from tinker_cookbook.rl.metric_util import RLTestSetEvaluator, compute_trajectory_metrics
 from tinker_cookbook.rl.metrics import (
@@ -219,7 +218,7 @@ async def train_step(
     loss_fn: LossFnType,
     loss_fn_config: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
-    grad_clip_norm: float = 0.0,
+    grad_clip_norm: float | None = None,
 ) -> List[torch.Tensor]:
     """Train the model on collected trajectories.
 
@@ -229,10 +228,10 @@ async def train_step(
     if not batches:
         return []
 
-    adam_params = tinker.AdamParams(
-        learning_rate=learning_rate, beta1=0.9, beta2=0.95, eps=1e-8,
-        grad_clip_norm=grad_clip_norm,
-    )
+    adam_kwargs: dict[str, Any] = dict(learning_rate=learning_rate, beta1=0.9, beta2=0.95, eps=1e-8)
+    if grad_clip_norm is not None:
+        adam_kwargs["grad_clip_norm"] = grad_clip_norm
+    adam_params = tinker.AdamParams(**adam_kwargs)
     training_logprobs_D: list[torch.Tensor] = []
     optim_result: tinker.OptimStepResponse | None = None
 
@@ -364,8 +363,8 @@ class Config:
     num_substeps: int = 1
     # LoRA rank for the training adapter.
     lora_rank: int = 32
-    # Maximum global gradient norm (0.0 = no clipping).
-    grad_clip_norm: float = 0.0
+    # Gradient clip norm for Adam optimizer (None = no clipping).
+    grad_clip_norm: float | None = None
 
     # -------------------------------------------------------------------------
     # Sampling and diagnostics (advanced)
@@ -968,6 +967,19 @@ async def prepare_minibatch(
         alpha=advantage_alpha,
     )
 
+    # Notify builders that advantages are ready (group-level logging hook)
+    for builder, traj_group, adv_G in safezip(
+        env_group_builders_P, trajectory_groups_P, advantages_P
+    ):
+        builder.on_advantages_computed(
+            traj_group,
+            adv_G.tolist(),
+            scheme=advantage_scheme,
+            alpha=advantage_alpha,
+            use_subgroups=use_advantage_subgroups,
+            removed_before_training=False,
+        )
+
     # Print up to two trajectory groups with correctly-centered advantages
     for i, traj_group in enumerate(trajectory_groups_P[:2]):
         print_group(traj_group, tokenizer, advantages=advantages_P[i])
@@ -1011,20 +1023,26 @@ async def compute_full_batch_metrics_and_get_sampling_client(
     """
     metrics = {}
 
-    # Compute KL metrics
+    # Fire checkpoint save FIRST (async) — overlap with local KL computation.
+    # The sooner the new sampling client exists, the sooner the next batch can start.
+    checkpoint_task = asyncio.create_task(
+        save_checkpoint_and_get_sampling_client(
+            training_client,
+            i_batch,
+            log_path,
+            save_every,
+            ttl_seconds=ttl_seconds,
+            retry_config=retry_config,
+        )
+    )
+
+    # Compute KL metrics locally while checkpoint saves in the background
     with timed("compute_kl_sample_train", metrics):
         kl_sample_train_metrics = compute_kl_sample_train(data_D, training_logprobs_D)
         metrics.update(kl_sample_train_metrics)
 
-    # Get a sampling client using the new weights
-    sampling_client, checkpoint_metrics = await save_checkpoint_and_get_sampling_client(
-        training_client,
-        i_batch,
-        log_path,
-        save_every,
-        ttl_seconds=ttl_seconds,
-        retry_config=retry_config,
-    )
+    # Now await the checkpoint
+    sampling_client, checkpoint_metrics = await checkpoint_task
     metrics.update(checkpoint_metrics)
 
     # Compute post-KL metrics if configured
@@ -1137,10 +1155,12 @@ async def do_train_step_streaming_and_get_sampling_client(
             wrapped_trajectory_groups = []
 
         # Enqueue optim_step before awaiting results (so they land on same clock cycle)
-        adam_params = tinker.AdamParams(
-            learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-8,
-            grad_clip_norm=cfg.grad_clip_norm,
+        adam_kwargs: dict[str, Any] = dict(
+            learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-8
         )
+        if cfg.grad_clip_norm is not None:
+            adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
+        adam_params = tinker.AdamParams(**adam_kwargs)
         with timed(f"train/optim_substep_{i_substep}_enqueue", metrics):
             optim_future = await training_client.optim_step_async(adam_params)
 
@@ -1331,7 +1351,29 @@ async def do_sync_training(
             )
 
         if cfg.remove_constant_reward_groups:
-            trajectory_groups_P = remove_constant_reward_groups(trajectory_groups_P)
+            # Filter builders alongside trajectory groups to maintain alignment.
+            kept = []
+            removed = []
+            for b, tg in safezip(env_group_builders_P, trajectory_groups_P):
+                if all_same(tg.get_total_rewards()):
+                    removed.append((b, tg))
+                else:
+                    kept.append((b, tg))
+            if not kept:
+                # All constant — keep first group (matches remove_constant_reward_groups)
+                kept = [removed.pop(0)]
+            # Log removed groups with zero advantages
+            for b, tg in removed:
+                b.on_advantages_computed(
+                    tg,
+                    [0.0] * len(tg.trajectories_G),
+                    scheme=cfg.advantage_scheme,
+                    alpha=cfg.advantage_alpha,
+                    use_subgroups=cfg.use_advantage_subgroups,
+                    removed_before_training=True,
+                )
+            env_group_builders_P = [b for b, _ in kept]
+            trajectory_groups_P = [tg for _, tg in kept]
 
         # Train step
         sampling_client, train_step_metrics = await do_train_step_and_get_sampling_client(

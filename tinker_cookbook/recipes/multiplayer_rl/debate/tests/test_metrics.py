@@ -95,7 +95,6 @@ def _spec(target: str | None = "A") -> DebateSpec:
             target=target,
         ),
         schedule=_schedule_2_rounds(),
-        open_reasoning=False,
     )
 
 
@@ -491,7 +490,7 @@ def test_mcq_debate_metrics_keys():
     assert "accuracy.debater_a" in metrics
     assert "truth_win_if_disagreement" in metrics
     assert "parse_success" in metrics
-    assert len(metrics) == 39
+    assert len(metrics) == 31
 
 
 def test_mcq_debate_metrics_callable():

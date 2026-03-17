@@ -5,9 +5,10 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields as dc_fields, is_dataclass
 from enum import Enum
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Dict, List
 
 import chz
@@ -50,12 +51,14 @@ def dump_config(config: Any) -> Any:
     if hasattr(config, "to_dict"):
         return config.to_dict()
     elif chz.is_chz(config):
-        # Recursively dump values to handle nested non-serializable fields
-        return {k: dump_config(v) for k, v in chz.asdict(config).items()}
+        # Iterate fields manually — chz.asdict deep-copies and chokes on
+        # non-picklable types (e.g. MappingProxyType in frozen dataclasses).
+        return {name: dump_config(getattr(config, name)) for name in config.__chz_fields__}
     elif is_dataclass(config) and not isinstance(config, type):
-        # Recursively dump values to handle nested non-serializable fields
-        return {k: dump_config(v) for k, v in asdict(config).items()}
-    elif isinstance(config, dict):
+        # Iterate fields manually — dataclasses.asdict deep-copies and chokes
+        # on non-picklable types (e.g. MappingProxyType in frozen dataclasses).
+        return {f.name: dump_config(getattr(config, f.name)) for f in dc_fields(config)}
+    elif isinstance(config, Mapping):
         return {k: dump_config(v) for k, v in config.items()}
     elif isinstance(config, (list, tuple)):
         return [dump_config(item) for item in config]
@@ -229,7 +232,7 @@ class WandbLogger(Logger):
     def log_hparams(self, config: Any) -> None:
         """Log hyperparameters to wandb."""
         if self.run and wandb is not None:
-            wandb.config.update(dump_config(config))
+            wandb.config.update(dump_config(config), allow_val_change=True)
 
     def log_metrics(self, metrics: Dict[str, Any], step: int | None = None) -> None:
         """Log metrics to wandb."""

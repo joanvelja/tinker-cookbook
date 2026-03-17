@@ -85,7 +85,7 @@ def _encode_spec(spec: DebateSpec) -> dict[str, Any]:
             "target": spec.problem.target,
         },
         "schedule": [_encode_turn_slot(s) for s in spec.schedule],
-        "open_reasoning": spec.open_reasoning,
+        "think_visibility": spec.encode_think_visibility(),
         "protocol_kind": spec.protocol_kind.value,
         "prompts_ref": spec.prompts_ref,
     }
@@ -164,7 +164,7 @@ def _decode_spec(d: dict[str, Any]) -> DebateSpec:
         debate_id=d["debate_id"],
         problem=problem,
         schedule=tuple(_decode_turn_slot(s) for s in d["schedule"]),
-        open_reasoning=d["open_reasoning"],
+        think_visibility=DebateSpec.decode_think_visibility(d.get("think_visibility", {})),
         protocol_kind=ProtocolKind(d["protocol_kind"]),
         prompts_ref=d["prompts_ref"],
     )
@@ -257,7 +257,6 @@ def debate_solver(
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL,
     num_rounds: int = 2,
     prompts_ref: str = "scientific_mcq",
-    open_reasoning: bool = False,
     randomize_position: bool = True,
     scoring_mode: ScoringMode = ScoringMode.MCQ,
 ) -> Solver:
@@ -296,11 +295,13 @@ def debate_solver(
             answer_by_role=answer_by_role,
             target=target_text,
         )
+        prompts = resolve_prompts(prompts_ref)
+        think_visibility = prompts.get_think_visibility()
         spec = DebateSpec(
             debate_id=debate_id,
             problem=problem,
             schedule=schedule,
-            open_reasoning=open_reasoning,
+            think_visibility=think_visibility,
             protocol_kind=protocol_kind,
             prompts_ref=prompts_ref,
         )
@@ -473,7 +474,6 @@ def debate_eval(
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL,
     num_rounds: int = 2,
     prompts_ref: str = "scientific_mcq",
-    open_reasoning: bool = False,
     randomize_position: bool = True,
     scorer_client: AnswerJudgeClient | None = None,
     scorer_parallelism: int = 64,
@@ -488,13 +488,9 @@ def debate_eval(
     if scoring_mode == ScoringMode.OPEN_ENDED:
         prompts = resolve_prompts(prompts_ref)
         if prompts.get_binary_judge_template("matcher") is None:
-            raise ValueError(
-                f"OPEN_ENDED debate eval requires _matcher in {prompts.source_ref}."
-            )
+            raise ValueError(f"OPEN_ENDED debate eval requires _matcher in {prompts.source_ref}.")
         if prompts.get_binary_judge_template("grader") is None:
-            raise ValueError(
-                f"OPEN_ENDED debate eval requires _grader in {prompts.source_ref}."
-            )
+            raise ValueError(f"OPEN_ENDED debate eval requires _grader in {prompts.source_ref}.")
     return Task(
         dataset=samples,
         solver=debate_solver(
@@ -504,7 +500,6 @@ def debate_eval(
             protocol_kind=protocol_kind,
             num_rounds=num_rounds,
             prompts_ref=prompts_ref,
-            open_reasoning=open_reasoning,
             randomize_position=randomize_position,
             scoring_mode=scoring_mode,
         ),

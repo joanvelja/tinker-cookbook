@@ -5,7 +5,7 @@ version: 2
 
 think:
   judge:
-    default: true
+    default: private
 
 opponent_wrap:
   debater: '"""{{ text }}"""'

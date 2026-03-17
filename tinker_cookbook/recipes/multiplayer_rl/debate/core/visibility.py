@@ -9,7 +9,15 @@ from collections.abc import Callable
 from tinker_cookbook.renderers import Message
 
 from ..prompts import resolve_prompts
-from ..types import DebateState, Role, TurnSlot, Utterance, VisibilityPolicy, current_phase
+from ..types import (
+    DebateState,
+    Role,
+    ThinkVisibility,
+    TurnSlot,
+    Utterance,
+    VisibilityPolicy,
+    current_phase,
+)
 
 VisibilityFn = Callable[[DebateState, Role], list[Utterance]]
 REGISTRY: dict[VisibilityPolicy, VisibilityFn] = {}
@@ -32,26 +40,47 @@ _ROLE_LABELS: dict[Role, str] = {
 }
 
 
+def should_see_thinking(vis: ThinkVisibility, speaker: Role, viewer: Role) -> bool:
+    """Determine if viewer should see speaker's thinking blocks."""
+    if vis == ThinkVisibility.DISABLED:
+        return False
+    if speaker == viewer:
+        return True  # own thinking always visible (KV-cache)
+    if vis == ThinkVisibility.OPEN:
+        return True
+    if vis == ThinkVisibility.VISIBLE_TO_JUDGE and viewer == Role.JUDGE:
+        return True
+    return False
+
+
 def _system_message(state: DebateState, viewer: Role) -> Message:
     prompts = resolve_prompts(state.spec.prompts_ref)
     return Message(role="system", content=prompts.render_system(state, viewer))
 
 
-def _wrap_opponent_turn(utt: Utterance, open_reasoning: bool, prompts=None, viewer=None) -> str:
+def _wrap_opponent_turn(utt: Utterance, *, see_thinking: bool, prompts=None, viewer=None) -> str:
     label = _ROLE_LABELS[utt.role]
-    text = utt.text if open_reasoning else utt.stripped_text
+    text = utt.text if see_thinking else (utt.stripped_text or "[No public argument disclosed]")
     if prompts is not None and prompts.opponent_wrap is not None and viewer is not None:
         return prompts.render_opponent_wrap(text, label, utt.phase.value, viewer)
     return f'<opponent_turn agent="{label}" phase="{utt.phase.value}">\n{text}\n</opponent_turn>'
 
 
-def _utterance_to_message(utt: Utterance, viewer: Role, open_reasoning: bool, prompts=None) -> Message:
+def _utterance_to_message(
+    utt: Utterance, viewer: Role, think_visibility: dict | None = None, prompts=None
+) -> Message:
     """Convert utterance to Message. Own turns -> assistant (full text), opponent -> user (wrapped)."""
     if utt.role == viewer:
         # Keep full text (including thinking) for KV-cache prefix reuse.
         return Message(role="assistant", content=utt.text)
     else:
-        return Message(role="user", content=_wrap_opponent_turn(utt, open_reasoning, prompts=prompts, viewer=viewer))
+        tv = think_visibility or {}
+        vis = tv.get(utt.role, ThinkVisibility.DISABLED)
+        see = should_see_thinking(vis, utt.role, viewer)
+        return Message(
+            role="user",
+            content=_wrap_opponent_turn(utt, see_thinking=see, prompts=prompts, viewer=viewer),
+        )
 
 
 def _shuffle_simultaneous(
@@ -156,7 +185,9 @@ def get_visible_messages(state: DebateState, viewer: Role) -> tuple[Message, ...
 
     # Convert to Messages
     for utt in utterances:
-        msgs.append(_utterance_to_message(utt, viewer, state.spec.open_reasoning, prompts=prompts))
+        msgs.append(
+            _utterance_to_message(utt, viewer, state.spec.think_visibility, prompts=prompts)
+        )
 
     return tuple(msgs)
 
@@ -204,11 +235,11 @@ def build_generation_messages(
             if instr:
                 transcript_msgs.append(Message(role="user", content=instr))
         transcript_msgs.append(
-            _utterance_to_message(utt, viewer, state.spec.open_reasoning, prompts=prompts)
+            _utterance_to_message(utt, viewer, state.spec.think_visibility, prompts=prompts)
         )
 
-    # 4. Consolidate transcript (merges adjacent same-role user messages)
-    msgs.extend(_consolidate_str_messages(transcript_msgs))
+    # 4. Append transcript
+    msgs.extend(transcript_msgs)
 
     # 5. Resolve trigger and append current instruction
     if trigger is None:
@@ -218,7 +249,10 @@ def build_generation_messages(
     if user_content:
         msgs.append(Message(role="user", content=user_content))
 
-    # 6. Resolve prefill
+    # 6. Consolidate full message list (merges adjacent same-role user messages)
+    msgs = _consolidate_str_messages(msgs)
+
+    # 7. Resolve prefill
     prefill = prompts.render_prefill(state, viewer, trigger=trigger)
 
     return msgs, prefill

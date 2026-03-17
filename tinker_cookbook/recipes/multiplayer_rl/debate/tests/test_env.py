@@ -95,6 +95,7 @@ def test_group_builder_compute_rewards_no_outcome_fn():
 
 def test_group_builder_compute_rewards_with_outcome_fn():
     """With outcome_reward_fn, returns mapped rewards."""
+
     def outcome_fn(outcome: DebateOutcome) -> Mapping[Role, float]:
         return outcome.scores_by_role
 
@@ -137,7 +138,6 @@ def test_branch_builder_creates_independent_envs():
         debate_id="test",
         problem=DebateProblemSpec.from_seat_answers("test", "A", "B", ScoringMode.MCQ),
         schedule=schedule,
-        open_reasoning=False,
     )
     state = DebateState(
         spec=spec,
@@ -197,9 +197,9 @@ def test_debate_dataset_get_batch():
     batch = ds.get_batch(0)
     assert len(batch) == 2
     assert all(isinstance(b, DebateGroupBuilder) for b in batch)
-    # Check that task prompts are correct
-    assert batch[0].problem.task_prompt == "q1"
-    assert batch[1].problem.task_prompt == "q2"
+    # Check that both problems are present (order may vary due to shuffle)
+    prompts = {b.problem.task_prompt for b in batch}
+    assert prompts == {"q1", "q2"}
 
 
 # --- Mocks for frozen-opponent tests ---
@@ -336,7 +336,6 @@ def test_frozen_opponent_b_first():
         debate_id="test-b-first",
         problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
         schedule=schedule,
-        open_reasoning=False,
     )
     state = DebateState(
         spec=spec,
@@ -377,7 +376,6 @@ def test_frozen_opponent_hybrid():
         debate_id="hybrid-frozen",
         problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
         schedule=schedule,
-        open_reasoning=False,
     )
     state = DebateState(
         spec=spec,

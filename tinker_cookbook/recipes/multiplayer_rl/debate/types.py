@@ -10,14 +10,21 @@ from typing import Any, Literal, Mapping
 from .think import strip_think
 
 
-def _strip_reasoning(text: str) -> str:
-    return strip_think(text)[0]
+def _strip_reasoning(text: str, tag: str = "thinking") -> str:
+    return strip_think(text, tag=tag)[0]
 
 
 class Role(StrEnum):
     DEBATER_A = "debater_a"
     DEBATER_B = "debater_b"
     JUDGE = "judge"
+
+
+class ThinkVisibility(StrEnum):
+    DISABLED = "disabled"
+    PRIVATE = "private"
+    VISIBLE_TO_JUDGE = "visible_to_judge"
+    OPEN = "open"
 
 
 class Phase(StrEnum):
@@ -69,12 +76,13 @@ class Utterance:
     token_count: int
     slot_id: int
     fields: Mapping[str, Any] | None = None
+    think_tag: str = "thinking"
     stripped_text: str = field(init=False)
 
     def __post_init__(self) -> None:
         if self.fields is not None:
             object.__setattr__(self, "fields", _freeze_mapping(self.fields))
-        object.__setattr__(self, "stripped_text", _strip_reasoning(self.text))
+        object.__setattr__(self, "stripped_text", _strip_reasoning(self.text, self.think_tag))
 
 
 def _freeze_mapping(m: Mapping) -> MappingProxyType:
@@ -126,7 +134,6 @@ class DebateGameSpec:
     protocol_kind: ProtocolKind
     num_rounds: int
     prompts_ref: str = "default"
-    open_reasoning: bool = False
     include_judge_turns: bool = False
 
     def __post_init__(self) -> None:
@@ -141,9 +148,26 @@ class DebateSpec:
     debate_id: str
     problem: DebateProblemSpec
     schedule: tuple[TurnSlot, ...]
-    open_reasoning: bool
+    think_visibility: Mapping[Role, ThinkVisibility] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     prompts_ref: str = "default"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.think_visibility, MappingProxyType):
+            object.__setattr__(
+                self, "think_visibility", MappingProxyType(dict(self.think_visibility))
+            )
+
+    def encode_think_visibility(self) -> dict[str, str]:
+        """Serialize think_visibility for JSON/log output."""
+        return {k.value: v.value for k, v in self.think_visibility.items()}
+
+    @staticmethod
+    def decode_think_visibility(raw: dict[str, str]) -> dict[Role, ThinkVisibility]:
+        """Deserialize think_visibility from JSON/log input."""
+        return {Role(k): ThinkVisibility(v) for k, v in raw.items()}
 
 
 @dataclass(frozen=True)

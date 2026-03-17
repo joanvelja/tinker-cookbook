@@ -9,7 +9,7 @@ import chz
 import tinker
 from tinker.lib.public_interfaces.service_client import RetryConfig
 
-from tinker_cookbook import cli_utils, model_info
+from tinker_cookbook import cli_utils, hyperparam_utils, model_info
 from tinker_cookbook.completers import TinkerMessageCompleter
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.rl import train
@@ -21,6 +21,7 @@ from tinker_cookbook.usage import UsageTracker
 from ..dataset import DebateDataset
 from ..eval.dataset_adapter import ProblemsAdapter
 from ..eval.evaluator import DebateInspectEvaluatorBuilder
+from ..plugins import StepRewardFn, completion_and_format_reward_fn, format_penalty_reward_fn
 from ..scoring.judge import LLMJudgeCallback, zero_sum_outcome_reward
 from ..scoring.providers import DebateScorerBuilder
 from ..sources import GPQAProblemSource, ProblemSource
@@ -28,7 +29,6 @@ from ..types import DebateGameSpec, DebateProblemSpec, ProtocolKind, ScoringMode
 
 
 def _recommended_max_connections(batch_size: int, group_size: int, self_play: bool = False) -> int:
-    # For the user's target config batch_size=32, group_size=8 this yields 256.
     # Self-play has 2 trained agents per game, so double the connections.
     agents_per_game = 2 if self_play else 1
     return max(16, batch_size * group_size * agents_per_game)
@@ -48,21 +48,23 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     reasoning_effort: str | None = None
     opponent_model: str
     judge_model: str
+    judge_renderer_name: str | None = None
     opponent_max_tokens: int = 8192
     judge_max_tokens: int = 4096
     train_problems: list[DebateProblemSpec] = chz.field(default_factory=list)
     test_problems: list[DebateProblemSpec] = chz.field(default_factory=list)
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     num_rounds: int = 2
-    batch_size: int = 32
-    group_size: int = 8
+    batch_size: int = 128
+    group_size: int = 4
     randomize_position: bool = True
     prompts_ref: str = "judge_exploit"
-    open_reasoning: bool = False
+    step_reward_fn: StepRewardFn | None = None
     self_play: bool = False
     base_url: str | None = None
     episode_log_dir: str | None = None
-    max_connections: int = 256
+    n_epochs: int = 1
+    max_connections: int = 1024
     progress_timeout_s: int = 900
     scorer_builder: DebateScorerBuilder | None = None
 
@@ -100,7 +102,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             opponent_completer = None
             opponent_renderer = None
 
-        judge_name = model_info.get_recommended_renderer_name(
+        judge_name = self.judge_renderer_name or model_info.get_recommended_renderer_name(
             self.judge_model, reasoning_effort=self.reasoning_effort
         )
         judge_renderer = get_renderer(judge_name, get_tokenizer(self.judge_model))
@@ -132,7 +134,6 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             protocol_kind=self.protocol_kind,
             num_rounds=self.num_rounds,
             prompts_ref=self.prompts_ref,
-            open_reasoning=self.open_reasoning,
         )
 
         train_ds = DebateDataset(
@@ -141,6 +142,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             group_size=self.group_size,
             game=game,
             renderer=trained_renderer,
+            step_reward_fn=self.step_reward_fn,
             judge_callback=judge_callback,
             outcome_reward_fn=zero_sum_outcome_reward,
             opponent_completer=opponent_completer,
@@ -149,6 +151,8 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             scorer=scorer_client,
             scorer_parallelism=scorer_parallelism,
             episode_log_dir=self.episode_log_dir,
+            split="train",
+            n_epochs=self.n_epochs,
         )
 
         test_ds: RLDataset | None = None
@@ -159,6 +163,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
                 group_size=self.group_size,
                 game=game,
                 renderer=trained_renderer,
+                step_reward_fn=self.step_reward_fn,
                 judge_callback=judge_callback,
                 outcome_reward_fn=zero_sum_outcome_reward,
                 opponent_completer=opponent_completer,
@@ -167,6 +172,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
                 scorer=scorer_client,
                 scorer_parallelism=scorer_parallelism,
                 episode_log_dir=self.episode_log_dir,
+                split="test",
             )
 
         return train_ds, test_ds
@@ -179,21 +185,26 @@ class CLIConfig:
     reasoning_effort: str | None = None
     opponent_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     judge_model: str = "Qwen/Qwen3-4B-Instruct-2507"
+    judge_renderer_name: str | None = None
     opponent_max_tokens: int = 8192
     judge_max_tokens: int = 4096
     problem_source: ProblemSource = GPQAProblemSource()
     protocol_kind: ProtocolKind = ProtocolKind.SEQUENTIAL
     num_rounds: int = 2
-    batch_size: int = 32
-    group_size: int = 8
-    learning_rate: float = 3e-5
+    batch_size: int = 128
+    group_size: int = 4
+    n_epochs: int = 1
+    learning_rate: float | None = None
     max_tokens: int = 8192
     randomize_position: bool = True
     self_play: bool = False
     prompts_ref: str | None = None
-    open_reasoning: bool = False
+    format_penalty: bool = False
     kl_penalty_coef: float = 0.0
-    advantage_scheme: str = "mean_center"
+    loss_fn: str = "ppo"
+    num_substeps: int = 2
+    grad_clip_norm: float = 0.3
+    advantage_scheme: str = "maxrl"
     advantage_alpha: float = 0.5
     inspect_eval: DebateInspectEvaluatorBuilder | None = None
     eval_limit: int | None = 25
@@ -208,11 +219,11 @@ class CLIConfig:
     max_connections: int | None = None
     progress_timeout_s: int = 900
     scorer_builder: DebateScorerBuilder | None = None
-    num_minibatches: int | None = None  # None = sync training (default)
+    num_minibatches: int = 8
 
 
 def build_config(cli: CLIConfig) -> train.Config:
-    if cli.num_minibatches is not None and cli.batch_size % cli.num_minibatches != 0:
+    if cli.batch_size % cli.num_minibatches != 0:
         raise ValueError(
             f"batch_size ({cli.batch_size}) must be divisible by "
             f"num_minibatches ({cli.num_minibatches})"
@@ -226,13 +237,49 @@ def build_config(cli: CLIConfig) -> train.Config:
         )
 
     model_name = cli.model_name
+
+    # Resolve learning rate: explicit override > hyperparam_utils > fallback.
+    if cli.learning_rate is not None:
+        learning_rate = cli.learning_rate
+    else:
+        try:
+            attrs = model_info.get_model_attributes(model_name)
+            if attrs.organization == "openai":
+                learning_rate = 4e-4
+            else:
+                learning_rate = hyperparam_utils.get_lr(model_name)
+        except (ValueError, KeyError):
+            learning_rate = 4e-4
+
     prompts_ref = cli.prompts_ref or cli.problem_source.default_prompts_ref()
+
+    # Warn if protocol_kind and prompts_ref look mismatched.
+    _PROTOCOL_PROMPT_HINTS = {
+        ProtocolKind.HYBRID: "hybrid",
+        ProtocolKind.SIMULTANEOUS: "simultaneous",
+    }
+    hint = _PROTOCOL_PROMPT_HINTS.get(cli.protocol_kind)
+    if hint and hint not in prompts_ref:
+        import warnings
+        warnings.warn(
+            f"protocol_kind={cli.protocol_kind.value} but prompts_ref={prompts_ref!r} "
+            f"does not contain '{hint}'. The judge prompt may not match the protocol. "
+            f"Consider using a prompts_ref with '{hint}' in the name.",
+            stacklevel=2,
+        )
+
     max_connections = cli.max_connections or _recommended_max_connections(
         cli.batch_size, cli.group_size, self_play=cli.self_play
     )
     scorer_parallelism = (
         cli.scorer_builder.max_connections if cli.scorer_builder is not None else max_connections
     )
+
+    step_reward_fn: StepRewardFn | None
+    if cli.format_penalty:
+        step_reward_fn = completion_and_format_reward_fn
+    else:
+        step_reward_fn = None
 
     # Self-play: both agents share the same policy, so randomize_position is meaningless.
     randomize_position = False if cli.self_play else cli.randomize_position
@@ -245,9 +292,10 @@ def build_config(cli: CLIConfig) -> train.Config:
     run_name = (
         f"debate-{model_name.split('/')[-1]}-"
         f"{cli.group_size}group-{cli.batch_size}batch-"
-        f"{cli.learning_rate}lr-{date_and_time}"
+        f"{learning_rate}lr-{date_and_time}"
     )
     log_path = cli.log_path or f"/tmp/tinker-examples/debate-rl/{run_name}"
+    episode_log_dir = cli.episode_log_dir or f"{log_path}/episodes"
     wandb_name = cli.wandb_name or run_name
 
     dataset_builder = DebateRLDatasetBuilder(
@@ -256,6 +304,7 @@ def build_config(cli: CLIConfig) -> train.Config:
         reasoning_effort=cli.reasoning_effort,
         opponent_model=cli.opponent_model,
         judge_model=cli.judge_model,
+        judge_renderer_name=cli.judge_renderer_name,
         opponent_max_tokens=cli.opponent_max_tokens,
         judge_max_tokens=cli.judge_max_tokens,
         train_problems=train_problems,
@@ -267,9 +316,10 @@ def build_config(cli: CLIConfig) -> train.Config:
         randomize_position=randomize_position,
         self_play=cli.self_play,
         prompts_ref=prompts_ref,
-        open_reasoning=cli.open_reasoning,
+        step_reward_fn=step_reward_fn,
         base_url=cli.base_url,
-        episode_log_dir=cli.episode_log_dir,
+        episode_log_dir=episode_log_dir,
+        n_epochs=cli.n_epochs,
         max_connections=max_connections,
         progress_timeout_s=cli.progress_timeout_s,
         scorer_builder=cli.scorer_builder,
@@ -290,6 +340,7 @@ def build_config(cli: CLIConfig) -> train.Config:
             renderer_name=cli.inspect_eval.renderer_name or eval_renderer_name,
             model_name=cli.inspect_eval.model_name or model_name,
             reasoning_effort=cli.reasoning_effort,
+            judge_renderer_name=cli.inspect_eval.judge_renderer_name or cli.judge_renderer_name,
             max_connections=eval_max_connections,
             progress_timeout_s=cli.progress_timeout_s,
             scorer_builder=cli.inspect_eval.scorer_builder or cli.scorer_builder,
@@ -306,17 +357,17 @@ def build_config(cli: CLIConfig) -> train.Config:
             source="gpqa_eval",
             limit=cli.eval_limit,
         )
-        # Self-play training → self-play eval (opponent_model=None triggers
-        # same-weights opponent in DebateInspectEvaluator).
+        # Self-play training → eval vs base weights (opponent_model=model_name
+        # creates fresh sampling client with init weights).
         inspect_builder = DebateInspectEvaluatorBuilder(
             adapter=eval_adapter,
             prompts_ref=prompts_ref,
             num_rounds=cli.num_rounds,
             protocol_kind=cli.protocol_kind,
-            open_reasoning=cli.open_reasoning,
-            randomize_position=randomize_position,
-            opponent_model=None if cli.self_play else cli.opponent_model,
+            randomize_position=True if cli.self_play else randomize_position,
+            opponent_model=model_name if cli.self_play else cli.opponent_model,
             judge_model=cli.judge_model,
+            judge_renderer_name=cli.judge_renderer_name,
             opponent_max_tokens=cli.opponent_max_tokens,
             judge_max_tokens=cli.judge_max_tokens,
             renderer_name=eval_renderer_name,
@@ -334,9 +385,12 @@ def build_config(cli: CLIConfig) -> train.Config:
         model_name=model_name,
         log_path=log_path,
         dataset_builder=dataset_builder,
-        learning_rate=cli.learning_rate,
+        learning_rate=learning_rate,
         max_tokens=cli.max_tokens,
         kl_penalty_coef=cli.kl_penalty_coef,
+        loss_fn=cli.loss_fn,
+        num_substeps=cli.num_substeps,
+        grad_clip_norm=cli.grad_clip_norm,
         advantage_scheme=cli.advantage_scheme,
         advantage_alpha=cli.advantage_alpha,
         eval_every=cli.eval_every,
@@ -348,13 +402,10 @@ def build_config(cli: CLIConfig) -> train.Config:
         base_url=cli.base_url,
         sampling_max_connections=max_connections,
         sampling_progress_timeout=cli.progress_timeout_s,
-        stream_minibatch_config=(
-            StreamMinibatchConfig(
-                groups_per_batch=cli.batch_size,
-                num_minibatches=cli.num_minibatches,
-            )
-            if cli.num_minibatches is not None
-            else None
+        remove_constant_reward_groups=True,
+        stream_minibatch_config=StreamMinibatchConfig(
+            groups_per_batch=cli.batch_size,
+            num_minibatches=cli.num_minibatches,
         ),
     )
 

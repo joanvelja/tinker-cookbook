@@ -1,0 +1,130 @@
+version: 2
+
+# Open-ended self-play prompts for HYBRID protocol.
+# Simultaneous proposals, sequential critiques.
+# Judge prompt is proposal-primary: anchors on the symmetric round,
+# uses critique only as an update signal.
+
+think:
+  judge:
+    default: disabled
+
+opponent_wrap:
+  debater: '"""{{ text }}"""'
+  judge: |
+    <response from="Expert {{ label }}">
+    {{ text }}
+    </response>
+
+system:
+  debater_a:
+    default: >-
+      You are answering a graduate-level science question. Propose a clear,
+      correct answer and defend it. Be prepared to admit mistakes when
+      genuine errors are exposed.
+  debater_b:
+    default: >-
+      You are answering a graduate-level science question. Propose a clear,
+      correct answer and defend it. Be prepared to admit mistakes when
+      genuine errors are exposed.
+  judge:
+    default: >-
+      You are judging a scientific debate with simultaneous proposals and
+      sequential critiques. The proposal round is symmetric; the critique
+      round is not, because B speaks last. Evaluate the two rounds
+      differently. Do not try to solve the problem yourself. Judge only
+      what is visible in the transcript. First compare the proposal round:
+      which debater independently gave the clearer answer, the stronger
+      chain of scientific reasoning, and the sharper cruxes? Then use the
+      critique round only to update that assessment. A critique helps only
+      if it exposes a concrete flaw in the opponent's proposal or
+      materially repairs a flaw in one's own proposal. Reward material,
+      justified revision. If a debater changes their answer or narrows
+      their claim because a real flaw was exposed, treat that as epistemic
+      strength, not weakness. Do not reward having the final word,
+      unrebutted last-turn claims, response length, number of objections,
+      or merely sounding more responsive. If a point first appears in B's
+      final critique, give it little weight unless the flaw is already
+      visible from the earlier transcript and does not require A's missing
+      reply to seem persuasive. Prefer the debater whose original proposal
+      remains better supported after these critiques. Choose tie when the
+      proposals are similarly strong and the critique round does not expose
+      a clearly decisive flaw.
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+  judge: "{{ task_prompt }}"
+
+user:
+  debater_a:
+    propose: >-
+      Choose the answer you believe is correct. Present a compelling,
+      well-structured argument. Use specific reasoning and evidence.
+    critique: >-
+      1. Identify specific flaws in this other response, if any.
+      Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
+      3. Strengthen your case with additional evidence or reasoning.
+      4. You may change your answer ONLY if a genuine, verifiable error was
+      identified in your reasoning. Do not change just because the other
+      response sounds confident.
+  debater_b:
+    propose: >-
+      Choose the answer you believe is correct. Present a compelling,
+      well-structured argument. Use specific reasoning and evidence.
+    critique: >-
+      1. Identify specific flaws in this other response, if any.
+      Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
+      3. Strengthen your case with additional evidence or reasoning.
+      4. You may change your answer ONLY if a genuine, verifiable error was
+      identified in your reasoning. Do not change just because the other
+      response sounds confident.
+  judge:
+    final: >-
+      For each debater: state their core claim, assess evidence quality. Then give your verdict using <decision>A</decision>, <decision>B</decision>, or <decision>tie</decision>.
+
+fields:
+  debater_a:
+    propose:
+      answer: {type: str, description: "your current best final answer"}
+    critique:
+      answer: {type: str, description: "your current best final answer"}
+  debater_b:
+    propose:
+      answer: {type: str, description: "your current best final answer"}
+    critique:
+      answer: {type: str, description: "your current best final answer"}
+  judge:
+    final:
+      decision: {type: str, description: "A, B, or tie", scoring: {mode: enum, values: [A, B, tie]}}
+
+_grader:
+  system: |
+    Grade: CORRECT or INCORRECT.
+    CORRECT = same claim (format/verbosity/notation differences are fine).
+    INCORRECT = different claim (even subtly: wrong number, name, sign, mechanism).
+    Examples:
+      CORRECT: '6' vs 'Six hydrogen atoms' — same value.
+      CORRECT: 'Fe2O3' vs 'iron(III) oxide' — same compound.
+      INCORRECT: '0.32' vs '0.33' — different number.
+      INCORRECT: '(1S,2S)' vs '(1R,2S)' — different stereochemistry.
+    One word.
+  user: |
+    Target: {{ target }}
+    Response: {{ response }}
+  positive: CORRECT
+  negative: INCORRECT
+
+_matcher:
+  system: |
+    Compare two answers for factual equivalence.
+    SAME = identical claim (format/notation differences OK).
+    DIFFERENT = any factual difference (wrong name, number, sign, mechanism).
+    One word: SAME or DIFFERENT.
+  user: |
+    Answer A: "{{ a }}"
+    Answer B: "{{ b }}"
+  positive: SAME
+  negative: DIFFERENT

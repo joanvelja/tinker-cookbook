@@ -185,6 +185,21 @@ class Qwen3Renderer(Renderer):
         ]
         return RenderedMessage(header=header, output=output)
 
+    def build_generation_prompt(
+        self,
+        messages: list[Message],
+        role: str = "assistant",
+        prefill: str | None = None,
+    ) -> tinker.ModelInput:
+        """Build generation prompt with <think> prefill to match HF template.
+
+        HF's apply_chat_template(enable_thinking=True) appends ``<think>\\n``
+        to the generation prompt.  Without it the model may skip thinking
+        entirely (observed on smaller checkpoints like 4B).
+        """
+        think_prefill = "<think>\n" + (prefill or "")
+        return super().build_generation_prompt(messages, role, think_prefill)
+
     @property
     def _end_message_token(self) -> int:
         tokens = self.tokenizer.encode("<|im_end|>", add_special_tokens=False)

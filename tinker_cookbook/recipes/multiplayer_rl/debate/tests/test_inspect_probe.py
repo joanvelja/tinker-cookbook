@@ -44,6 +44,7 @@ from ..types import (
     ProtocolKind,
     Role,
     ScoringMode,
+    ThinkVisibility,
     Utterance,
 )
 
@@ -63,7 +64,11 @@ def _make_spec(
         task_prompt="What is the answer?\nA) Foo\nB) Bar\nC) Baz\nD) Qux",
         target=target,
         num_rounds=num_rounds,
-        open_reasoning=True,
+        think_visibility={
+            Role.DEBATER_A: ThinkVisibility.OPEN,
+            Role.DEBATER_B: ThinkVisibility.OPEN,
+            Role.JUDGE: ThinkVisibility.OPEN,
+        },
         prompts_ref="scientific_mcq",
     )
 
@@ -174,7 +179,6 @@ def _make_minimal_state() -> DebateState:
             target=None,
         ),
         schedule=build_schedule(ProtocolKind.SEQUENTIAL, 1),
-        open_reasoning=False,
         protocol_kind=ProtocolKind.SEQUENTIAL,
         prompts_ref="scientific_mcq",
     )
@@ -561,7 +565,6 @@ class TestEdgeCases:
                 target=None,
             ),
             schedule=build_schedule(ProtocolKind.SEQUENTIAL, 1),
-            open_reasoning=False,
         )
         state = DebateState(
             spec=spec,

@@ -13,15 +13,17 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Sequence
 
 from tinker_cookbook.rl.types import (
+    AdvantageScheme,
     Env,
     EnvGroupBuilder,
     Metrics,
     Trajectory,
+    TrajectoryGroup,
 )
 from tinker_cookbook.completers import MessageCompleter
 from tinker_cookbook.renderers import Renderer
 
-from .scoring.metrics import MetricFn, _latest_think_answer, mcq_debate_metrics
+from .scoring.metrics import MetricFn, mcq_debate_metrics
 from .scoring.trajectory import final_answer
 from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
 from .prompts import check_ab_symmetry, resolve_prompts
@@ -57,10 +59,6 @@ IDENTITY_REMAP_BASES = [
     "wrong_and_loses",
     "parse_success",
     "think_block_rate",
-    "think_answer_parse_rate",
-    "think_public_answer_match",
-    "think_correct_public_wrong",
-    "think_wrong_public_correct",
 ]
 
 
@@ -168,6 +166,9 @@ class DebateGroupBuilder(EnvGroupBuilder):
     scorer: AnswerJudgeClient | None = field(default=None, repr=False)
     scorer_parallelism: int = 64
     episode_log_dir: str | None = None
+    split: str | None = None
+    step: int | None = None
+    group_index_in_step: int | None = None
 
     # Set after make_envs
     _runtimes: list[DebateRuntime] = field(default_factory=list, repr=False)
@@ -186,21 +187,40 @@ class DebateGroupBuilder(EnvGroupBuilder):
         os.makedirs(self.episode_log_dir, exist_ok=True)
         records: list[str] = []
 
-        for env, (reward, metrics) in zip(env_group, rewards_and_metrics_G, strict=True):
+        n_roles = len(self.include_roles) if is_selfplay else 1
+
+        for i, (env, (reward, metrics)) in enumerate(
+            zip(env_group, rewards_and_metrics_G, strict=True)
+        ):
             assert isinstance(env, DebateEnv)
             state = env.runtime.state
             this_role = env.role
             other_role = Role.DEBATER_B if this_role == Role.DEBATER_A else Role.DEBATER_A
 
+            debate_index = i // n_roles
+            group_id = (
+                f"s{self.step}:g{self.group_index_in_step}"
+                if self.step is not None and self.group_index_in_step is not None
+                else None
+            )
+
             # Shared fields across both modes.
             record: dict = {
-                "schema_version": 2 if is_selfplay else 1,
+                "schema_version": 4 if is_selfplay else 2,
+                "step": self.step,
+                "split": self.split,
+                "group_id": group_id,
+                "group_index_in_step": self.group_index_in_step,
+                "debate_index_in_group": debate_index,
+                "trajectory_index_in_group": i,
+                "advantage_subgroup": this_role.value,
                 "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
                 "debate_id": state.spec.debate_id,
                 "protocol_kind": state.spec.protocol_kind.value,
                 "prompts_ref": state.spec.prompts_ref,
-                "open_reasoning": state.spec.open_reasoning,
+                "think_visibility": state.spec.encode_think_visibility(),
                 "target": state.spec.problem.target,
+                "task_prompt": state.spec.problem.task_prompt,
                 "winner": (
                     state.outcome.winner.value if state.outcome and state.outcome.winner else None
                 ),
@@ -220,12 +240,6 @@ class DebateGroupBuilder(EnvGroupBuilder):
                             f"public_{Role.DEBATER_B.value}": final_answer(
                                 state, role=Role.DEBATER_B
                             ),
-                            f"think_{Role.DEBATER_A.value}": _latest_think_answer(
-                                state, Role.DEBATER_A
-                            ),
-                            f"think_{Role.DEBATER_B.value}": _latest_think_answer(
-                                state, Role.DEBATER_B
-                            ),
                         },
                         "signals": dict(metrics),
                     }
@@ -239,8 +253,6 @@ class DebateGroupBuilder(EnvGroupBuilder):
                         "answers": {
                             "public_trained": final_answer(state, role=this_role),
                             "public_opponent": final_answer(state, role=other_role),
-                            "think_trained": _latest_think_answer(state, this_role),
-                            "think_opponent": _latest_think_answer(state, other_role),
                         },
                         "signals": {k: v for k, v in metrics.items() if k.startswith("id/")},
                     }
@@ -266,6 +278,92 @@ class DebateGroupBuilder(EnvGroupBuilder):
         with _EPISODE_LOG_LOCK:
             with open(log_path, "a") as f:
                 f.writelines(records)
+
+    def on_advantages_computed(
+        self,
+        trajectory_group: TrajectoryGroup,
+        advantages_G: list[float],
+        *,
+        scheme: AdvantageScheme,
+        alpha: float,
+        use_subgroups: bool,
+        removed_before_training: bool,
+    ) -> None:
+        if self.episode_log_dir is None:
+            return
+
+        is_selfplay = self.opponent_completer is None
+        n_roles = len(self.include_roles) if is_selfplay else 1
+        total_rewards = trajectory_group.get_total_rewards()
+
+        group_id = (
+            f"s{self.step}:g{self.group_index_in_step}"
+            if self.step is not None and self.group_index_in_step is not None
+            else None
+        )
+
+        # Build per-trajectory member records.
+        members = []
+        for i, (adv, reward) in enumerate(zip(advantages_G, total_rewards, strict=True)):
+            debate_index = i // n_roles
+            runtime = self._runtimes[debate_index] if debate_index < len(self._runtimes) else None
+            role_index = i % n_roles
+            role = self.include_roles[role_index] if is_selfplay else self.include_roles[0]
+            members.append(
+                {
+                    "trajectory_index": i,
+                    "debate_index": debate_index,
+                    "debate_id": runtime.state.spec.debate_id if runtime else None,
+                    "role": role.value,
+                    "reward_total": round(reward, 6),
+                    "advantage": round(adv, 6),
+                }
+            )
+
+        # Build subgroup records (advantage computation partitions).
+        n = len(advantages_G)
+        subgroups_raw = self.advantage_subgroups(n) if use_subgroups else None
+        subgroups = []
+        if subgroups_raw is not None:
+            import torch
+
+            rewards_tensor = torch.tensor(total_rewards, dtype=torch.float32)
+            for sub_idx, indices in enumerate(subgroups_raw):
+                sub_rewards = rewards_tensor[list(indices)]
+                subgroups.append(
+                    {
+                        "id": sub_idx,
+                        "trajectory_indices": list(indices),
+                        "mean_reward": round(float(sub_rewards.mean()), 6),
+                        "std_reward": round(float(sub_rewards.std()), 6) if len(sub_rewards) > 1 else 0.0,
+                    }
+                )
+
+        record = {
+            "group_id": group_id,
+            "step": self.step,
+            "split": self.split,
+            "group_index_in_step": self.group_index_in_step,
+            "task_prompt": self.problem.task_prompt,
+            "target": self.problem.target,
+            "protocol_kind": self.game.protocol_kind.value,
+            "advantage_scheme": scheme,
+            "advantage_alpha": alpha,
+            "use_advantage_subgroups": use_subgroups,
+            "removed_before_training": removed_before_training,
+            "n_debates": self.group_size,
+            "n_trajectories": n,
+            "members": members,
+            "subgroups": subgroups if subgroups else None,
+            "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+        }
+
+        os.makedirs(self.episode_log_dir, exist_ok=True)
+        log_path = os.path.join(self.episode_log_dir, "groups.jsonl")
+        line = json.dumps(record) + "\n"
+        with _EPISODE_LOG_LOCK:
+            with open(log_path, "a") as f:
+                f.write(line)
 
     async def make_envs(self) -> Sequence[Env]:
         if self.opponent_completer is None and self.randomize_position:
@@ -352,11 +450,12 @@ class DebateGroupBuilder(EnvGroupBuilder):
         return envs
 
     def _make_runtime(self, schedule: tuple) -> DebateRuntime:
+        prompts = resolve_prompts(self.game.prompts_ref)
         spec = DebateSpec(
             debate_id=uuid.uuid4().hex,
             problem=self.problem,
             schedule=schedule,
-            open_reasoning=self.game.open_reasoning,
+            think_visibility=prompts.get_think_visibility(),
             protocol_kind=self.game.protocol_kind,
             prompts_ref=self.game.prompts_ref,
         )

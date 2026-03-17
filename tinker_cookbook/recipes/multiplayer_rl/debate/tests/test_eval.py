@@ -34,6 +34,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     ProtocolKind,
     Role,
     ScoringMode,
+    ThinkVisibility,
     Utterance,
 )
 
@@ -54,7 +55,11 @@ def _make_spec(
         task_prompt="What is the answer?\nA) Foo\nB) Bar\nC) Baz\nD) Qux",
         target=target,
         num_rounds=num_rounds,
-        open_reasoning=True,
+        think_visibility={
+            Role.DEBATER_A: ThinkVisibility.OPEN,
+            Role.DEBATER_B: ThinkVisibility.OPEN,
+            Role.JUDGE: ThinkVisibility.OPEN,
+        },
         prompts_ref=prompts_ref,
     )
 
@@ -281,7 +286,7 @@ def test_debate_state_json_roundtrip():
     assert restored.spec.problem.target == original.spec.problem.target
     assert restored.spec.protocol_kind == original.spec.protocol_kind
     assert restored.spec.prompts_ref == original.spec.prompts_ref
-    assert restored.spec.open_reasoning == original.spec.open_reasoning
+    assert dict(restored.spec.think_visibility) == dict(original.spec.think_visibility)
     assert dict(restored.spec.problem.answer_by_role) == dict(original.spec.problem.answer_by_role)
     assert len(restored.spec.schedule) == len(original.spec.schedule)
     for r_slot, o_slot in zip(restored.spec.schedule, original.spec.schedule):
@@ -630,7 +635,9 @@ def test_smoke_gpqa_open_ended_passes_explicit_open_ended_mode(monkeypatch):
     fake_problems = [
         DebateProblemSpec.from_seat_answers(
             "Which city is nicknamed the Big Apple?",
-            "", "", ScoringMode.OPEN_ENDED,
+            "",
+            "",
+            ScoringMode.OPEN_ENDED,
             target="New York City",
             metadata={"record_id": "rec-test-1"},
         ),
@@ -648,16 +655,28 @@ def test_smoke_gpqa_open_ended_passes_explicit_open_ended_mode(monkeypatch):
         lambda **_kwargs: fake_problems,
     )
     monkeypatch.setattr(smoke_gpqa_open_ended, "DebateDataset", _fake_dataset)
-    monkeypatch.setattr(smoke_gpqa_open_ended.tinker, "ServiceClient", lambda base_url=None: MagicMock(create_sampling_client=lambda **kwargs: MagicMock()))
+    monkeypatch.setattr(
+        smoke_gpqa_open_ended.tinker,
+        "ServiceClient",
+        lambda base_url=None: MagicMock(create_sampling_client=lambda **kwargs: MagicMock()),
+    )
     monkeypatch.setattr(
         smoke_gpqa_open_ended,
         "get_recommended_renderer_name",
         lambda model_name, reasoning_effort=None: "gpt_oss_reasoning",
     )
-    monkeypatch.setattr(smoke_gpqa_open_ended, "get_renderer", lambda *_args, **_kwargs: MagicMock())
-    monkeypatch.setattr(smoke_gpqa_open_ended, "get_tokenizer", lambda *_args, **_kwargs: MagicMock())
-    monkeypatch.setattr(smoke_gpqa_open_ended, "TinkerTokenCompleter", lambda **_kwargs: MagicMock())
-    monkeypatch.setattr(smoke_gpqa_open_ended, "TinkerMessageCompleter", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(
+        smoke_gpqa_open_ended, "get_renderer", lambda *_args, **_kwargs: MagicMock()
+    )
+    monkeypatch.setattr(
+        smoke_gpqa_open_ended, "get_tokenizer", lambda *_args, **_kwargs: MagicMock()
+    )
+    monkeypatch.setattr(
+        smoke_gpqa_open_ended, "TinkerTokenCompleter", lambda **_kwargs: MagicMock()
+    )
+    monkeypatch.setattr(
+        smoke_gpqa_open_ended, "TinkerMessageCompleter", lambda **_kwargs: MagicMock()
+    )
 
     class _FakeScorerBuilder:
         def __init__(self, **_kwargs):
@@ -902,7 +921,6 @@ def test_evaluator_builder_defaults():
     assert defaults["prompts_ref"] == "judge_exploit"
     assert defaults["opponent_max_tokens"] == 8192
     assert defaults["judge_max_tokens"] == 4096
-    assert defaults["open_reasoning"] is False
     assert defaults["randomize_position"] is True
 
 
@@ -913,7 +931,13 @@ def test_evaluator_builder_defaults():
 
 @pytest.mark.asyncio
 async def test_metric_extraction_uses_metric_name():
-    """Evaluator extracts all metrics by metric_name, not score_result.name."""
+    """Evaluator keys metrics by score_result.name, not aggregation fn name.
+
+    Inspect decomposes dict-valued Scores into individual score_result objects:
+      score_result.name = "accuracy.debater_a"
+      score_result.metrics = {"mean": EvalMetric(value=0.8)}
+    The evaluator must key by score_result.name, not "mean".
+    """
     from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
         DebateInspectEvaluatorBuilder,
     )
@@ -927,37 +951,74 @@ async def test_metric_extraction_uses_metric_name():
     evaluator = builder()
     mock_sampling = MagicMock()
 
-    # Create mock score_result with 3 distinct metrics
-    mock_score_result = MagicMock()
-    mock_score_result.name = "debate_scorer"
-    mock_metric_a = MagicMock()
-    mock_metric_a.value = 0.8
-    mock_metric_b = MagicMock()
-    mock_metric_b.value = 0.6
-    mock_metric_c = MagicMock()
-    mock_metric_c.value = 0.9
-    mock_score_result.metrics = {
-        "accuracy.debater_a": mock_metric_a,
-        "judge_quality": mock_metric_b,
-        "truth_surfaced": mock_metric_c,
-    }
+    # Mock Inspect's actual output: one score_result per metric key,
+    # each with metrics={"mean": EvalMetric(value=...)}.
+    def _make_score_result(name: str, value: float):
+        sr = MagicMock()
+        sr.name = name
+        m = MagicMock()
+        m.value = value
+        sr.metrics = {"mean": m}
+        return sr
 
     mock_task_result = MagicMock()
     mock_task_result.results = MagicMock()
-    mock_task_result.results.scores = [mock_score_result]
+    mock_task_result.results.scores = [
+        _make_score_result("accuracy.debater_a", 0.8),
+        _make_score_result("judge_quality", 0.6),
+        _make_score_result("truth_surfaced", 0.9),
+        _make_score_result("id/win_rate.trained", 0.55),
+    ]
 
     stack, mock_eval = _patch_evaluator_externals()
     mock_eval.return_value = [mock_task_result]
     with stack:
         metrics = await evaluator(mock_sampling)
 
-    # All 3 metrics should be present (bug was: only last metric survived)
-    assert "accuracy.debater_a" in metrics
-    assert "judge_quality" in metrics
-    assert "truth_surfaced" in metrics
     assert metrics["accuracy.debater_a"] == 0.8
     assert metrics["judge_quality"] == 0.6
     assert metrics["truth_surfaced"] == 0.9
+    assert metrics["id/win_rate.trained"] == 0.55
+
+
+@pytest.mark.asyncio
+async def test_metric_extraction_filters_nan():
+    """Evaluator drops NaN metric values (e.g. from disabled metric families)."""
+    from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
+        DebateInspectEvaluatorBuilder,
+    )
+
+    adapter = _dummy_adapter()
+    builder = DebateInspectEvaluatorBuilder(
+        adapter=adapter,
+        renderer_name="qwen3",
+        model_name="Qwen/Qwen3-4B-Instruct-2507",
+    )
+    evaluator = builder()
+    mock_sampling = MagicMock()
+
+    def _make_score_result(name: str, value: float):
+        sr = MagicMock()
+        sr.name = name
+        m = MagicMock()
+        m.value = value
+        sr.metrics = {"mean": m}
+        return sr
+
+    mock_task_result = MagicMock()
+    mock_task_result.results = MagicMock()
+    mock_task_result.results.scores = [
+        _make_score_result("accuracy.debater_a", 0.8),
+        _make_score_result("dead_metric", float("nan")),
+    ]
+
+    stack, mock_eval = _patch_evaluator_externals()
+    mock_eval.return_value = [mock_task_result]
+    with stack:
+        metrics = await evaluator(mock_sampling)
+
+    assert metrics["accuracy.debater_a"] == 0.8
+    assert "dead_metric" not in metrics
 
 
 # ---------------------------------------------------------------------------
@@ -1084,8 +1145,8 @@ def test_identity_metric_keys_consistent_with_remap_bases():
 # ---------------------------------------------------------------------------
 
 
-def test_build_config_selfplay_sets_eval_opponent_none():
-    """build_config with self_play=True sets opponent_model=None on default eval builder."""
+def test_build_config_selfplay_sets_eval_vs_base():
+    """build_config with self_play=True evals against base weights (opponent_model=model_name)."""
     from tinker_cookbook.recipes.multiplayer_rl.debate.eval.evaluator import (
         DebateInspectEvaluatorBuilder,
     )
@@ -1094,13 +1155,13 @@ def test_build_config_selfplay_sets_eval_opponent_none():
         build_config,
     )
 
-    cli = CLIConfig(self_play=True, opponent_model="Qwen/Qwen3-4B-Instruct-2507")
+    cli = CLIConfig(self_play=True, model_name="Qwen/Qwen3-4B-Instruct-2507")
     config = build_config(cli)
 
     eval_builder = config.evaluator_builders[0]
     assert isinstance(eval_builder, DebateInspectEvaluatorBuilder)
-    assert eval_builder.opponent_model is None
-    assert eval_builder.randomize_position is False
+    assert eval_builder.opponent_model == "Qwen/Qwen3-4B-Instruct-2507"
+    assert eval_builder.randomize_position is True
 
 
 def test_build_config_frozen_opp_keeps_eval_opponent():

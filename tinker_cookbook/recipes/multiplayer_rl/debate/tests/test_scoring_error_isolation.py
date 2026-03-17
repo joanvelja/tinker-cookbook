@@ -104,7 +104,6 @@ def _state(
             target=target,
         ),
         schedule=schedule,
-        open_reasoning=False,
         protocol_kind=ProtocolKind.SEQUENTIAL,
         prompts_ref="default",
     )
@@ -143,7 +142,10 @@ class TestTolerantExtract:
         assert _tolerant_extract("I think the answer is SAME.", "SAME", "DIFFERENT") == "SAME"
 
     def test_single_negative_in_sentence(self):
-        assert _tolerant_extract("They are clearly DIFFERENT here.", "SAME", "DIFFERENT") == "DIFFERENT"
+        assert (
+            _tolerant_extract("They are clearly DIFFERENT here.", "SAME", "DIFFERENT")
+            == "DIFFERENT"
+        )
 
     def test_negated_returns_none(self):
         assert _tolerant_extract("They are not SAME at all.", "SAME", "DIFFERENT") is None
@@ -194,7 +196,9 @@ async def test_strict_mode_propagates_binary_judge_error():
             _utt(Role.DEBATER_B, 0, Phase.PROPOSE, "B", answer="steam", slot_id=1),
         ),
     )
-    prompts_ref = "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/semantic_prompts.yaml"
+    prompts_ref = (
+        "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/semantic_prompts.yaml"
+    )
     state = replace(state, spec=replace(state.spec, prompts_ref=prompts_ref))
 
     with pytest.raises(BinaryJudgeError):
@@ -218,7 +222,9 @@ async def test_nonstrict_mode_isolates_binary_judge_error():
             _utt(Role.DEBATER_B, 0, Phase.PROPOSE, "B", answer="steam", slot_id=1),
         ),
     )
-    prompts_ref = "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/semantic_prompts.yaml"
+    prompts_ref = (
+        "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/semantic_prompts.yaml"
+    )
     state = replace(state, spec=replace(state.spec, prompts_ref=prompts_ref))
 
     facts = await resolve_debate_facts_for_states(
@@ -250,7 +256,9 @@ async def test_nonstrict_mode_reraises_infra_errors():
             _utt(Role.DEBATER_B, 0, Phase.PROPOSE, "B", answer="steam", slot_id=1),
         ),
     )
-    prompts_ref = "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/semantic_prompts.yaml"
+    prompts_ref = (
+        "tinker_cookbook/recipes/multiplayer_rl/debate/tests/fixtures/semantic_prompts.yaml"
+    )
     state = replace(state, spec=replace(state.spec, prompts_ref=prompts_ref))
 
     with pytest.raises(ConnectionError):

@@ -37,7 +37,6 @@ def _make_state(
             answer_by_role={Role.DEBATER_A: "2", Role.DEBATER_B: "3"},
         ),
         schedule=schedule,
-        open_reasoning=False,
     )
     return DebateState(
         spec=spec,

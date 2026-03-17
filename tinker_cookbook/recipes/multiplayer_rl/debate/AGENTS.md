@@ -46,6 +46,33 @@ Hard cutover by milestone; no multi-milestone dual runtime APIs. No class/regist
 - End plans with unresolved questions
 - Extensive use of Tasks (for state tracking), Agents Team (for parallel workflows), and Swarms (for exploration purposes).
 
+## Spot-Check Tool
+
+Monitor training run health:
+
+```bash
+# Single run
+uv run python -m scripts.spot_check logs/thinking-experiment/rung1-no-think
+
+# Compare runs
+uv run python -m scripts.spot_check logs/thinking-experiment/rung*
+
+# Live monitoring
+uv run python -m scripts.spot_check logs/thinking-experiment/rung* --watch
+
+# Full detail (secondary metrics + auto-discovered keys)
+uv run python -m scripts.spot_check logs/thinking-experiment/rung1-no-think --verbose
+```
+
+5 gates: **SIGNAL** (learning signal alive?), **JUDGE** (judge trustworthy?), **SYMMETRY** (protocol fair?), **QUALITY** (pipeline healthy?), **BUDGET** (spending wisely?). Each shows OK/WARN/FAIL with sparkline trends.
+
+Episode-derived signals (sycophancy, bullshit contest, agree-B-win) require `step`+`split` fields in episodes.jsonl (schema v3).
+
+## Training Launch Notes
+
+- Use `num_minibatches=8` for ~1.19x throughput (overlaps sampling with training, no off-policy risk). Derived from BOTEC on actual timing data: `step_time(M) = E + S + R + P/M`.
+- Async RL is supported by the generic framework but not wired for debate. Streaming minibatch captures ~97% of async's benefit without off-policy complexity.
+
 ## Philosophy
 
 This codebase will outlive you. Every shortcut, hacky implementation, non-extensible script, or ad-hoc solution becomes someone else's burden. Every hack compounds into technical debt that slows the whole team down. You are not just writing code. You are shaping the future of this project. The patterns you establish will be copied. The corners you cut will be cut again.

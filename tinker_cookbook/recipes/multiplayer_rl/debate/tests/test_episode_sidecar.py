@@ -30,6 +30,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     ScoringMode,
     Utterance,
 )
+from tinker_cookbook.rl.types import Trajectory, TrajectoryGroup
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +55,6 @@ def _make_state(
             target=target,
         ),
         schedule=schedule,
-        open_reasoning=False,
         protocol_kind=ProtocolKind.SEQUENTIAL,
         prompts_ref="default",
     )
@@ -133,7 +133,10 @@ def _make_builder_with_mock_envs(
     renderer = MagicMock()
     builder = DebateGroupBuilder(
         problem=DebateProblemSpec.from_seat_answers(
-            "What is 2+2?", "A", "B", ScoringMode.MCQ,
+            "What is 2+2?",
+            "A",
+            "B",
+            ScoringMode.MCQ,
         ),
         game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
         renderer=renderer,
@@ -246,7 +249,7 @@ class TestSchemaValidation:
 
     def test_schema_version(self):
         record = self._get_record()
-        assert record["schema_version"] == 1
+        assert record["schema_version"] == 2
 
     def test_trained_role_present_and_valid(self):
         record = self._get_record()
@@ -292,17 +295,6 @@ class TestSchemaValidation:
                 assert entry["identity"] == "trained"
             else:
                 assert entry["identity"] == "opponent"
-
-    def test_think_trained_none_without_thinking(self):
-        """answers.think_trained is None when no <thinking> block present."""
-        record = self._get_record(with_thinking=False)
-        assert record["answers"]["think_trained"] is None
-
-    def test_think_trained_populated_with_thinking(self):
-        """answers.think_trained is populated when <thinking> block present."""
-        record = self._get_record(with_thinking=True)
-        # The thinking text is "The answer is B" -> strict parser should extract "B"
-        assert record["answers"]["think_trained"] == "B"
 
     def test_signals_only_id_prefixed_frozen_opp(self):
         """In frozen-opp mode, signals dict contains only id/ prefixed keys."""
@@ -383,8 +375,8 @@ class TestSelfPlaySignals:
 
         assert record["signals"] == metrics
 
-    def test_selfplay_schema_v2_seat_based(self):
-        """Self-play records use schema_version=2 with seat-based fields."""
+    def test_selfplay_schema_v4_seat_based(self):
+        """Self-play records use schema_version=4 with seat-based fields."""
         with tempfile.TemporaryDirectory() as tmpdir:
             builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir, selfplay=True)
             builder.on_group_complete(
@@ -396,7 +388,7 @@ class TestSelfPlaySignals:
             with open(log_path) as f:
                 record = json.loads(f.readline())
 
-        assert record["schema_version"] == 2
+        assert record["schema_version"] == 4
         # Seat-based fields.
         assert "role" in record
         assert "reward" in record
@@ -426,8 +418,8 @@ class TestSelfPlaySignals:
             assert entry["identity"] in ("debater_a", "debater_b")
             assert entry["identity"] == entry["role"]
 
-    def test_frozen_opp_schema_v1_identity_based(self):
-        """Frozen-opp records use schema_version=1 with identity-based fields."""
+    def test_frozen_opp_schema_v2_identity_based(self):
+        """Frozen-opp records use schema_version=2 with identity-based fields."""
         with tempfile.TemporaryDirectory() as tmpdir:
             builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir, selfplay=False)
             builder.on_group_complete(
@@ -439,7 +431,7 @@ class TestSelfPlaySignals:
             with open(log_path) as f:
                 record = json.loads(f.readline())
 
-        assert record["schema_version"] == 1
+        assert record["schema_version"] == 2
         assert "trained_role" in record
         assert "reward_trained" in record
         assert "role" not in record
@@ -468,7 +460,72 @@ class TestSelfPlaySignals:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: File lock concurrency test
+# Test 4: Step and split fields
+# ---------------------------------------------------------------------------
+
+
+class TestStepAndSplit:
+    def test_step_written_when_set(self):
+        """step=42 on builder produces record with "step": 42."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir)
+            builder.step = 42
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+        assert record["step"] == 42
+
+    def test_step_none_by_default(self):
+        """Without setting step, record has "step": None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir)
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+        assert record["step"] is None
+
+    def test_split_written_from_builder(self):
+        """split="train" on builder produces record with "split": "train"."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir)
+            builder.split = "train"
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+        assert record["split"] == "train"
+
+    def test_split_none_by_default(self):
+        """Without setting split, record has "split": None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(episode_log_dir=tmpdir)
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            log_path = os.path.join(tmpdir, "episodes.jsonl")
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+        assert record["split"] is None
+
+
+# ---------------------------------------------------------------------------
+# Test 5: File lock concurrency test
 # ---------------------------------------------------------------------------
 
 
@@ -510,7 +567,7 @@ class TestConcurrency:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     pytest.fail(f"Line {i} is corrupt/interleaved: {line!r}")
-                assert record["schema_version"] == 1
+                assert record["schema_version"] == 2
 
     def test_lock_is_module_level(self):
         """_EPISODE_LOG_LOCK is a module-level threading.Lock, shared across builders."""
@@ -518,7 +575,7 @@ class TestConcurrency:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Wiring verification (CLIConfig -> DebateRLDatasetBuilder -> DebateDataset -> DebateGroupBuilder)
+# Test 6: Wiring verification (CLIConfig -> DebateRLDatasetBuilder -> DebateDataset -> DebateGroupBuilder)
 # ---------------------------------------------------------------------------
 
 
@@ -589,7 +646,7 @@ class TestWiring:
 
 
 # ---------------------------------------------------------------------------
-# Test 5: No-op when episode_log_dir is None
+# Test 7: No-op when episode_log_dir is None
 # ---------------------------------------------------------------------------
 
 
@@ -629,3 +686,450 @@ class TestNoOp:
             assert os.path.exists(episodes_path)
             with open(episodes_path) as f:
                 assert f.read() == ""
+
+
+# ---------------------------------------------------------------------------
+# Helpers for group-level tests
+# ---------------------------------------------------------------------------
+
+
+def _make_selfplay_builder_and_runtimes(
+    tmpdir: str,
+    *,
+    group_size: int = 2,
+    step: int = 5,
+    group_index: int = 3,
+) -> tuple[DebateGroupBuilder, list[DebateRuntime]]:
+    """Create a self-play builder with mock runtimes for groups.jsonl tests."""
+    runtimes = []
+    for _ in range(group_size):
+        schedule = build_schedule(ProtocolKind.SEQUENTIAL, 1)
+        spec = DebateSpec(
+            debate_id=uuid.uuid4().hex,
+            problem=DebateProblemSpec(
+                task_prompt="What is 2+2?",
+                scoring_mode=ScoringMode.MCQ,
+                answer_by_role={Role.DEBATER_A: "A", Role.DEBATER_B: "B"},
+                target="B",
+            ),
+            schedule=schedule,
+            protocol_kind=ProtocolKind.SEQUENTIAL,
+            prompts_ref="default",
+        )
+        state = DebateState(
+            spec=spec,
+            slot_index=len(schedule),
+            rounds_completed=1,
+            transcript=(),
+            pending_simultaneous={},
+            judge_trace=(),
+            done=True,
+            outcome=None,
+        )
+        runtimes.append(DebateRuntime(state))
+
+    builder = DebateGroupBuilder(
+        problem=DebateProblemSpec.from_seat_answers("What is 2+2?", "A", "B", ScoringMode.MCQ),
+        game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
+        renderer=MagicMock(),
+        episode_log_dir=tmpdir,
+        group_size=group_size,
+        step=step,
+        split="train",
+        group_index_in_step=group_index,
+    )
+    builder._runtimes = runtimes
+    return builder, runtimes
+
+
+def _make_trajectory_group(n: int, rewards: list[float]) -> TrajectoryGroup:
+    """Create a minimal TrajectoryGroup with n trajectories and given rewards."""
+    return TrajectoryGroup(
+        trajectories_G=[
+            Trajectory(transitions=[], final_ob=MagicMock()) for _ in range(n)
+        ],
+        final_rewards_G=rewards,
+        metrics_G=[{} for _ in range(n)],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Schema v4 new fields in episodes.jsonl
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaV4Fields:
+    def test_selfplay_has_group_id(self):
+        """Self-play schema v4 records include group_id."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(
+                episode_log_dir=tmpdir, selfplay=True
+            )
+            builder.step = 10
+            builder.group_index_in_step = 2
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            with open(os.path.join(tmpdir, "episodes.jsonl")) as f:
+                record = json.loads(f.readline())
+            assert record["group_id"] == "s10:g2"
+            assert record["group_index_in_step"] == 2
+
+    def test_selfplay_has_trajectory_index(self):
+        """Self-play records have trajectory_index_in_group."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(
+                episode_log_dir=tmpdir, selfplay=True
+            )
+            builder.step = 0
+            builder.group_index_in_step = 0
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            with open(os.path.join(tmpdir, "episodes.jsonl")) as f:
+                record = json.loads(f.readline())
+            assert "trajectory_index_in_group" in record
+            assert record["trajectory_index_in_group"] == 0
+
+    def test_selfplay_has_debate_index(self):
+        """Self-play records have debate_index_in_group."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(
+                episode_log_dir=tmpdir, selfplay=True
+            )
+            builder.step = 0
+            builder.group_index_in_step = 0
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            with open(os.path.join(tmpdir, "episodes.jsonl")) as f:
+                record = json.loads(f.readline())
+            assert "debate_index_in_group" in record
+            assert record["debate_index_in_group"] == 0
+
+    def test_selfplay_has_advantage_subgroup(self):
+        """Self-play records have advantage_subgroup matching the env role."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(
+                episode_log_dir=tmpdir, selfplay=True
+            )
+            builder.step = 0
+            builder.group_index_in_step = 0
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            with open(os.path.join(tmpdir, "episodes.jsonl")) as f:
+                record = json.loads(f.readline())
+            assert record["advantage_subgroup"] in ("debater_a", "debater_b")
+
+    def test_group_id_none_when_step_missing(self):
+        """group_id is None when step or group_index_in_step is None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, envs = _make_builder_with_mock_envs(
+                episode_log_dir=tmpdir, selfplay=True
+            )
+            # step and group_index_in_step default to None
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {})],
+            )
+            with open(os.path.join(tmpdir, "episodes.jsonl")) as f:
+                record = json.loads(f.readline())
+            assert record["group_id"] is None
+
+    def test_trajectory_indices_sequential_selfplay(self):
+        """In self-play with 2 roles, trajectory indices are sequential."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Build a self-play builder with 1 runtime, 2 roles -> 2 trajectories
+            state = _make_state(transcript=_make_utterances())
+            runtime = DebateRuntime(state)
+            renderer = MagicMock()
+
+            builder = DebateGroupBuilder(
+                problem=DebateProblemSpec.from_seat_answers(
+                    "What is 2+2?", "A", "B", ScoringMode.MCQ
+                ),
+                game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
+                renderer=renderer,
+                episode_log_dir=tmpdir,
+                group_size=1,
+                step=0,
+                group_index_in_step=0,
+            )
+            builder._runtimes = [runtime]
+
+            envs = [
+                DebateEnv(role=Role.DEBATER_A, runtime=runtime, renderer=renderer),
+                DebateEnv(role=Role.DEBATER_B, runtime=runtime, renderer=renderer),
+            ]
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {}), (-1.0, {})],
+            )
+            with open(os.path.join(tmpdir, "episodes.jsonl")) as f:
+                records = [json.loads(line) for line in f]
+            assert len(records) == 2
+            assert records[0]["trajectory_index_in_group"] == 0
+            assert records[1]["trajectory_index_in_group"] == 1
+            # Both from same debate
+            assert records[0]["debate_index_in_group"] == 0
+            assert records[1]["debate_index_in_group"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 9: groups.jsonl writer (on_advantages_computed)
+# ---------------------------------------------------------------------------
+
+
+class TestGroupsJsonl:
+    def test_writes_groups_jsonl(self):
+        """on_advantages_computed writes a valid groups.jsonl record."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, runtimes = _make_selfplay_builder_and_runtimes(tmpdir)
+            tg = _make_trajectory_group(4, [1.0, -1.0, 0.5, -0.5])
+
+            builder.on_advantages_computed(
+                tg,
+                [0.5, -0.5, 0.25, -0.25],
+                scheme="mean_center",
+                alpha=0.5,
+                use_subgroups=True,
+                removed_before_training=False,
+            )
+
+            log_path = os.path.join(tmpdir, "groups.jsonl")
+            assert os.path.exists(log_path)
+            with open(log_path) as f:
+                record = json.loads(f.readline())
+
+            assert record["group_id"] == "s5:g3"
+            assert record["step"] == 5
+            assert record["split"] == "train"
+            assert record["n_debates"] == 2
+            assert record["n_trajectories"] == 4
+            assert record["advantage_scheme"] == "mean_center"
+            assert record["removed_before_training"] is False
+
+    def test_members_count_and_fields(self):
+        """Members list has correct count and required fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, runtimes = _make_selfplay_builder_and_runtimes(tmpdir)
+            tg = _make_trajectory_group(4, [1.0, -1.0, 0.5, -0.5])
+
+            builder.on_advantages_computed(
+                tg,
+                [0.5, -0.5, 0.25, -0.25],
+                scheme="mean_center",
+                alpha=0.5,
+                use_subgroups=True,
+                removed_before_training=False,
+            )
+
+            with open(os.path.join(tmpdir, "groups.jsonl")) as f:
+                record = json.loads(f.readline())
+
+            assert len(record["members"]) == 4
+            for m in record["members"]:
+                assert "trajectory_index" in m
+                assert "debate_index" in m
+                assert "debate_id" in m
+                assert "role" in m
+                assert "reward_total" in m
+                assert "advantage" in m
+
+    def test_member_debate_ids_match_runtimes(self):
+        """Each member's debate_id matches the corresponding runtime."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, runtimes = _make_selfplay_builder_and_runtimes(tmpdir)
+            tg = _make_trajectory_group(4, [1.0, -1.0, 0.5, -0.5])
+
+            builder.on_advantages_computed(
+                tg,
+                [0.5, -0.5, 0.25, -0.25],
+                scheme="mean_center",
+                alpha=0.5,
+                use_subgroups=True,
+                removed_before_training=False,
+            )
+
+            with open(os.path.join(tmpdir, "groups.jsonl")) as f:
+                record = json.loads(f.readline())
+
+            # Trajectories [0,1] from runtime 0, [2,3] from runtime 1
+            assert record["members"][0]["debate_id"] == runtimes[0].state.spec.debate_id
+            assert record["members"][1]["debate_id"] == runtimes[0].state.spec.debate_id
+            assert record["members"][2]["debate_id"] == runtimes[1].state.spec.debate_id
+            assert record["members"][3]["debate_id"] == runtimes[1].state.spec.debate_id
+
+    def test_subgroups_interleaved(self):
+        """Subgroups partition trajectories by role (interleaved)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, _ = _make_selfplay_builder_and_runtimes(tmpdir)
+            tg = _make_trajectory_group(4, [1.0, -1.0, 0.5, -0.5])
+
+            builder.on_advantages_computed(
+                tg,
+                [0.5, -0.5, 0.25, -0.25],
+                scheme="mean_center",
+                alpha=0.5,
+                use_subgroups=True,
+                removed_before_training=False,
+            )
+
+            with open(os.path.join(tmpdir, "groups.jsonl")) as f:
+                record = json.loads(f.readline())
+
+            subs = record["subgroups"]
+            assert len(subs) == 2
+            assert subs[0]["trajectory_indices"] == [0, 2]  # debater_a
+            assert subs[1]["trajectory_indices"] == [1, 3]  # debater_b
+
+    def test_subgroups_none_when_disabled(self):
+        """subgroups is None when use_subgroups=False."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, _ = _make_selfplay_builder_and_runtimes(tmpdir)
+            tg = _make_trajectory_group(4, [1.0, -1.0, 0.5, -0.5])
+
+            builder.on_advantages_computed(
+                tg,
+                [0.5, -0.5, 0.25, -0.25],
+                scheme="mean_center",
+                alpha=0.5,
+                use_subgroups=False,
+                removed_before_training=False,
+            )
+
+            with open(os.path.join(tmpdir, "groups.jsonl")) as f:
+                record = json.loads(f.readline())
+            assert record["subgroups"] is None
+
+    def test_removed_before_training_flag(self):
+        """removed_before_training is recorded faithfully."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, _ = _make_selfplay_builder_and_runtimes(tmpdir)
+            tg = _make_trajectory_group(4, [1.0, 1.0, 1.0, 1.0])
+
+            builder.on_advantages_computed(
+                tg,
+                [0.0, 0.0, 0.0, 0.0],
+                scheme="grpo",
+                alpha=0.5,
+                use_subgroups=False,
+                removed_before_training=True,
+            )
+
+            with open(os.path.join(tmpdir, "groups.jsonl")) as f:
+                record = json.loads(f.readline())
+            assert record["removed_before_training"] is True
+
+    def test_noop_when_no_log_dir(self):
+        """on_advantages_computed is a no-op when episode_log_dir is None."""
+        builder = DebateGroupBuilder(
+            problem=DebateProblemSpec.from_seat_answers("Q", "A", "B", ScoringMode.MCQ),
+            game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
+            renderer=MagicMock(),
+            episode_log_dir=None,
+        )
+        tg = _make_trajectory_group(2, [1.0, -1.0])
+        # Should not raise
+        builder.on_advantages_computed(
+            tg,
+            [0.5, -0.5],
+            scheme="mean_center",
+            alpha=0.5,
+            use_subgroups=True,
+            removed_before_training=False,
+        )
+
+    def test_advantage_values_match_input(self):
+        """Advantage values in members match what was passed in."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder, _ = _make_selfplay_builder_and_runtimes(tmpdir)
+            advantages = [0.75, -0.75, 0.25, -0.25]
+            tg = _make_trajectory_group(4, [1.0, -1.0, 0.5, -0.5])
+
+            builder.on_advantages_computed(
+                tg,
+                advantages,
+                scheme="mean_center",
+                alpha=0.5,
+                use_subgroups=True,
+                removed_before_training=False,
+            )
+
+            with open(os.path.join(tmpdir, "groups.jsonl")) as f:
+                record = json.loads(f.readline())
+            for i, m in enumerate(record["members"]):
+                assert m["advantage"] == round(advantages[i], 6)
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Cross-file group_id consistency
+# ---------------------------------------------------------------------------
+
+
+class TestCrossFileConsistency:
+    def test_group_id_matches_between_files(self):
+        """group_id in groups.jsonl matches episodes.jsonl records."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_state(transcript=_make_utterances())
+            runtime = DebateRuntime(state)
+            renderer = MagicMock()
+
+            builder = DebateGroupBuilder(
+                problem=DebateProblemSpec.from_seat_answers(
+                    "What is 2+2?", "A", "B", ScoringMode.MCQ
+                ),
+                game=DebateGameSpec(ProtocolKind.SEQUENTIAL, num_rounds=1),
+                renderer=renderer,
+                episode_log_dir=tmpdir,
+                group_size=1,
+                step=7,
+                split="train",
+                group_index_in_step=1,
+            )
+            builder._runtimes = [runtime]
+
+            # Write episodes.jsonl via on_group_complete
+            envs = [
+                DebateEnv(role=Role.DEBATER_A, runtime=runtime, renderer=renderer),
+                DebateEnv(role=Role.DEBATER_B, runtime=runtime, renderer=renderer),
+            ]
+            builder.on_group_complete(
+                trajectories_G=[],
+                env_group=envs,
+                rewards_and_metrics_G=[(1.0, {}), (-1.0, {})],
+            )
+
+            # Write groups.jsonl via on_advantages_computed
+            tg = _make_trajectory_group(2, [1.0, -1.0])
+            builder.on_advantages_computed(
+                tg,
+                [0.5, -0.5],
+                scheme="mean_center",
+                alpha=0.5,
+                use_subgroups=True,
+                removed_before_training=False,
+            )
+
+            # Read both files
+            with open(os.path.join(tmpdir, "episodes.jsonl")) as f:
+                episode_records = [json.loads(line) for line in f]
+            with open(os.path.join(tmpdir, "groups.jsonl")) as f:
+                group_record = json.loads(f.readline())
+
+            # group_id should match
+            expected_group_id = "s7:g1"
+            assert group_record["group_id"] == expected_group_id
+            for ep in episode_records:
+                assert ep["group_id"] == expected_group_id

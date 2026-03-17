@@ -9,7 +9,9 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.progress import run_with_hear
 
 @pytest.mark.asyncio
 async def test_run_with_heartbeat_prints_start_and_done(capsys) -> None:
-    result = await run_with_heartbeat(asyncio.sleep(0, result="ok"), label="quick op", interval_s=60)
+    result = await run_with_heartbeat(
+        asyncio.sleep(0, result="ok"), label="quick op", interval_s=60
+    )
 
     out = capsys.readouterr().out
     assert result == "ok"

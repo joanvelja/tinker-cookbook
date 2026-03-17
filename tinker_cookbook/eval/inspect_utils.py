@@ -140,15 +140,50 @@ class InspectAPIFromTinkerSampling(InspectAIModelAPI):
         parsed_responses = [
             self.renderer.parse_response(r.tokens)[0] for r in sampled_token_sequences
         ]
-        responses_text: list[str] = [renderers.get_text_content(r) for r in parsed_responses]
-        all_choices = [
-            InspectAIModelOutputChoice(
-                message=InspectAIChatMessageAssistant(content=r, model=self.model_name),
-                stop_reason="stop",
+
+        all_choices: list[InspectAIModelOutputChoice] = []
+        total_reasoning_tokens = 0
+        for parsed in parsed_responses:
+            content_parts = parsed.get("content", "")
+            if isinstance(content_parts, list):
+                # Map ThinkingPart/TextPart → inspect ContentReasoning/ContentText
+                from inspect_ai.model import ContentReasoning, ContentText
+
+                inspect_parts: list[ContentReasoning | ContentText] = []
+                for part in content_parts:
+                    if isinstance(part, dict) and part.get("type") == "thinking":
+                        thinking_text = part.get("thinking", "")
+                        inspect_parts.append(ContentReasoning(reasoning=thinking_text))
+                        total_reasoning_tokens += len(
+                            self.renderer.tokenizer.encode(thinking_text)
+                        )
+                    elif isinstance(part, dict) and part.get("type") == "text":
+                        inspect_parts.append(ContentText(text=part.get("text", "")))
+                    else:
+                        inspect_parts.append(
+                            ContentText(text=renderers.get_text_content(parsed))
+                        )
+                msg_content: str | list[ContentReasoning | ContentText] = inspect_parts
+            else:
+                msg_content = str(content_parts)
+
+            all_choices.append(
+                InspectAIModelOutputChoice(
+                    message=InspectAIChatMessageAssistant(
+                        content=msg_content, model=self.model_name
+                    ),
+                    stop_reason="stop",
+                )
             )
-            for r in responses_text
-        ]
+
         usage = get_model_usage(prompt.to_ints(), sampled_token_sequences)
+        if total_reasoning_tokens > 0:
+            usage = InspectAIModelUsage(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+                reasoning_tokens=total_reasoning_tokens,
+            )
 
         return InspectAIModelOutput(
             model=self.model_name, choices=all_choices, time=end_time - start_time, usage=usage

@@ -126,6 +126,19 @@ class EnvGroupBuilder(ABC):
         """Hook called after compute_group_rewards. Override for logging."""
         pass
 
+    def on_advantages_computed(
+        self,
+        trajectory_group: "TrajectoryGroup",
+        advantages_G: list[float],
+        *,
+        scheme: "AdvantageScheme",
+        alpha: float,
+        use_subgroups: bool,
+        removed_before_training: bool,
+    ) -> None:
+        """Hook called after advantage computation. Override for group-level logging."""
+        pass
+
     def logging_tags(self) -> list[str]:
         """
         This is just used for logging. We often want to aggregate metrics (like rewards

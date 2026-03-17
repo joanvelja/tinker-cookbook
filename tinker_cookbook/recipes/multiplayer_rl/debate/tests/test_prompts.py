@@ -25,6 +25,7 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.types import (
     ProtocolKind,
     Role,
     ScoringMode,
+    ThinkVisibility,
     TurnSlot,
     VisibilityPolicy,
 )
@@ -72,7 +73,7 @@ def _make_spec(
     task_prompt: str = "Is P=NP?",
     answer_by_role: dict[Role, str] | None = None,
     num_rounds: int = 2,
-    open_reasoning: bool = False,
+    think_visibility: dict[Role, ThinkVisibility] | None = None,
     prompts_ref: str = "default",
 ) -> DebateSpec:
     if answer_by_role is None:
@@ -81,7 +82,7 @@ def _make_spec(
         task_prompt=task_prompt,
         answer_by_role=answer_by_role,
         schedule=_make_schedule(num_rounds),
-        open_reasoning=open_reasoning,
+        think_visibility=think_visibility,
         prompts_ref=prompts_ref,
     )
 
@@ -373,7 +374,6 @@ def test_answer_by_role_none():
             answer_by_role=None,
         ),
         schedule=_make_schedule(1),
-        open_reasoning=False,
         protocol_kind=ProtocolKind.SEQUENTIAL,
     )
     state = _make_state(spec=spec)
@@ -465,25 +465,35 @@ def test_render_question_absent_role():
 # ---------------------------------------------------------------------------
 
 
-def test_think_true_closed():
-    """think: true with closed reasoning -> private instruction."""
-    path = _tmp_yaml(_v2_yaml(extra="think:\n  debater_a: true\n"))
+def test_think_private():
+    """think: private -> instruction mentions private."""
+    path = _tmp_yaml(_v2_yaml(extra="think:\n  debater_a: private\n"))
     p = resolve_prompts(path)
-    state = _make_state(_make_spec(open_reasoning=False, prompts_ref=path))
+    state = _make_state(_make_spec(prompts_ref=path))
     instruction = p.get_think_instruction(state, Role.DEBATER_A)
     assert instruction is not None
     assert "private" in instruction.lower() or "will NOT see" in instruction
 
 
-def test_think_true_open():
-    """think: true with open reasoning -> visible instruction."""
-    path = _tmp_yaml(_v2_yaml(extra="think:\n  debater_a: true\n"))
+def test_think_open():
+    """think: open -> instruction mentions visible to all."""
+    path = _tmp_yaml(_v2_yaml(extra="think:\n  debater_a: open\n"))
     p = resolve_prompts(path)
-    spec = _make_spec(open_reasoning=True, prompts_ref=path)
+    spec = _make_spec(prompts_ref=path)
     state = _make_state(spec)
     instruction = p.get_think_instruction(state, Role.DEBATER_A)
     assert instruction is not None
     assert "visible" in instruction.lower()
+
+
+def test_think_visible_to_judge():
+    """think: visible_to_judge -> instruction mentions judge."""
+    path = _tmp_yaml(_v2_yaml(extra="think:\n  debater_a: visible_to_judge\n"))
+    p = resolve_prompts(path)
+    state = _make_state(_make_spec(prompts_ref=path))
+    instruction = p.get_think_instruction(state, Role.DEBATER_A)
+    assert instruction is not None
+    assert "judge" in instruction.lower()
 
 
 def test_think_false():
@@ -494,14 +504,11 @@ def test_think_false():
     assert p.get_think_instruction(state, Role.DEBATER_A) is None
 
 
-def test_think_custom_string():
-    """think with custom string -> rendered template."""
-    path = _tmp_yaml(_v2_yaml(extra='think:\n  debater_a: "Think step by step about {{phase}}."\n'))
-    p = resolve_prompts(path)
-    state = _make_state()
-    instruction = p.get_think_instruction(state, Role.DEBATER_A)
-    assert instruction is not None
-    assert "Think step by step about propose" in instruction
+def test_think_custom_string_rejected():
+    """think with custom string (not a ThinkVisibility value) is rejected."""
+    path = _tmp_yaml(_v2_yaml(extra='think:\n  debater_a: "Think step by step."\n'))
+    with pytest.raises(ValueError, match="unknown ThinkVisibility"):
+        resolve_prompts(path)
 
 
 def test_think_absent():
@@ -513,13 +520,13 @@ def test_think_absent():
 
 
 def test_think_per_phase():
-    """Per-phase think: {propose: true, critique: false} -> critique returns None."""
+    """Per-phase think: {propose: private, critique: false} -> critique returns None."""
     path = _tmp_yaml(
         _v2_yaml(
             extra="""\
 think:
   debater_a:
-    propose: true
+    propose: private
     critique: false
 """
         )
@@ -527,7 +534,7 @@ think:
     p = resolve_prompts(path)
     spec = _make_spec(num_rounds=2)
 
-    # slot 0 = propose -> explicit true
+    # slot 0 = propose -> explicit private
     state_propose = _make_state(spec=spec, slot_index=0)
     assert p.get_think_instruction(state_propose, Role.DEBATER_A) is not None
 
@@ -536,8 +543,8 @@ think:
     assert p.get_think_instruction(state_critique, Role.DEBATER_A) is None
 
 
-def test_render_user_empty_phase_but_think_true():
-    """Empty phase template + think=true -> returns think instruction, NOT None."""
+def test_render_user_empty_phase_but_think_private():
+    """Empty phase template + think=private -> returns think instruction, NOT None."""
     path = _tmp_yaml(
         _v2_yaml(
             extra="""\
@@ -545,7 +552,7 @@ user:
   debater_a:
     default: ""
 think:
-  debater_a: true
+  debater_a: private
 """
         )
     )
@@ -576,7 +583,7 @@ fields:
         description: "debater_a or debater_b or tie"
         scoring: {mode: enum, values: [debater_a, debater_b, tie]}
 think:
-  judge: true
+  judge: private
 """
         )
     )
@@ -779,7 +786,7 @@ def test_generate_field_instructions_format():
 def test_think_invalid_type_rejected():
     """think with invalid type (list) is rejected."""
     path = _tmp_yaml(_v2_yaml(extra="think:\n  debater_a: [1, 2]\n"))
-    with pytest.raises(ValueError, match="expected bool, str, or dict"):
+    with pytest.raises(ValueError, match="expected false, str, or dict"):
         resolve_prompts(path)
 
 
@@ -829,7 +836,7 @@ user:
 def test_mixed_default_rejected_think():
     """'default' alongside phase-specific keys in think raises ValueError."""
     path = _tmp_yaml(
-        _v2_yaml(extra="think:\n  debater_a:\n    default: true\n    critique: false\n")
+        _v2_yaml(extra="think:\n  debater_a:\n    default: private\n    critique: false\n")
     )
     with pytest.raises(ValueError, match="cannot coexist"):
         resolve_prompts(path)
@@ -898,18 +905,14 @@ opponent_wrap:
 
 def test_opponent_wrap_validation_bad_keys():
     """opponent_wrap with unknown keys is rejected."""
-    path = _tmp_yaml(
-        _v2_yaml(extra="opponent_wrap:\n  badkey: '{{ text }}'\n")
-    )
+    path = _tmp_yaml(_v2_yaml(extra="opponent_wrap:\n  badkey: '{{ text }}'\n"))
     with pytest.raises(ValueError, match="unknown keys"):
         resolve_prompts(path)
 
 
 def test_opponent_wrap_validation_non_string():
     """opponent_wrap with non-string value is rejected."""
-    path = _tmp_yaml(
-        _v2_yaml(extra="opponent_wrap:\n  debater: 42\n")
-    )
+    path = _tmp_yaml(_v2_yaml(extra="opponent_wrap:\n  debater: 42\n"))
     with pytest.raises(ValueError, match="expected str"):
         resolve_prompts(path)
 
@@ -1044,8 +1047,9 @@ def test_all_builtin_packs_pass_validation():
     """All built-in prompt packs pass the new validation."""
     for pack_name in (
         "default",
-        "selfplay",
         "open_selfplay",
+        "open_selfplay_private",
+        "open_selfplay_judgesees",
         "open_balanced",
         "open_exploit",
         "scientific_mcq",

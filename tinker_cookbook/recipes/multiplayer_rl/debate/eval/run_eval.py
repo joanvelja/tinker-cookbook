@@ -44,7 +44,6 @@ class Config:
     base_url: str | None = None
     scorer_builder: DebateScorerBuilder | None = None
     scorer_parallelism: int | None = None
-    open_reasoning: bool = False
     randomize_position: bool = True
     reasoning_effort: str | None = None
     debater_reasoning_effort: str | None = None
@@ -111,7 +110,6 @@ async def main(config: Config) -> None:
         base_url=config.base_url,
         scorer_builder=config.scorer_builder,
         scorer_parallelism=config.scorer_parallelism,
-        open_reasoning=config.open_reasoning,
         randomize_position=config.randomize_position,
     )
     evaluator = builder()
