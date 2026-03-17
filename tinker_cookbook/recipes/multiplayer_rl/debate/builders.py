@@ -201,6 +201,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
                 "prompts_ref": state.spec.prompts_ref,
                 "think_visibility": state.spec.encode_think_visibility(),
                 "target": state.spec.problem.target,
+                "task_prompt": state.spec.problem.task_prompt,
                 "winner": (
                     state.outcome.winner.value if state.outcome and state.outcome.winner else None
                 ),

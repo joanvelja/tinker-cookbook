@@ -393,18 +393,16 @@ def test_build_generation_messages_structure():
     transcript = (_utt(Role.DEBATER_A, 0, "A argues", slot_id=0),)
     state = _make_state(spec, transcript=transcript, slot_index=1, rounds_completed=0)
     msgs, prefill = build_generation_messages(state, Role.DEBATER_B)
-    # Exact sequence: system(0), question(1), opponent transcript(2)
-    # No instruction appended because default.yaml debater_b user template is empty
-    # and no think/fields for debaters.
-    assert len(msgs) == 3
+    # Sequence: system(0), question+opponent consolidated(1)
+    # Question and opponent turn are both user role → consolidated into one message.
+    # No instruction appended because default.yaml debater_b user template is empty.
+    assert len(msgs) == 2
     assert msgs[0]["role"] == "system"
-    assert msgs[1]["role"] == "user"  # question
+    assert msgs[1]["role"] == "user"
     assert "Is 2>3?" in msgs[1]["content"]
     assert "Your assigned position: no" in msgs[1]["content"]
-    # Transcript: opponent turn wrapped in XML
-    assert msgs[2]["role"] == "user"
-    assert '<opponent_turn agent="A"' in msgs[2]["content"]
-    assert "</opponent_turn>" in msgs[2]["content"]
+    assert '<opponent_turn agent="A"' in msgs[1]["content"]
+    assert "</opponent_turn>" in msgs[1]["content"]
     assert prefill is None
 
 
@@ -418,20 +416,19 @@ def test_build_generation_messages_judge_all_wrapped():
     )
     state = _make_state(spec, transcript=transcript, slot_index=2, rounds_completed=1)
     msgs, _prefill = build_generation_messages(state, Role.JUDGE, trigger="final")
-    # Skip system(0) and question(1). Transcript may be consolidated into one user msg.
-    transcript_content = "\n".join(str(m.get("content", "")) for m in msgs[2:])
-    # Both debate turns must be wrapped (judge is never "self")
-    assert transcript_content.count("<opponent_turn") == 2
-    assert transcript_content.count("</opponent_turn>") == 2
-    assert 'agent="A"' in transcript_content
-    assert 'agent="B"' in transcript_content
-    # No raw unwrapped turn content outside of opponent_turn tags
-    assert "A argues" in transcript_content
-    assert "B argues" in transcript_content
+    # All user content (question + transcript + instruction) may be consolidated.
+    # Check that both debate turns are present somewhere in the full message list.
+    all_content = "\n".join(str(m.get("content", "")) for m in msgs)
+    assert all_content.count("<opponent_turn") == 2
+    assert all_content.count("</opponent_turn>") == 2
+    assert 'agent="A"' in all_content
+    assert 'agent="B"' in all_content
+    assert "A argues" in all_content
+    assert "B argues" in all_content
 
 
-def test_build_generation_messages_question_not_consolidated():
-    """Question message stays separate from first transcript message (scoped consolidation)."""
+def test_build_generation_messages_no_adjacent_same_role():
+    """Full-list consolidation merges all adjacent same-role user messages."""
     schedule = build_schedule(ProtocolKind.SEQUENTIAL, 1, include_judge_turns=True)
     spec = _make_spec(schedule)
     transcript = (
@@ -440,12 +437,11 @@ def test_build_generation_messages_question_not_consolidated():
     )
     state = _make_state(spec, transcript=transcript, slot_index=2, rounds_completed=1)
     msgs, _ = build_generation_messages(state, Role.JUDGE, trigger="final")
-    # Question is at index 1, should NOT be merged with transcript
-    question_msg = msgs[1]
-    assert question_msg["role"] == "user"
-    assert "Which is bigger" in question_msg["content"]
-    # Question must NOT contain opponent_turn XML (would indicate merge)
-    assert "<opponent_turn" not in question_msg["content"]
+    # No adjacent same-role messages should remain
+    for i in range(len(msgs) - 1):
+        assert msgs[i]["role"] != msgs[i + 1]["role"], (
+            f"Adjacent same-role at {i},{i+1}: {msgs[i]['role']}"
+        )
 
 
 def test_build_generation_messages_with_prefill():

@@ -238,8 +238,8 @@ def build_generation_messages(
             _utterance_to_message(utt, viewer, state.spec.think_visibility, prompts=prompts)
         )
 
-    # 4. Consolidate transcript (merges adjacent same-role user messages)
-    msgs.extend(_consolidate_str_messages(transcript_msgs))
+    # 4. Append transcript
+    msgs.extend(transcript_msgs)
 
     # 5. Resolve trigger and append current instruction
     if trigger is None:
@@ -249,7 +249,10 @@ def build_generation_messages(
     if user_content:
         msgs.append(Message(role="user", content=user_content))
 
-    # 6. Resolve prefill
+    # 6. Consolidate full message list (merges adjacent same-role user messages)
+    msgs = _consolidate_str_messages(msgs)
+
+    # 7. Resolve prefill
     prefill = prompts.render_prefill(state, viewer, trigger=trigger)
 
     return msgs, prefill
