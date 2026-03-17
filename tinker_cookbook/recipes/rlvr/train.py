@@ -32,19 +32,20 @@ class CLIConfig:
     batch_size: int
     group_size: int
     max_tokens: int
-    advantage_scheme: AdvantageScheme = "maxrl"
 
     # Commonly tuned
+    advantage_scheme: AdvantageScheme = "maxrl"
     lora_rank: int = 32
     renderer_name: str | None = None
     learning_rate: float | None = None  # None -> get_lr(model_name)
     temperature: float = 1.0
     eval_temperature: float = 0.6
+    eval_top_p: float = 0.95
     seed: int = 42
     n_batches: int | None = None
     kl_penalty_coef: float = 0.0
     format_coef: float = 0.1
-    eos_coef: float = 0.0
+    eos_coef: float = 0.1
 
     # Logging
     log_path: str | None = None
@@ -63,14 +64,28 @@ class CLIConfig:
     num_substeps: int = 1
     max_steps_off_policy: int | None = None
     compute_post_kl: bool = False
-    loss_fn: LossFnType = "importance_sampling"
+    loss_fn: LossFnType = "ppo"
     loss_fn_config: dict[str, Any] | None = None
-    grad_clip_norm: float = 0.0
+    clip_ratio_lower: float = 0.2  # PPO clip: 1 - lower (DAPO uses 0.2)
+    clip_ratio_upper: float = 0.2  # PPO clip: 1 + upper (DAPO uses 0.28)
+    grad_clip_norm: float = 0.3
     remove_constant_reward_groups: bool = False
 
     # Stream minibatch settings
     stream_groups_per_batch: int | None = None  # enables StreamMinibatchConfig when set
     stream_num_minibatches: int = 2
+
+
+def derive_loss_fn_config(cli_config: CLIConfig) -> dict[str, Any] | None:
+    """Derive loss_fn_config from clip ratios. Explicit config wins."""
+    if cli_config.loss_fn_config is not None:
+        return cli_config.loss_fn_config
+    if cli_config.loss_fn in ("ppo", "cispo"):
+        return {
+            "clip_low_threshold": 1.0 - cli_config.clip_ratio_lower,
+            "clip_high_threshold": 1.0 + cli_config.clip_ratio_upper,
+        }
+    return None
 
 
 async def cli_main(cli_config: CLIConfig) -> None:
@@ -105,6 +120,8 @@ async def cli_main(cli_config: CLIConfig) -> None:
         eos_coef=cli_config.eos_coef,
     )
 
+    loss_fn_config = derive_loss_fn_config(cli_config)
+
     config = Config(
         learning_rate=learning_rate,
         dataset_builder=dataset_builder,
@@ -114,6 +131,7 @@ async def cli_main(cli_config: CLIConfig) -> None:
         max_tokens=cli_config.max_tokens,
         temperature=cli_config.temperature,
         eval_temperature=cli_config.eval_temperature,
+        eval_top_p=cli_config.eval_top_p,
         advantage_scheme=cli_config.advantage_scheme,
         wandb_project=cli_config.wandb_project,
         wandb_name=wandb_name,
@@ -132,7 +150,7 @@ async def cli_main(cli_config: CLIConfig) -> None:
         num_substeps=cli_config.num_substeps,
         loss_fn=cli_config.loss_fn,
         grad_clip_norm=cli_config.grad_clip_norm,
-        loss_fn_config=cli_config.loss_fn_config,
+        loss_fn_config=loss_fn_config,
         remove_constant_reward_groups=cli_config.remove_constant_reward_groups,
         async_config=AsyncConfig(
             max_steps_off_policy=cli_config.max_steps_off_policy,

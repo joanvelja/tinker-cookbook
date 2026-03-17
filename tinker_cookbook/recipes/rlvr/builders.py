@@ -53,6 +53,69 @@ def _standard_fewshot_prefix() -> list[renderers.Message]:
 
 
 # ---------------------------------------------------------------------------
+# Shared data-loading helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_examples(
+    dataset: Dataset,
+    question_field: str,
+    answer_field: str,
+    extract_fn: ExtractFn | None = None,
+    *,
+    warn_prefix: str = "",
+) -> list[RLVRExample]:
+    """Convert a HF dataset to RLVRExamples, optionally applying extract_fn to parse answers.
+
+    If *extract_fn* is given, rows where it raises ValueError are skipped (with a warning
+    if *warn_prefix* is set). If *extract_fn* is None, the raw answer field is used directly.
+    """
+    examples: list[RLVRExample] = []
+    for row in dataset:
+        question = row[question_field]  # type: ignore[index]
+        raw_answer = row[answer_field]  # type: ignore[index]
+        if not question or not raw_answer:
+            continue
+        if extract_fn is not None:
+            try:
+                ref = extract_fn(str(raw_answer))
+            except ValueError:
+                if warn_prefix:
+                    logger.warning("Skipping %s row with unparseable answer", warn_prefix)
+                continue
+        else:
+            ref = str(raw_answer)
+        examples.append(RLVRExample(question=str(question), reference=ref))
+    return examples
+
+
+def _load_shuffle_split(
+    dataset_path: str,
+    question_field: str,
+    answer_field: str,
+    seed: int,
+    eval_frac: float = 0.0,
+) -> tuple[list[RLVRExample], list[RLVRExample] | None]:
+    """Load a single-split HF dataset, shuffle, convert, and optionally carve out an eval set."""
+    import random
+
+    ds = load_dataset(dataset_path, split="train")
+    rows_raw = [ds[i] for i in range(len(ds))]
+    random.Random(seed).shuffle(rows_raw)
+
+    rows = [
+        RLVRExample(question=str(r[question_field]), reference=str(r[answer_field]))
+        for r in rows_raw
+        if r[question_field] and r[answer_field]  # type: ignore[index]
+    ]
+
+    if eval_frac > 0:
+        n_eval = max(1, int(len(rows) * eval_frac))
+        return rows[n_eval:], rows[:n_eval]
+    return rows, None
+
+
+# ---------------------------------------------------------------------------
 # Base builder
 # ---------------------------------------------------------------------------
 
@@ -181,14 +244,7 @@ class MathBuilder(SympyBoxedBuilder):
             load_dataset("HuggingFaceH4/MATH-500", name="default", split="test"),
         )
         test_problems: set[str] = {row["problem"] for row in test_dataset}  # type: ignore[arg-type]
-
-        test_examples: list[RLVRExample] = []
-        for row in test_dataset:
-            try:
-                ref = extract_boxed(row["solution"])  # type: ignore[index]
-            except ValueError:
-                continue
-            test_examples.append(RLVRExample(question=row["problem"], reference=ref))  # type: ignore[index]
+        test_examples = _extract_examples(test_dataset, "problem", "solution", extract_boxed)
 
         # Load train split (all Hendrycks configs, minus contamination)
         dataset_name = "EleutherAI/hendrycks_math"
@@ -200,15 +256,9 @@ class MathBuilder(SympyBoxedBuilder):
                 ds = ds.filter(lambda ex: ex["problem"] not in test_problems)
                 pieces.append(ds)
         full_train = concatenate_datasets(pieces).shuffle(seed=self.seed)
-
-        train_examples: list[RLVRExample] = []
-        for row in full_train:
-            try:
-                ref = extract_boxed(row["solution"])  # type: ignore[index]
-            except ValueError:
-                logger.warning("Skipping MATH row with unparseable solution")
-                continue
-            train_examples.append(RLVRExample(question=row["problem"], reference=ref))  # type: ignore[index]
+        train_examples = _extract_examples(
+            full_train, "problem", "solution", extract_boxed, warn_prefix="MATH",
+        )
 
         return train_examples, test_examples
 
@@ -251,27 +301,11 @@ class Gsm8kBuilder(SympyBoxedBuilder):
     def _load_data(self) -> tuple[list[RLVRExample], list[RLVRExample] | None]:
         train_ds = cast(Dataset, load_dataset("openai/gsm8k", name="main", split="train"))
         test_ds = cast(Dataset, load_dataset("openai/gsm8k", name="main", split="test"))
-
         train_ds = train_ds.shuffle(seed=self.seed)
 
-        train_examples: list[RLVRExample] = []
-        for row in train_ds:
-            try:
-                ref = _extract_gsm8k_final_answer(row["answer"])  # type: ignore[index]
-            except ValueError:
-                logger.warning("Skipping GSM8K train row with unparseable answer")
-                continue
-            train_examples.append(RLVRExample(question=row["question"], reference=ref))  # type: ignore[index]
-
-        test_examples: list[RLVRExample] = []
-        for row in test_ds:
-            try:
-                ref = _extract_gsm8k_final_answer(row["answer"])  # type: ignore[index]
-            except ValueError:
-                logger.warning("Skipping GSM8K test row with unparseable answer")
-                continue
-            test_examples.append(RLVRExample(question=row["question"], reference=ref))  # type: ignore[index]
-
+        extract = _extract_gsm8k_final_answer
+        train_examples = _extract_examples(train_ds, "question", "answer", extract, warn_prefix="GSM8K")
+        test_examples = _extract_examples(test_ds, "question", "answer", extract, warn_prefix="GSM8K")
         return train_examples, test_examples
 
 
@@ -286,20 +320,9 @@ class PolarisBuilder(SympyBoxedBuilder):
     dataset_name: str = "polaris"
 
     def _load_data(self) -> tuple[list[RLVRExample], list[RLVRExample] | None]:
-        import random
-
-        ds = load_dataset("POLARIS-Project/Polaris-Dataset-53K", split="train")
-        rows = [ds[i] for i in range(len(ds))]
-        random.Random(self.seed).shuffle(rows)
-
-        train_examples: list[RLVRExample] = []
-        for x in rows:
-            problem = x["problem"]  # type: ignore[index]
-            answer = x["answer"]  # type: ignore[index]
-            if problem and answer:
-                train_examples.append(RLVRExample(question=str(problem), reference=str(answer)))
-
-        return train_examples, None
+        return _load_shuffle_split(
+            "POLARIS-Project/Polaris-Dataset-53K", "problem", "answer", self.seed,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -313,20 +336,9 @@ class DeepMathBuilder(SympyBoxedBuilder):
     dataset_name: str = "deepmath"
 
     def _load_data(self) -> tuple[list[RLVRExample], list[RLVRExample] | None]:
-        import random
-
-        ds = load_dataset("zwhe99/DeepMath-103K", split="train")
-        rows = [ds[i] for i in range(len(ds))]
-        random.Random(self.seed).shuffle(rows)
-
-        train_examples: list[RLVRExample] = []
-        for x in rows:
-            question = x["question"]  # type: ignore[index]
-            answer = x["final_answer"]  # type: ignore[index]
-            if question and answer:
-                train_examples.append(RLVRExample(question=str(question), reference=str(answer)))
-
-        return train_examples, None
+        return _load_shuffle_split(
+            "zwhe99/DeepMath-103K", "question", "final_answer", self.seed,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -395,21 +407,10 @@ class OmniMathBuilder(RLVRDatasetBuilder):
         return extract_boxed
 
     def _load_data(self) -> tuple[list[RLVRExample], list[RLVRExample] | None]:
-        import random
-
-        ds = load_dataset("martheballon/Omni-MATH-2", split="train")
-        rows_raw = [ds[i] for i in range(len(ds))]
-        random.Random(self.seed).shuffle(rows_raw)
-
-        rows = [
-            RLVRExample(question=str(r["problem"]), reference=str(r["answer"]))
-            for r in rows_raw
-        ]
-
-        n_eval = max(1, int(len(rows) * self.eval_frac))
-        train = rows[n_eval:]
-        eval_ = rows[:n_eval]
-        return train, eval_
+        return _load_shuffle_split(
+            "martheballon/Omni-MATH-2", "problem", "answer", self.seed,
+            eval_frac=self.eval_frac,
+        )
 
 
 # ---------------------------------------------------------------------------

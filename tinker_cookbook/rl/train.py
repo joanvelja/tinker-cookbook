@@ -229,7 +229,10 @@ async def train_step(
     if not batches:
         return []
 
-    adam_params = tinker.AdamParams(learning_rate=learning_rate, beta1=0.9, beta2=0.95, eps=1e-8, grad_clip_norm=grad_clip_norm)
+    adam_params = tinker.AdamParams(
+        learning_rate=learning_rate, beta1=0.9, beta2=0.95, eps=1e-8,
+        grad_clip_norm=grad_clip_norm,
+    )
     training_logprobs_D: list[torch.Tensor] = []
     optim_result: tinker.OptimStepResponse | None = None
 
@@ -373,6 +376,8 @@ class Config:
     temperature: float = 1.0
     # Eval sampling temperature. MaxRL uses 0.6 for eval while training at 1.0.
     eval_temperature: float = 1.0
+    # Eval nucleus sampling probability. MaxRL uses 0.95.
+    eval_top_p: float = 1.0
     # Compute extra post-update KL metrics (adds overhead).
     compute_post_kl: bool = False
     # Remove groups where all trajectories have identical reward.
@@ -1421,8 +1426,11 @@ async def main(
     if maybe_test_dataset is not None:
         evaluators.append(
             RLTestSetEvaluator(
-                maybe_test_dataset, max_tokens=cfg.max_tokens, model_name=cfg.model_name,
+                maybe_test_dataset,
+                max_tokens=cfg.max_tokens,
+                model_name=cfg.model_name,
                 temperature=cfg.eval_temperature,
+                top_p=cfg.eval_top_p,
             )
         )
 

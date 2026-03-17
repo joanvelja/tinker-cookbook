@@ -61,6 +61,7 @@ class TinkerTokenCompleter(TokenCompleter):
     sampling_client: tinker.SamplingClient
     max_tokens: int
     temperature: float = 1.0
+    top_p: float = 1.0
     usage_tracker: UsageTracker | None = field(default=None, repr=False)
     actor: str = "trained"
     model_name: str = ""
@@ -78,6 +79,7 @@ class TinkerTokenCompleter(TokenCompleter):
                 stop=stop,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
+                top_p=self.top_p,
             ),
         )
         self._last_sample_wall_s = time.monotonic() - t0

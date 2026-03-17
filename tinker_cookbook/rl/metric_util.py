@@ -116,6 +116,7 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
         num_groups_to_log: int = 4,
         model_name: str = "",
         temperature: float = 1.0,
+        top_p: float = 1.0,
     ):
         self.env_group_builders_P = dataset_to_env_group_builders(dataset)
         self.max_tokens = max_tokens
@@ -123,6 +124,7 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
         self.num_groups_to_log = num_groups_to_log
         self.model_name = model_name
         self.temperature = temperature
+        self.top_p = top_p
 
     async def eval_token_completer(self, policy: TokenCompleter) -> dict[str, float]:
         async def run_group_rollout(builder, i):
@@ -149,6 +151,7 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
             sampling_client,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
+            top_p=self.top_p,
             usage_tracker=usage_tracker,
             actor="trained",
             model_name=self.model_name,

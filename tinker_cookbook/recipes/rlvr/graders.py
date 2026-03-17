@@ -128,6 +128,45 @@ class LLMGraderConfig(GraderConfig):
 
 
 # ---------------------------------------------------------------------------
+# Shared verdict parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_verdict(raw: str) -> GradeResult:
+    """Parse a single CORRECT/INCORRECT verdict from raw LLM output."""
+    verdict = raw.strip().upper()
+    if verdict == "CORRECT":
+        return GradeResult(correct=True, status="correct")
+    if verdict == "INCORRECT":
+        return GradeResult(correct=False, status="incorrect")
+    return GradeResult(
+        correct=False, status="ambiguous",
+        detail=f"Expected CORRECT or INCORRECT, got: {raw!r}",
+    )
+
+
+async def _llm_grade(
+    client: AsyncLLMClient,
+    system_prompt: str,
+    user_template: str,
+    question: str,
+    reference: str,
+    extracted: str,
+) -> GradeResult:
+    """Call LLM and parse the verdict. Shared by LLMGrader and CompositeGrader."""
+    user_prompt = user_template.format(
+        question=question, target=reference, response=extracted,
+    )
+    try:
+        raw = await client.complete(system=system_prompt, user=user_prompt)
+        return _parse_verdict(raw)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        raise
+    except Exception as e:
+        return GradeResult(correct=False, status="error", detail=f"Grading failed: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Composite grader (sympy first, LLM fallback)
 # ---------------------------------------------------------------------------
 
@@ -181,44 +220,21 @@ class CompositeGrader:
                 timeout_seconds=int(math.ceil(self.config.sympy_timeout)),
             )
         except Exception:
-            return None  # can't tell → fall through to LLM
+            return None  # can't tell -> fall through to LLM
 
         if out is True:
-            return True  # sympy says equal → trust it
-        return None  # sympy says False or timeout → don't trust, ask LLM
-
-    async def _llm_grade(self, question: str, reference: str, extracted: str) -> GradeResult:
-        """Fall back to LLM grading."""
-        user_prompt = self.config.user_template.format(
-            question=question, target=reference, response=extracted,
-        )
-        try:
-            raw = await self.llm_client.complete(
-                system=self.config.system_prompt, user=user_prompt,
-            )
-            verdict = raw.strip().upper()
-            if verdict == "CORRECT":
-                return GradeResult(correct=True, status="correct")
-            elif verdict == "INCORRECT":
-                return GradeResult(correct=False, status="incorrect")
-            else:
-                return GradeResult(
-                    correct=False, status="ambiguous",
-                    detail=f"Expected CORRECT or INCORRECT, got: {raw!r}",
-                )
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            raise
-        except Exception as e:
-            return GradeResult(correct=False, status="error", detail=f"Grading failed: {e}")
+            return True  # sympy says equal -> trust it
+        return None  # sympy says False or timeout -> don't trust, ask LLM
 
     async def grade(self, question: str, reference: str, extracted: str) -> GradeResult:
-        # Step 1: try sympy (cheap, deterministic)
         sympy_result = self._sympy_grade(extracted, reference)
         if sympy_result is True:
             return GradeResult(correct=True, status="correct", detail="sympy")
 
-        # Step 2: sympy unsure → ask LLM
-        return await self._llm_grade(question, reference, extracted)
+        return await _llm_grade(
+            self.llm_client, self.config.system_prompt, self.config.user_template,
+            question, reference, extracted,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -232,26 +248,10 @@ class LLMGrader:
         self.client = AsyncLLMClient(config.client)
 
     async def grade(self, question: str, reference: str, extracted: str) -> GradeResult:
-        user_prompt = self.config.user_template.format(
-            question=question, target=reference, response=extracted,
+        return await _llm_grade(
+            self.client, self.config.system_prompt, self.config.user_template,
+            question, reference, extracted,
         )
-        try:
-            raw = await self.client.complete(system=self.config.system_prompt, user=user_prompt)
-            verdict = raw.strip().upper()
-            if verdict == "CORRECT":
-                return GradeResult(correct=True, status="correct")
-            elif verdict == "INCORRECT":
-                return GradeResult(correct=False, status="incorrect")
-            else:
-                return GradeResult(
-                    correct=False,
-                    status="ambiguous",
-                    detail=f"Expected CORRECT or INCORRECT, got: {raw!r}",
-                )
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            raise
-        except Exception as e:
-            return GradeResult(correct=False, status="error", detail=f"Grading failed: {e}")
 
     async def grade_batch(
         self, requests: list[tuple[str, str, str]]
