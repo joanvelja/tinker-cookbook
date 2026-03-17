@@ -13,10 +13,12 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Sequence
 
 from tinker_cookbook.rl.types import (
+    AdvantageScheme,
     Env,
     EnvGroupBuilder,
     Metrics,
     Trajectory,
+    TrajectoryGroup,
 )
 from tinker_cookbook.completers import MessageCompleter
 from tinker_cookbook.renderers import Renderer
@@ -166,6 +168,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
     episode_log_dir: str | None = None
     split: str | None = None
     step: int | None = None
+    group_index_in_step: int | None = None
 
     # Set after make_envs
     _runtimes: list[DebateRuntime] = field(default_factory=list, repr=False)
@@ -184,17 +187,33 @@ class DebateGroupBuilder(EnvGroupBuilder):
         os.makedirs(self.episode_log_dir, exist_ok=True)
         records: list[str] = []
 
-        for env, (reward, metrics) in zip(env_group, rewards_and_metrics_G, strict=True):
+        n_roles = len(self.include_roles) if is_selfplay else 1
+
+        for i, (env, (reward, metrics)) in enumerate(
+            zip(env_group, rewards_and_metrics_G, strict=True)
+        ):
             assert isinstance(env, DebateEnv)
             state = env.runtime.state
             this_role = env.role
             other_role = Role.DEBATER_B if this_role == Role.DEBATER_A else Role.DEBATER_A
 
+            debate_index = i // n_roles
+            group_id = (
+                f"s{self.step}:g{self.group_index_in_step}"
+                if self.step is not None and self.group_index_in_step is not None
+                else None
+            )
+
             # Shared fields across both modes.
             record: dict = {
-                "schema_version": 3 if is_selfplay else 2,
+                "schema_version": 4 if is_selfplay else 2,
                 "step": self.step,
                 "split": self.split,
+                "group_id": group_id,
+                "group_index_in_step": self.group_index_in_step,
+                "debate_index_in_group": debate_index,
+                "trajectory_index_in_group": i,
+                "advantage_subgroup": this_role.value,
                 "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
                 "debate_id": state.spec.debate_id,
                 "protocol_kind": state.spec.protocol_kind.value,
@@ -259,6 +278,92 @@ class DebateGroupBuilder(EnvGroupBuilder):
         with _EPISODE_LOG_LOCK:
             with open(log_path, "a") as f:
                 f.writelines(records)
+
+    def on_advantages_computed(
+        self,
+        trajectory_group: TrajectoryGroup,
+        advantages_G: list[float],
+        *,
+        scheme: AdvantageScheme,
+        alpha: float,
+        use_subgroups: bool,
+        removed_before_training: bool,
+    ) -> None:
+        if self.episode_log_dir is None:
+            return
+
+        is_selfplay = self.opponent_completer is None
+        n_roles = len(self.include_roles) if is_selfplay else 1
+        total_rewards = trajectory_group.get_total_rewards()
+
+        group_id = (
+            f"s{self.step}:g{self.group_index_in_step}"
+            if self.step is not None and self.group_index_in_step is not None
+            else None
+        )
+
+        # Build per-trajectory member records.
+        members = []
+        for i, (adv, reward) in enumerate(zip(advantages_G, total_rewards, strict=True)):
+            debate_index = i // n_roles
+            runtime = self._runtimes[debate_index] if debate_index < len(self._runtimes) else None
+            role_index = i % n_roles
+            role = self.include_roles[role_index] if is_selfplay else self.include_roles[0]
+            members.append(
+                {
+                    "trajectory_index": i,
+                    "debate_index": debate_index,
+                    "debate_id": runtime.state.spec.debate_id if runtime else None,
+                    "role": role.value,
+                    "reward_total": round(reward, 6),
+                    "advantage": round(adv, 6),
+                }
+            )
+
+        # Build subgroup records (advantage computation partitions).
+        n = len(advantages_G)
+        subgroups_raw = self.advantage_subgroups(n) if use_subgroups else None
+        subgroups = []
+        if subgroups_raw is not None:
+            import torch
+
+            rewards_tensor = torch.tensor(total_rewards, dtype=torch.float32)
+            for sub_idx, indices in enumerate(subgroups_raw):
+                sub_rewards = rewards_tensor[list(indices)]
+                subgroups.append(
+                    {
+                        "id": sub_idx,
+                        "trajectory_indices": list(indices),
+                        "mean_reward": round(float(sub_rewards.mean()), 6),
+                        "std_reward": round(float(sub_rewards.std()), 6) if len(sub_rewards) > 1 else 0.0,
+                    }
+                )
+
+        record = {
+            "group_id": group_id,
+            "step": self.step,
+            "split": self.split,
+            "group_index_in_step": self.group_index_in_step,
+            "task_prompt": self.problem.task_prompt,
+            "target": self.problem.target,
+            "protocol_kind": self.game.protocol_kind.value,
+            "advantage_scheme": scheme,
+            "advantage_alpha": alpha,
+            "use_advantage_subgroups": use_subgroups,
+            "removed_before_training": removed_before_training,
+            "n_debates": self.group_size,
+            "n_trajectories": n,
+            "members": members,
+            "subgroups": subgroups if subgroups else None,
+            "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+        }
+
+        os.makedirs(self.episode_log_dir, exist_ok=True)
+        log_path = os.path.join(self.episode_log_dir, "groups.jsonl")
+        line = json.dumps(record) + "\n"
+        with _EPISODE_LOG_LOCK:
+            with open(log_path, "a") as f:
+                f.write(line)
 
     async def make_envs(self) -> Sequence[Env]:
         if self.opponent_completer is None and self.randomize_position:

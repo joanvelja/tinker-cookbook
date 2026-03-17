@@ -128,8 +128,9 @@ class DebateDataset(RLDataset):
                 episode_log_dir=self.episode_log_dir,
                 split=self.split,
                 step=index,
+                group_index_in_step=gi,
             )
-            for problem in batch_problems
+            for gi, problem in enumerate(batch_problems)
         ]
 
     def __len__(self) -> int:

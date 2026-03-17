@@ -26,7 +26,6 @@ from tinker_cookbook.eval.evaluators import SamplingClientEvaluator, SamplingCli
 from tinker_cookbook.rl.data_processing import (
     assemble_training_data,
     compute_advantages,
-    remove_constant_reward_groups,
 )
 from tinker_cookbook.rl.metric_util import RLTestSetEvaluator, compute_trajectory_metrics
 from tinker_cookbook.rl.metrics import (
@@ -932,6 +931,19 @@ async def prepare_minibatch(
         alpha=advantage_alpha,
     )
 
+    # Notify builders that advantages are ready (group-level logging hook)
+    for builder, traj_group, adv_G in safezip(
+        env_group_builders_P, trajectory_groups_P, advantages_P
+    ):
+        builder.on_advantages_computed(
+            traj_group,
+            adv_G.tolist(),
+            scheme=advantage_scheme,
+            alpha=advantage_alpha,
+            use_subgroups=use_advantage_subgroups,
+            removed_before_training=False,
+        )
+
     # Print up to two trajectory groups with correctly-centered advantages
     for i, traj_group in enumerate(trajectory_groups_P[:2]):
         print_group(traj_group, tokenizer, advantages=advantages_P[i])
@@ -1303,7 +1315,29 @@ async def do_sync_training(
             )
 
         if cfg.remove_constant_reward_groups:
-            trajectory_groups_P = remove_constant_reward_groups(trajectory_groups_P)
+            # Filter builders alongside trajectory groups to maintain alignment.
+            kept = []
+            removed = []
+            for b, tg in safezip(env_group_builders_P, trajectory_groups_P):
+                if all_same(tg.get_total_rewards()):
+                    removed.append((b, tg))
+                else:
+                    kept.append((b, tg))
+            if not kept:
+                # All constant — keep first group (matches remove_constant_reward_groups)
+                kept = [removed.pop(0)]
+            # Log removed groups with zero advantages
+            for b, tg in removed:
+                b.on_advantages_computed(
+                    tg,
+                    [0.0] * len(tg.trajectories_G),
+                    scheme=cfg.advantage_scheme,
+                    alpha=cfg.advantage_alpha,
+                    use_subgroups=cfg.use_advantage_subgroups,
+                    removed_before_training=True,
+                )
+            env_group_builders_P = [b for b, _ in kept]
+            trajectory_groups_P = [tg for _, tg in kept]
 
         # Train step
         sampling_client, train_step_metrics = await do_train_step_and_get_sampling_client(
