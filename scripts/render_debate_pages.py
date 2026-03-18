@@ -164,7 +164,7 @@ def _render_group_debate_cards(group: GroupRecord, html_base: str) -> str:
     return "\n".join(parts)
 
 
-def render_group_page(group: GroupRecord, html_base: str = "../html/") -> str:
+def render_group_page(group: GroupRecord, html_base: str = "../episodes/") -> str:
     """Generate self-contained HTML for one group."""
     step = group.step or "?"
     target = group.target or "?"
@@ -405,7 +405,7 @@ def _avg_signals_panel(question: QuestionRecord) -> str:
     return _render_signals_html({"signals": avg_signals})
 
 
-def render_question_page(question: QuestionRecord, html_base: str = "../html/") -> str:
+def render_question_page(question: QuestionRecord, html_base: str = "../episodes/") -> str:
     """Generate self-contained HTML for one question."""
     prompt = question.task_prompt or ""
     target = question.target or "?"
