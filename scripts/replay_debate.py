@@ -45,7 +45,7 @@ def _load_episode(path: str, index: int) -> dict:
     raise IndexError(f"Episode index {index} out of range (file has {i + 1} lines)")
 
 
-def _episode_to_spec(ep: dict) -> DebateSpec:
+def episode_to_spec(ep: dict) -> DebateSpec:
     """Reconstruct DebateSpec from episode record."""
     protocol_kind = ProtocolKind(ep["protocol_kind"])
 
@@ -86,7 +86,7 @@ def _episode_to_spec(ep: dict) -> DebateSpec:
     )
 
 
-def _empty_state(spec: DebateSpec) -> DebateState:
+def empty_state(spec: DebateSpec) -> DebateState:
     return DebateState(
         spec=spec,
         slot_index=0,
@@ -99,7 +99,7 @@ def _empty_state(spec: DebateSpec) -> DebateState:
     )
 
 
-def _advance_state(state: DebateState, utt: Utterance) -> DebateState:
+def advance_state(state: DebateState, utt: Utterance) -> DebateState:
     """Append utterance and advance slot/round counters."""
     schedule = state.spec.schedule
     new_transcript = state.transcript + (utt,)
@@ -128,7 +128,7 @@ def _advance_state(state: DebateState, utt: Utterance) -> DebateState:
     )
 
 
-def _turn_to_utterance(turn: dict, schedule: tuple) -> Utterance:
+def turn_to_utterance(turn: dict, schedule: tuple) -> Utterance:
     """Convert episode transcript turn dict to Utterance."""
     role = Role(turn["role"])
     round_idx = turn["round"]
@@ -153,13 +153,13 @@ def _turn_to_utterance(turn: dict, schedule: tuple) -> Utterance:
 
 def replay(ep: dict, viewer: Role, *, as_json: bool = False) -> list[dict]:
     """Replay debate from viewer's perspective, returning per-turn I/O."""
-    spec = _episode_to_spec(ep)
-    state = _empty_state(spec)
+    spec = episode_to_spec(ep)
+    state = empty_state(spec)
     schedule = spec.schedule
     transcript = ep["transcript"]
 
     results = []
-    utterances = [_turn_to_utterance(t, schedule) for t in transcript]
+    utterances = [turn_to_utterance(t, schedule) for t in transcript]
 
     for i, utt in enumerate(utterances):
         if utt.role == viewer:
@@ -178,7 +178,7 @@ def replay(ep: dict, viewer: Role, *, as_json: bool = False) -> list[dict]:
             results.append(turn_record)
 
         # Advance state with this utterance
-        state = _advance_state(state, utt)
+        state = advance_state(state, utt)
 
     return results
 

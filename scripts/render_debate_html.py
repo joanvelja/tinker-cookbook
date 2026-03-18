@@ -17,13 +17,9 @@ Usage:
 
     # Render specific episodes
     uv run python scripts/render_debate_html.py logs/.../episodes/episodes.jsonl -i 0,1,5
-
-    # Custom output dir
-    uv run python scripts/render_debate_html.py logs/.../episodes/episodes.jsonl -o /tmp/debate-viewer
 """
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -35,12 +31,13 @@ from scripts.debate_style import (
     _render_output_html,
     _render_signals_html,
 )
+from scripts.debate_loader import load_rows
 from scripts.replay_debate import (
     Role,
-    _advance_state,
-    _empty_state,
-    _episode_to_spec,
-    _turn_to_utterance,
+    advance_state,
+    empty_state,
+    episode_to_spec,
+    turn_to_utterance,
 )
 from tinker_cookbook.recipes.multiplayer_rl.debate.core.visibility import build_generation_messages
 
@@ -52,9 +49,9 @@ from tinker_cookbook.recipes.multiplayer_rl.debate.core.visibility import build_
 
 def _build_debater_perspective(ep: dict, viewer: Role) -> list[dict]:
     """Build turn-by-turn I/O from a debater's perspective."""
-    spec = _episode_to_spec(ep)
-    state = _empty_state(spec)
-    utterances = [_turn_to_utterance(t, spec.schedule) for t in ep["transcript"]]
+    spec = episode_to_spec(ep)
+    state = empty_state(spec)
+    utterances = [turn_to_utterance(t, spec.schedule) for t in ep["transcript"]]
     turns = []
 
     for i, utt in enumerate(utterances):
@@ -75,7 +72,7 @@ def _build_debater_perspective(ep: dict, viewer: Role) -> list[dict]:
             turn["prefill"] = prefill
 
         turns.append(turn)
-        state = _advance_state(state, utt)
+        state = advance_state(state, utt)
 
     return turns
 
@@ -91,12 +88,12 @@ def _build_oracle_from_perspectives(
 
 def _build_judge_perspective(ep: dict) -> dict:
     """Build judge's view: full assembled input + verdict."""
-    spec = _episode_to_spec(ep)
-    state = _empty_state(spec)
-    utterances = [_turn_to_utterance(t, spec.schedule) for t in ep["transcript"]]
+    spec = episode_to_spec(ep)
+    state = empty_state(spec)
+    utterances = [turn_to_utterance(t, spec.schedule) for t in ep["transcript"]]
 
     for utt in utterances:
-        state = _advance_state(state, utt)
+        state = advance_state(state, utt)
 
     msgs, prefill = build_generation_messages(state, Role.JUDGE, trigger="final")
     return {
@@ -118,8 +115,8 @@ def _render_outline_html(ep: dict) -> str:
     if not transcript:
         return ""
 
-    spec = _episode_to_spec(ep)
-    utterances = [_turn_to_utterance(t, spec.schedule) for t in transcript]
+    spec = episode_to_spec(ep)
+    utterances = [turn_to_utterance(t, spec.schedule) for t in transcript]
 
     parts = ['<div class="outline">']
     for i, utt in enumerate(utterances):
@@ -417,15 +414,11 @@ def render_index_html(episodes: list[dict], output_dir: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Render debate episodes as HTML.")
     parser.add_argument("episodes_path", help="Path to episodes.jsonl")
-    parser.add_argument("--output-dir", "-o", default=None, help="Output directory (default: sibling of episodes.jsonl)")
     parser.add_argument("--indices", "-i", default=None, help="Episode indices: 0,1,5 or 0-10")
     args = parser.parse_args()
 
-    # Load episodes
-    episodes = []
-    with open(args.episodes_path) as f:
-        for line in f:
-            episodes.append(json.loads(line))
+    # Load episodes using robust shared loader
+    episodes = load_rows(args.episodes_path)
 
     # Parse indices
     if args.indices:
@@ -437,11 +430,8 @@ def main():
     else:
         indices = list(range(len(episodes)))
 
-    # Output dir
-    if args.output_dir:
-        out_dir = Path(args.output_dir)
-    else:
-        out_dir = Path(args.episodes_path).parent / "html" / "episodes"
+    # Output dir: always <input_dir>/html/episodes/
+    out_dir = Path(args.episodes_path).parent / "html" / "episodes"
 
     out_dir.mkdir(parents=True, exist_ok=True)
 

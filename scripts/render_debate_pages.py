@@ -9,7 +9,7 @@ deduplicates self-play rows, and generates:
 
 Usage:
     uv run python scripts/render_debate_pages.py logs/.../episodes/
-    uv run python scripts/render_debate_pages.py logs/.../episodes/ -o /tmp/pages
+    uv run python scripts/render_debate_pages.py logs/.../episodes/ --render-episodes
 """
 
 import argparse
@@ -618,8 +618,9 @@ def main():
         help="Directory containing episodes.jsonl (and optionally groups.jsonl)",
     )
     parser.add_argument(
-        "--output-dir", "-o", default=None,
-        help="Output directory (default: <episodes_dir>/html/)",
+        "--render-episodes",
+        action="store_true",
+        help="Also render per-episode HTML pages into <out>/episodes/",
     )
     args = parser.parse_args()
 
@@ -631,8 +632,8 @@ def main():
         print(f"Error: {episodes_path} not found", file=sys.stderr)
         sys.exit(1)
 
-    # Output dir
-    out_dir = Path(args.output_dir) if args.output_dir else episodes_dir / "html"
+    # Output dir: always <input_dir>/html/
+    out_dir = episodes_dir / "html"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "questions").mkdir(exist_ok=True)
     (out_dir / "groups").mkdir(exist_ok=True)
@@ -674,6 +675,17 @@ def main():
         with open(path, "w") as f:
             f.write(html)
     print(f"Rendered {len(group_index)} group pages", file=sys.stderr)
+
+    # Optionally render episode pages
+    if args.render_episodes:
+        from scripts.render_debate_html import render_episode_html
+
+        ep_dir = out_dir / "episodes"
+        ep_dir.mkdir(exist_ok=True)
+        for idx, row in enumerate(rows):
+            html = render_episode_html(row, idx)
+            (ep_dir / f"episode_{idx:04d}.html").write_text(html)
+        print(f"Rendered {len(rows)} episodes", file=sys.stderr)
 
     # Render top-level index
     index_html = render_index_html(question_index, group_index, str(out_dir))
