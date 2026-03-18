@@ -86,6 +86,7 @@ class GroupRecord:
     removed_before_training: bool
     subgroups: list[dict] | None
     members: list[dict]
+    grader_calls: list[dict] = field(default_factory=list)  # from semantic_calls.jsonl
 
     @property
     def is_dead(self) -> bool:
@@ -272,9 +273,17 @@ def build_question_index(debates: list[Debate]) -> dict[str, QuestionRecord]:
 def build_group_index(
     group_rows: list[dict],
     debates: list[Debate],
+    semantic_calls: list[dict] | None = None,
 ) -> dict[str, GroupRecord]:
-    """Join group records with debates by member debate_id."""
+    """Join group records with debates by member debate_id, attach grader calls."""
     debate_map = {d.debate_id: d for d in debates}
+
+    # Index semantic calls by group_id
+    calls_by_group: dict[str, list[dict]] = defaultdict(list)
+    for call in (semantic_calls or []):
+        gid = call.get("group_id")
+        if gid:
+            calls_by_group[gid].append(call)
 
     index: dict[str, GroupRecord] = {}
     for g in group_rows:
@@ -302,6 +311,7 @@ def build_group_index(
             removed_before_training=g.get("removed_before_training", False),
             subgroups=g.get("subgroups"),
             members=members,
+            grader_calls=calls_by_group.get(gid, []),
         )
 
     return index

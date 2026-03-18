@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render question-level and group-level debate pages.
 
-Reads episodes.jsonl (+ optional groups.jsonl) from a log directory,
+Reads episodes.jsonl (+ optional groups.jsonl, semantic_calls.jsonl) from a log directory,
 deduplicates self-play rows, and generates:
   - Per-question pages (questions/<hash>.html)
   - Per-group pages (groups/<group_id>.html)
@@ -128,6 +128,69 @@ def _render_subgroup_lanes(group: GroupRecord) -> str:
     return "\n".join(parts)
 
 
+def _render_grader_calls(calls: list[dict]) -> str:
+    """Render grader/matcher calls as a collapsible section."""
+    if not calls:
+        return ""
+    parts = [
+        '<h3 style="font-family:var(--font-ui);font-size:0.78rem;color:var(--text-2);margin:1.5rem 0 0.5rem;'
+        'letter-spacing:0.04em;text-transform:uppercase">'
+        f'Grader Calls ({len(calls)})</h3>'
+    ]
+    for call in calls:
+        kind = call.get("kind", "?")
+        response = call.get("response", "")
+        summary = call.get("reasoning_summary")
+        user = call.get("user", "")
+
+        # Color the verdict
+        resp_lower = response.strip().lower()
+        if resp_lower == "correct" or resp_lower == "yes":
+            verdict_cls = "color:var(--role-a)"
+        elif resp_lower == "incorrect" or resp_lower == "no":
+            verdict_cls = "color:var(--incorrect)"
+        else:
+            verdict_cls = "color:var(--text-2)"
+
+        parts.append(
+            f'<details style="margin:0.3rem 0;border:1px solid var(--border-sub);'
+            f'border-radius:var(--radius);background:var(--surface);overflow:hidden">'
+        )
+        parts.append(
+            f'<summary style="font-family:var(--font-ui);font-size:0.72rem;padding:0.4rem 0.65rem;'
+            f'cursor:pointer;display:flex;align-items:center;gap:0.5rem">'
+            f'<span style="color:var(--accent);font-weight:600">{_esc(kind)}</span>'
+            f'<span style="{verdict_cls};font-weight:600">{_esc(response)}</span>'
+            f'<span style="color:var(--text-3);font-size:0.68rem;margin-left:auto">'
+            f'{_esc(user[:80])}{"..." if len(user) > 80 else ""}</span>'
+            f'</summary>'
+        )
+        # Reasoning summary (the valuable part)
+        if summary:
+            parts.append(
+                f'<div style="padding:0.5rem 0.65rem;border-top:1px solid var(--border-sub);'
+                f'background:rgba(251,191,36,0.03)">'
+                f'<div style="font-family:var(--font-ui);font-size:0.65rem;color:var(--accent);'
+                f'margin-bottom:0.3rem;letter-spacing:0.03em;text-transform:uppercase">reasoning</div>'
+                f'<pre style="font-family:var(--font-mono);font-size:0.72rem;line-height:1.5;'
+                f'white-space:pre-wrap;word-break:break-word;color:var(--text-2)">{_esc(summary)}</pre>'
+                f'</div>'
+            )
+        # Full prompt (collapsed deeper)
+        parts.append(
+            f'<details style="border-top:1px solid var(--border-sub)">'
+            f'<summary style="font-family:var(--font-ui);font-size:0.65rem;color:var(--text-3);'
+            f'padding:0.3rem 0.65rem;cursor:pointer">full prompt</summary>'
+            f'<pre style="font-family:var(--font-mono);font-size:0.68rem;line-height:1.4;'
+            f'white-space:pre-wrap;word-break:break-word;color:var(--text-3);padding:0.5rem 0.65rem;'
+            f'max-height:300px;overflow-y:auto;background:var(--bg)">{_esc(user)}</pre>'
+            f'</details>'
+        )
+        parts.append('</details>')
+
+    return "\n".join(parts)
+
+
 def _render_group_debate_cards(group: GroupRecord, html_base: str) -> str:
     """Render debate cards for a group page."""
     parts = []
@@ -178,6 +241,7 @@ def render_group_page(group: GroupRecord, html_base: str = "../episodes/") -> st
     banners = _render_failure_banners(group)
     lanes = _render_subgroup_lanes(group)
     cards = _render_group_debate_cards(group, html_base)
+    grader_html = _render_grader_calls(group.grader_calls)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -210,6 +274,8 @@ def render_group_page(group: GroupRecord, html_base: str = "../episodes/") -> st
     <h3 style="font-family:var(--font-ui);font-size:0.78rem;color:var(--text-2);margin:1.5rem 0 0.5rem;
         letter-spacing:0.04em;text-transform:uppercase">Debates</h3>
     {cards}
+
+    {grader_html}
 </main>
 
 {_JS}
@@ -583,7 +649,12 @@ def main():
     group_index: dict[str, object] = {}
     if groups_path.exists():
         group_rows = load_rows(groups_path)
-        group_index = build_group_index(group_rows, debates)
+        # Load semantic calls (grader/matcher reasoning) if available
+        semantic_path = episodes_dir / "semantic_calls.jsonl"
+        semantic_calls = load_rows(semantic_path) if semantic_path.exists() else None
+        if semantic_calls:
+            print(f"  {len(semantic_calls)} grader calls", file=sys.stderr)
+        group_index = build_group_index(group_rows, debates, semantic_calls)
         print(f"  {len(group_index)} groups", file=sys.stderr)
     else:
         print("  no groups.jsonl found, skipping group pages", file=sys.stderr)
