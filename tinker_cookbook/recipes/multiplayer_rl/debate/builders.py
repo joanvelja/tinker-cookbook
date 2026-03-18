@@ -170,6 +170,12 @@ class DebateGroupBuilder(EnvGroupBuilder):
     step: int | None = None
     group_index_in_step: int | None = None
 
+    @property
+    def group_id(self) -> str | None:
+        if self.step is not None and self.group_index_in_step is not None:
+            return f"s{self.step}:g{self.group_index_in_step}"
+        return None
+
     # Set after make_envs
     _runtimes: list[DebateRuntime] = field(default_factory=list, repr=False)
 
@@ -198,11 +204,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
             other_role = Role.DEBATER_B if this_role == Role.DEBATER_A else Role.DEBATER_A
 
             debate_index = i // n_roles
-            group_id = (
-                f"s{self.step}:g{self.group_index_in_step}"
-                if self.step is not None and self.group_index_in_step is not None
-                else None
-            )
+            group_id = self.group_id
 
             # Shared fields across both modes.
             record: dict = {
@@ -296,11 +298,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
         n_roles = len(self.include_roles) if is_selfplay else 1
         total_rewards = trajectory_group.get_total_rewards()
 
-        group_id = (
-            f"s{self.step}:g{self.group_index_in_step}"
-            if self.step is not None and self.group_index_in_step is not None
-            else None
-        )
+        group_id = self.group_id
 
         # Build per-trajectory member records.
         members = []
@@ -511,11 +509,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
 
         # Flush recorded grader/matcher calls to semantic_calls.jsonl.
         if recorder is not None and recorder.calls:
-            group_id = (
-                f"s{self.step}:g{self.group_index_in_step}"
-                if self.step is not None and self.group_index_in_step is not None
-                else None
-            )
+            group_id = self.group_id
             lines = [
                 json.dumps(
                     {

@@ -51,10 +51,7 @@ class Debate:
 
     @property
     def question_key(self) -> str | None:
-        """problem_id > sha256(task_prompt)[:12] > None (skip grouping)."""
-        pid = self._raw_row.get("problem_id")
-        if pid:
-            return pid
+        """Group by task_prompt hash. Stable even if problem_id is partially present."""
         tp = self.task_prompt
         if tp:
             return hashlib.sha256(tp.encode()).hexdigest()[:12]

@@ -80,21 +80,13 @@ def _build_debater_perspective(ep: dict, viewer: Role) -> list[dict]:
     return turns
 
 
-def _build_oracle_perspective(ep: dict) -> list[dict]:
-    """Build oracle view: for each turn, show the generating debater's full I/O."""
-    turns_a = _build_debater_perspective(ep, Role.DEBATER_A)
-    turns_b = _build_debater_perspective(ep, Role.DEBATER_B)
-
+def _build_oracle_from_perspectives(
+    turns_a: list[dict], turns_b: list[dict], n_turns: int
+) -> list[dict]:
+    """Derive oracle view from pre-computed A and B perspectives (no extra replay)."""
     a_by_idx = {t["index"]: t for t in turns_a if t["is_mine"]}
     b_by_idx = {t["index"]: t for t in turns_b if t["is_mine"]}
-
-    oracle_turns = []
-    for i in range(len(ep["transcript"])):
-        if i in a_by_idx:
-            oracle_turns.append(a_by_idx[i])
-        elif i in b_by_idx:
-            oracle_turns.append(b_by_idx[i])
-    return oracle_turns
+    return [a_by_idx.get(i) or b_by_idx.get(i) for i in range(n_turns) if i in a_by_idx or i in b_by_idx]
 
 
 def _build_judge_perspective(ep: dict) -> dict:
@@ -199,7 +191,7 @@ def _render_turn_html(turn: dict, perspective: str) -> str:
 
     # Output
     parts.append('<div class="turn-output">')
-    parts.append(_render_output_html(turn["text"], role))
+    parts.append(_render_output_html(turn["text"]))
     parts.append("</div>")
 
     parts.append("</div>")
@@ -226,7 +218,7 @@ def _render_judge_html(judge: dict) -> str:
     winner = judge["winner"] or "tie"
     parts.append(f'<div class="judge-verdict-hdr">verdict: {_esc(str(winner))}</div>')
     if judge["verdict_text"]:
-        parts.append(_render_output_html(judge["verdict_text"], "judge"))
+        parts.append(_render_output_html(judge["verdict_text"]))
 
     parts.append("</div>")
     return "\n".join(parts)
@@ -250,7 +242,7 @@ def render_episode_html(ep: dict, index: int) -> str:
     # Build perspectives
     turns_a = _build_debater_perspective(ep, Role.DEBATER_A)
     turns_b = _build_debater_perspective(ep, Role.DEBATER_B)
-    oracle_turns = _build_oracle_perspective(ep)
+    oracle_turns = _build_oracle_from_perspectives(turns_a, turns_b, len(ep.get("transcript", [])))
     judge = _build_judge_perspective(ep)
 
     # Metadata
@@ -449,7 +441,7 @@ def main():
     if args.output_dir:
         out_dir = Path(args.output_dir)
     else:
-        out_dir = Path(args.episodes_path).parent / "html"
+        out_dir = Path(args.episodes_path).parent / "html" / "episodes"
 
     out_dir.mkdir(parents=True, exist_ok=True)
 

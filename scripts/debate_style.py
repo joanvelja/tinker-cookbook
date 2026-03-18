@@ -33,7 +33,7 @@ def _extract_answer(text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def _render_output_html(text: str, role: str) -> str:
+def _render_output_html(text: str) -> str:
     """Render model output with thinking blocks and answer tags styled.
 
     Emits both a raw <pre class="output-text"> (hidden by default) and a
@@ -51,17 +51,17 @@ def _render_output_html(text: str, role: str) -> str:
             f"</details>"
         )
 
-    # Raw pre (hidden by default — rendered mode is default)
+    # Raw pre (hidden by default — rendered mode is default).
+    # Escape first, then highlight the escaped <answer> tags.
+    escaped = _esc(rest)
     if answer:
-        highlighted = re.sub(
-            r"<answer>(.*?)</answer>",
-            lambda m: f'<span class="answer-tag">&lt;answer&gt;{_esc(m.group(1))}&lt;/answer&gt;</span>',
-            _esc(rest),
+        escaped = re.sub(
+            r"&lt;answer&gt;(.*?)&lt;/answer&gt;",
+            lambda m: f'<span class="answer-tag">&lt;answer&gt;{m.group(1)}&lt;/answer&gt;</span>',
+            escaped,
             flags=re.DOTALL,
         )
-        parts.append(f'<pre class="output-text" style="display:none">{highlighted}</pre>')
-    else:
-        parts.append(f'<pre class="output-text" style="display:none">{_esc(rest)}</pre>')
+    parts.append(f'<pre class="output-text" style="display:none">{escaped}</pre>')
 
     # Rendered div (visible by default — JS will process on load)
     parts.append(f'<div class="output-rendered">{_esc(rest)}</div>')
