@@ -496,9 +496,45 @@ class DebateGroupBuilder(EnvGroupBuilder):
                 "Custom MetricFn injection is unsupported with OPEN_ENDED semantic scoring."
             )
 
+        # Wrap scorer to record raw grader/matcher calls for logging.
+        from .scoring.providers import RecordingAnswerJudgeClient
+
+        recorder = None
+        scorer = self.scorer
+        if scorer is not None and self.episode_log_dir is not None:
+            recorder = RecordingAnswerJudgeClient(scorer)
+            scorer = recorder
+
         metrics_by_runtime = await _compute_metrics(
-            states, self.metrics, self.scorer, self.scorer_parallelism
+            states, self.metrics, scorer, self.scorer_parallelism
         )
+
+        # Flush recorded grader/matcher calls to semantic_calls.jsonl.
+        if recorder is not None and recorder.calls:
+            group_id = (
+                f"s{self.step}:g{self.group_index_in_step}"
+                if self.step is not None and self.group_index_in_step is not None
+                else None
+            )
+            lines = [
+                json.dumps(
+                    {
+                        "group_id": group_id,
+                        "kind": record.kind,
+                        "system": record.system,
+                        "user": record.user,
+                        "response": record.response,
+                        "reasoning_summary": record.reasoning_summary,
+                        "timestamp_utc": record.timestamp_utc,
+                    }
+                )
+                + "\n"
+                for record in recorder.calls
+            ]
+            calls_path = os.path.join(self.episode_log_dir, "semantic_calls.jsonl")
+            with _EPISODE_LOG_LOCK:
+                with open(calls_path, "a") as f:
+                    f.writelines(lines)
 
         results = []
         for env in env_group:

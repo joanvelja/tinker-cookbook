@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 
 
 class AnswerJudgeClient(Protocol):
+    # Optional: set by implementations that support reasoning summaries.
+    last_reasoning_summary: str | None
+
     async def complete_binary(
         self,
         *,
@@ -38,6 +41,7 @@ class BinaryJudgeCallRecord:
     system: str
     user: str
     response: str
+    reasoning_summary: str | None
     timestamp_utc: str
 
 
@@ -45,6 +49,7 @@ class BinaryJudgeCallRecord:
 class RecordingAnswerJudgeClient:
     inner: AnswerJudgeClient
     calls: list[BinaryJudgeCallRecord] = field(default_factory=list)
+    last_reasoning_summary: str | None = field(default=None, init=False)
 
     async def complete_binary(
         self,
@@ -54,12 +59,15 @@ class RecordingAnswerJudgeClient:
         kind: str | None = None,
     ) -> str:
         response = await self.inner.complete_binary(system=system, user=user, kind=kind)
+        summary = getattr(self.inner, "last_reasoning_summary", None)
+        self.last_reasoning_summary = summary
         self.calls.append(
             BinaryJudgeCallRecord(
                 kind=kind,
                 system=system,
                 user=user,
                 response=response,
+                reasoning_summary=summary,
                 timestamp_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             )
         )
@@ -76,6 +84,7 @@ class RecordingAnswerJudgeClient:
                     "system": record.system,
                     "user": record.user,
                     "response": record.response,
+                    "reasoning_summary": record.reasoning_summary,
                 }
             )
             + "\n"
@@ -87,6 +96,7 @@ class RecordingAnswerJudgeClient:
 @dataclass
 class TinkerAnswerJudgeClient:
     completer: MessageCompleter
+    last_reasoning_summary: str | None = field(init=False, default=None, repr=False)
 
     async def complete_binary(
         self,
@@ -113,7 +123,9 @@ class OpenAICompatibleAnswerJudgeClient:
     base_url: str | None = None
     api_key_env: str | None = None
     timeout_s: float = 60.0
+    reasoning_summary: str = "detailed"  # "auto", "concise", "detailed", or empty to disable
     _client: object | None = field(init=False, default=None, repr=False)
+    last_reasoning_summary: str | None = field(init=False, default=None, repr=False)
     _GPT5_SCORER_OUTPUT_BUDGET: int = field(init=False, default=16_384, repr=False)
 
     def _retry_budgets(self, token_budget: int, *, model_name: str, reasoning_effort: str | None) -> list[int]:
@@ -243,6 +255,7 @@ class OpenAICompatibleAnswerJudgeClient:
         if reasoning_effort is not None:
             request_kwargs["reasoning_effort"] = reasoning_effort
 
+        self.last_reasoning_summary = None  # chat completions path has no summaries
         response = await self._create_completion(
             client,
             request_kwargs=request_kwargs,
@@ -277,9 +290,23 @@ class OpenAICompatibleAnswerJudgeClient:
             if self.temperature not in (0, 0.0):
                 response_kwargs["temperature"] = self.temperature
             if reasoning_effort is not None:
-                response_kwargs["reasoning"] = {"effort": reasoning_effort}
+                reasoning_cfg: dict = {"effort": reasoning_effort}
+                if self.reasoning_summary:
+                    reasoning_cfg["summary"] = self.reasoning_summary
+                response_kwargs["reasoning"] = reasoning_cfg
 
             response = await client.responses.create(**response_kwargs)
+
+            # Extract reasoning summary from response output items.
+            self.last_reasoning_summary = None
+            for item in getattr(response, "output", []):
+                if getattr(item, "type", None) == "reasoning":
+                    summaries = getattr(item, "summary", None) or []
+                    texts = [s.text for s in summaries if hasattr(s, "text") and s.text]
+                    if texts:
+                        self.last_reasoning_summary = "\n".join(texts)
+                    break
+
             output_text = getattr(response, "output_text", None)
             if isinstance(output_text, str) and output_text:
                 return output_text
@@ -326,6 +353,7 @@ class AnthropicAnswerJudgeClient:
     api_key_env: str | None = None
     timeout_s: float = 60.0
     _client: object | None = field(init=False, default=None, repr=False)
+    last_reasoning_summary: str | None = field(init=False, default=None, repr=False)
 
     def _get_client(self):
         if self._client is not None:
