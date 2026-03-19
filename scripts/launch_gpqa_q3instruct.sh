@@ -40,6 +40,7 @@ COMMON=(
   behavior_if_log_dir_exists=resume
   max_steps_off_policy=2
   grader_max_concurrent=1024
+  num_substeps=2
 )
 
 IDX=0
