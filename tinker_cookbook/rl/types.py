@@ -34,6 +34,8 @@ class StepResult:
     """Numeric values aggregated and reported in training logs (e.g., timing, counts)."""
     logs: Logs = field(default_factory=dict)
     """Diagnostic info for display/debugging tools (not aggregated like metrics)."""
+    exclude: bool = False
+    """When True, this trajectory should be excluded from training (no gradient signal)."""
 
 
 @dataclass
@@ -52,6 +54,8 @@ class Transition:
     """Numeric values aggregated and reported in training logs."""
     logs: Logs = field(default_factory=dict)
     """Diagnostic info for display/debugging tools (not aggregated like metrics)."""
+    exclude: bool = False
+    """When True, this trajectory should be excluded from training (no gradient signal)."""
 
 
 class Env(ABC):
@@ -78,6 +82,11 @@ class Trajectory:
 
     transitions: list[Transition]
     final_ob: Observation
+
+    @property
+    def is_excluded(self) -> bool:
+        """True if any transition is marked for exclusion (e.g. judge failure)."""
+        return any(t.exclude for t in self.transitions)
 
 
 AdvantageScheme = Literal["mean_center", "grpo", "maxrl", "power_mean"]

@@ -43,6 +43,7 @@ async def do_single_rollout(policy: TokenCompleter, env: Env) -> Trajectory:
             episode_done=step_result.episode_done,
             metrics=step_result.metrics,
             logs=step_result.logs,
+            exclude=step_result.exclude,
         )
         transitions.append(transition)
         ob = step_result.next_observation
@@ -159,35 +160,31 @@ async def do_batched_group_rollout(
         "Batched sample: G=%d, prompt_len=%d, wall=%.2fs", G, prompt.length, sample_wall_s
     )
 
-    # 3. Create G envs for grading, step each with its sampled tokens
+    # 3. Create G envs for grading, step each with its sampled tokens concurrently
     envs_G: list[Env] = [env_group_builder.env_thunk() for _ in range(G)]
-    # Initialize each env so its internal state is ready for step()
-    for env in envs_G:
-        await env.initial_observation()
+    await asyncio.gather(*(env.initial_observation() for env in envs_G))
 
-    trajectories_G: list[Trajectory] = []
-    for env, seq in zip(envs_G, sample_response.sequences, strict=True):
-        sampled_tokens = seq.tokens
-        sampled_logprobs = seq.logprobs
-        assert sampled_logprobs is not None
-
-        ac = TokensWithLogprobs(tokens=sampled_tokens, maybe_logprobs=sampled_logprobs)
-        step_result = await env.step(sampled_tokens)
-
-        transition = Transition(
-            ob=prompt,
-            ac=ac,
-            reward=step_result.reward,
-            episode_done=step_result.episode_done,
-            metrics=step_result.metrics,
-            logs=step_result.logs,
+    async def _step_and_build(env: Env, seq: tinker.SampleSequence) -> Trajectory:
+        assert seq.logprobs is not None
+        ac = TokensWithLogprobs(tokens=seq.tokens, maybe_logprobs=seq.logprobs)
+        step_result = await env.step(seq.tokens)
+        return Trajectory(
+            transitions=[Transition(
+                ob=prompt,
+                ac=ac,
+                reward=step_result.reward,
+                episode_done=step_result.episode_done,
+                metrics=step_result.metrics,
+                logs=step_result.logs,
+                exclude=step_result.exclude,
+            )],
+            final_ob=step_result.next_observation,
         )
-        trajectories_G.append(
-            Trajectory(
-                transitions=[transition],
-                final_ob=step_result.next_observation,
-            )
-        )
+
+    trajectories_G = list(await asyncio.gather(*(
+        _step_and_build(env, seq)
+        for env, seq in zip(envs_G, sample_response.sequences, strict=True)
+    )))
 
     # 4. Compute group rewards (same as do_group_rollout)
     rewards_and_metrics_G = await env_group_builder.compute_group_rewards(trajectories_G, envs_G)

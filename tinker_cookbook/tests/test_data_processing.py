@@ -4,16 +4,20 @@ from typing import Sequence
 from unittest.mock import MagicMock
 
 import pytest
+import tinker
 import torch
 
+from tinker_cookbook.completers import TokensWithLogprobs
 from tinker_cookbook.rl.data_processing import (
     _normalize_subgroup,
     compute_advantages,
     remove_constant_reward_groups,
+    trajectory_to_data,
 )
 from tinker_cookbook.rl.types import (
     EnvGroupBuilder,
     Env,
+    Transition,
     TrajectoryGroup,
     Trajectory,
 )
@@ -514,3 +518,246 @@ class TestSimCrossValidation:
         sim_ratio = sim_winner / sim_loser
         code_ratio = code_winner / code_loser
         assert sim_ratio == pytest.approx(code_ratio, rel=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# 10. Per-trajectory-mean advantage normalization
+# ---------------------------------------------------------------------------
+
+
+def _make_transition(n_action_tokens: int, n_ob_tokens: int = 3) -> Transition:
+    """Build a minimal Transition with *n_action_tokens* action tokens."""
+    ob = tinker.ModelInput.from_ints(list(range(100, 100 + n_ob_tokens)))
+    ac = TokensWithLogprobs(
+        tokens=list(range(200, 200 + n_action_tokens)),
+        maybe_logprobs=[-0.5] * n_action_tokens,
+    )
+    return Transition(ob=ob, ac=ac, reward=0.0, episode_done=False)
+
+
+def _make_single_turn_trajectory(n_action_tokens: int) -> Trajectory:
+    """Single-turn trajectory with *n_action_tokens* action tokens."""
+    transition = _make_transition(n_action_tokens, n_ob_tokens=3)
+    final_ob = tinker.ModelInput.from_ints([999])
+    return Trajectory(transitions=[transition], final_ob=final_ob)
+
+
+def _extract_advantages(data: list[tinker.Datum]) -> torch.Tensor:
+    """Extract the advantages tensor from trajectory_to_data output (concatenated)."""
+    parts = []
+    for datum in data:
+        adv = datum.loss_fn_inputs["advantages"].to_torch()
+        parts.append(adv)
+    return torch.cat(parts) if len(parts) > 1 else parts[0]
+
+
+def _extract_mask(data: list[tinker.Datum]) -> torch.Tensor:
+    parts = []
+    for datum in data:
+        m = datum.loss_fn_inputs["mask"].to_torch()
+        parts.append(m)
+    return torch.cat(parts) if len(parts) > 1 else parts[0]
+
+
+class TestNormalizeAdvantagesByLength:
+    """Test per-trajectory-mean advantage normalization (normalize_advantages_by_length)."""
+
+    def test_unnormalized_broadcasts_scalar(self):
+        """Without normalization, all action tokens get the raw advantage."""
+        traj = _make_single_turn_trajectory(n_action_tokens=10)
+        data = trajectory_to_data(traj, traj_advantage=2.0, normalize_advantages_by_length=False)
+        adv = _extract_advantages(data)
+        mask = _extract_mask(data)
+        action_advs = adv[mask > 0]
+        assert all(a == pytest.approx(2.0) for a in action_advs.tolist())
+
+    def test_normalized_divides_by_action_count(self):
+        """With normalization, each action token gets advantage / n_action_tokens."""
+        n_tokens = 10
+        traj = _make_single_turn_trajectory(n_action_tokens=n_tokens)
+        data = trajectory_to_data(traj, traj_advantage=2.0, normalize_advantages_by_length=True)
+        adv = _extract_advantages(data)
+        mask = _extract_mask(data)
+        action_advs = adv[mask > 0]
+        expected_per_token = 2.0 / n_tokens
+        assert all(a == pytest.approx(expected_per_token) for a in action_advs.tolist())
+
+    def test_sum_of_advantages_equals_original(self):
+        """The sum over action tokens should equal the original advantage (length cancels)."""
+        n_tokens = 10
+        raw_advantage = 3.5
+        traj = _make_single_turn_trajectory(n_action_tokens=n_tokens)
+        data = trajectory_to_data(traj, traj_advantage=raw_advantage, normalize_advantages_by_length=True)
+        adv = _extract_advantages(data)
+        mask = _extract_mask(data)
+        action_advs = adv[mask > 0]
+        assert float(action_advs.sum()) == pytest.approx(raw_advantage)
+
+    def test_multi_transition_trajectory(self):
+        """Multiple transitions: advantage divided by total action tokens across all."""
+        # Build a 2-transition trajectory where observations are prefixes
+        ob1 = tinker.ModelInput.from_ints([10, 11, 12])
+        ac1 = TokensWithLogprobs(tokens=[20, 21], maybe_logprobs=[-0.5, -0.5])  # 2 tokens
+        t1 = Transition(ob=ob1, ac=ac1, reward=0.0, episode_done=False)
+
+        # ob2 is a prefix extension: ob1 + ac1 + new_obs
+        ob2 = tinker.ModelInput.from_ints([10, 11, 12, 20, 21, 30, 31])
+        ac2 = TokensWithLogprobs(tokens=[40, 41, 42], maybe_logprobs=[-0.5, -0.5, -0.5])  # 3 tokens
+        t2 = Transition(ob=ob2, ac=ac2, reward=0.0, episode_done=True)
+
+        traj = Trajectory(transitions=[t1, t2], final_ob=tinker.ModelInput.from_ints([999]))
+
+        total_action_tokens = 2 + 3  # = 5
+        raw_advantage = 5.0
+
+        data_norm = trajectory_to_data(traj, traj_advantage=raw_advantage, normalize_advantages_by_length=True)
+        data_raw = trajectory_to_data(traj, traj_advantage=raw_advantage, normalize_advantages_by_length=False)
+
+        adv_norm = _extract_advantages(data_norm)
+        mask_norm = _extract_mask(data_norm)
+        action_advs_norm = adv_norm[mask_norm > 0]
+
+        adv_raw = _extract_advantages(data_raw)
+        mask_raw = _extract_mask(data_raw)
+        action_advs_raw = adv_raw[mask_raw > 0]
+
+        # Normalized: each token gets 5.0 / 5 = 1.0
+        expected_per_token = raw_advantage / total_action_tokens
+        assert all(a == pytest.approx(expected_per_token) for a in action_advs_norm.tolist())
+
+        # Unnormalized: each token gets 5.0
+        assert all(a == pytest.approx(raw_advantage) for a in action_advs_raw.tolist())
+
+        # Sum of normalized advantages = original advantage
+        assert float(action_advs_norm.sum()) == pytest.approx(raw_advantage)
+
+    def test_different_lengths_contribute_equally(self):
+        """Two trajectories of different lengths get equal total gradient contribution."""
+        short_traj = _make_single_turn_trajectory(n_action_tokens=5)
+        long_traj = _make_single_turn_trajectory(n_action_tokens=50)
+        advantage = 1.0
+
+        data_short = trajectory_to_data(short_traj, traj_advantage=advantage, normalize_advantages_by_length=True)
+        data_long = trajectory_to_data(long_traj, traj_advantage=advantage, normalize_advantages_by_length=True)
+
+        adv_short = _extract_advantages(data_short)
+        mask_short = _extract_mask(data_short)
+        adv_long = _extract_advantages(data_long)
+        mask_long = _extract_mask(data_long)
+
+        sum_short = float((adv_short * mask_short).sum())
+        sum_long = float((adv_long * mask_long).sum())
+
+        # Both should sum to the same value (the raw advantage)
+        assert sum_short == pytest.approx(sum_long)
+        assert sum_short == pytest.approx(advantage)
+
+    def test_observation_tokens_always_zero(self):
+        """Observation tokens should have zero advantage regardless of normalization."""
+        traj = _make_single_turn_trajectory(n_action_tokens=10)
+        for normalize in [True, False]:
+            data = trajectory_to_data(traj, traj_advantage=2.0, normalize_advantages_by_length=normalize)
+            adv = _extract_advantages(data)
+            mask = _extract_mask(data)
+            ob_advs = adv[mask == 0]
+            assert all(a == pytest.approx(0.0) for a in ob_advs.tolist())
+
+
+# ---------------------------------------------------------------------------
+# 11. Exclude mechanism (judge failures)
+# ---------------------------------------------------------------------------
+
+
+def _make_trajectory_group_with_exclusions(
+    rewards: list[float], excluded: list[bool]
+) -> TrajectoryGroup:
+    """Build a TrajectoryGroup where some trajectories are excluded.
+
+    Each trajectory has a single transition with exclude set per *excluded*.
+    """
+    assert len(rewards) == len(excluded)
+    trajs = []
+    for r, exc in zip(rewards, excluded):
+        t = _make_transition(n_action_tokens=5)
+        t.exclude = exc
+        t.reward = r
+        traj = Trajectory(transitions=[t], final_ob=MagicMock())
+        trajs.append(traj)
+    return TrajectoryGroup(
+        trajectories_G=trajs,
+        final_rewards_G=[0.0] * len(rewards),  # step rewards only
+        metrics_G=[{} for _ in rewards],
+    )
+
+
+class TestTrajectoryIsExcluded:
+    def test_not_excluded(self):
+        traj = _make_single_turn_trajectory(n_action_tokens=5)
+        assert not traj.is_excluded
+
+    def test_excluded(self):
+        t = _make_transition(n_action_tokens=5)
+        t.exclude = True
+        traj = Trajectory(transitions=[t], final_ob=MagicMock())
+        assert traj.is_excluded
+
+
+class TestExcludeMechanism:
+    """Verify that excluded trajectories are filtered before advantage computation."""
+
+    def test_some_excluded_only_valid_get_advantages(self):
+        """Group with some excluded trajectories -> only valid ones remain."""
+        # 4 trajectories: indices 1 and 3 are excluded
+        rewards = [1.0, 0.5, 0.0, 0.5]
+        excluded = [False, True, False, True]
+        tg = _make_trajectory_group_with_exclusions(rewards, excluded)
+
+        # Filter manually (simulating what prepare_minibatch does)
+        valid_indices = [i for i, t in enumerate(tg.trajectories_G) if not t.is_excluded]
+        assert valid_indices == [0, 2]
+
+        filtered_tg = TrajectoryGroup(
+            trajectories_G=[tg.trajectories_G[i] for i in valid_indices],
+            final_rewards_G=[tg.final_rewards_G[i] for i in valid_indices],
+            metrics_G=[tg.metrics_G[i] for i in valid_indices],
+        )
+
+        # Advantages should be computed on the two valid trajectories only
+        [adv] = compute_advantages([filtered_tg])
+        assert len(adv) == 2
+        # rewards are [1.0, 0.0], mean=0.5 -> advantages [0.5, -0.5]
+        assert float(adv[0]) == pytest.approx(0.5)
+        assert float(adv[1]) == pytest.approx(-0.5)
+
+    def test_all_excluded_drops_group(self):
+        """Group with all excluded trajectories -> dropped entirely."""
+        rewards = [1.0, 0.0, 0.5]
+        excluded = [True, True, True]
+        tg = _make_trajectory_group_with_exclusions(rewards, excluded)
+
+        valid_indices = [i for i, t in enumerate(tg.trajectories_G) if not t.is_excluded]
+        assert len(valid_indices) == 0
+
+    def test_one_valid_drops_group(self):
+        """Group with only 1 valid trajectory -> dropped (can't center advantages)."""
+        rewards = [1.0, 0.0, 0.5]
+        excluded = [True, True, False]
+        tg = _make_trajectory_group_with_exclusions(rewards, excluded)
+
+        valid_indices = [i for i, t in enumerate(tg.trajectories_G) if not t.is_excluded]
+        assert len(valid_indices) == 1
+        # < 2 valid → group should be dropped
+
+    def test_no_exclusions_unchanged(self):
+        """No exclusions -> behavior is identical to before."""
+        rewards = [1.0, 0.0, 1.0, 0.0]
+        excluded = [False, False, False, False]
+        tg = _make_trajectory_group_with_exclusions(rewards, excluded)
+
+        valid_indices = [i for i, t in enumerate(tg.trajectories_G) if not t.is_excluded]
+        assert len(valid_indices) == 4
+
+        # Advantages unchanged
+        [adv] = compute_advantages([tg])
+        expected = torch.tensor(rewards) - torch.tensor(rewards).mean()
+        assert torch.allclose(adv, expected)

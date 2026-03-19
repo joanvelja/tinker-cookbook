@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import math
+import re
 from abc import ABC, abstractmethod
 from typing import Literal, Protocol, runtime_checkable
 
@@ -118,12 +119,24 @@ class LLMGraderConfig(GraderConfig):
     client: LLMClientConfig = LLMClientConfig()
     system_prompt: str = _DEFAULT_SYSTEM
     user_template: str = _DEFAULT_USER
+    # When set, extract verdict from <tag>...</tag> instead of raw text.
+    # The judge can reason freely; only the tag content is parsed.
+    decision_tag: str | None = None
 
     def build(self, concurrency_hint: int = 1) -> "LLMGrader":
         config = self
         if config.client.max_concurrent is None:
             new_client = chz.replace(config.client, max_concurrent=concurrency_hint)
             config = chz.replace(config, client=new_client)
+        # Auto-append format instruction and set stop sequence from decision_tag
+        if config.decision_tag is not None:
+            tag = config.decision_tag
+            fmt_line = (
+                f"\nPut your verdict in <{tag}>CORRECT</{tag}> or <{tag}>INCORRECT</{tag}> tags."
+            )
+            new_system = config.system_prompt + fmt_line
+            new_client = chz.replace(config.client, stop=[f"</{tag}>"])
+            config = chz.replace(config, system_prompt=new_system, client=new_client)
         return LLMGrader(config=config)
 
 
@@ -131,18 +144,46 @@ class LLMGraderConfig(GraderConfig):
 # Shared verdict parsing
 # ---------------------------------------------------------------------------
 
+_RE_CORRECT = re.compile(r"\bCORRECT\b")
+_RE_INCORRECT = re.compile(r"\bINCORRECT\b")
+
 
 def _parse_verdict(raw: str) -> GradeResult:
-    """Parse a single CORRECT/INCORRECT verdict from raw LLM output."""
-    verdict = raw.strip().upper()
-    if verdict == "CORRECT":
+    """Parse CORRECT/INCORRECT verdict from raw LLM output.
+
+    Strategy (mirrors nanodebate's _binary_judge):
+    1. First word match — handles compliant single-word responses.
+    2. Last whole-word occurrence — handles reasoning-then-verdict and
+       multi-line prompts where the verdict appears after analysis.
+    """
+    text = raw.strip().upper()
+    # First word match
+    word = text.split()[0].strip(".,;:!?\"'*#()[]`") if text else ""
+    if word == "CORRECT":
         return GradeResult(correct=True, status="correct")
-    if verdict == "INCORRECT":
+    if word == "INCORRECT":
         return GradeResult(correct=False, status="incorrect")
-    return GradeResult(
-        correct=False, status="ambiguous",
-        detail=f"Expected CORRECT or INCORRECT, got: {raw!r}",
-    )
+    # Fallback: scan for last whole-word occurrence (last match wins).
+    # \bCORRECT\b won't match inside INCORRECT (no word boundary after IN),
+    # so no filtering needed.
+    correct_hits = list(_RE_CORRECT.finditer(text))
+    incorrect_hits = list(_RE_INCORRECT.finditer(text))
+    if not correct_hits and not incorrect_hits:
+        return GradeResult(
+            correct=False, status="ambiguous",
+            detail=f"Expected CORRECT or INCORRECT, got: {raw!r}",
+        )
+    last_correct = correct_hits[-1].start() if correct_hits else -1
+    last_incorrect = incorrect_hits[-1].start() if incorrect_hits else -1
+    if last_correct > last_incorrect:
+        return GradeResult(correct=True, status="correct")
+    return GradeResult(correct=False, status="incorrect")
+
+
+def _extract_tag(text: str, tag: str) -> str | None:
+    """Extract content from <tag>...</tag>. Returns None if not found."""
+    m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
+    return m.group(1).strip() if m else None
 
 
 async def _llm_grade(
@@ -152,6 +193,8 @@ async def _llm_grade(
     question: str,
     reference: str,
     extracted: str,
+    *,
+    decision_tag: str | None = None,
 ) -> GradeResult:
     """Call LLM and parse the verdict. Shared by LLMGrader and CompositeGrader."""
     user_prompt = user_template.format(
@@ -159,6 +202,23 @@ async def _llm_grade(
     )
     try:
         raw = await client.complete(system=system_prompt, user=user_prompt)
+        if decision_tag is not None:
+            # The stop sequence strips the closing tag from the response;
+            # re-append it so _extract_tag can match.
+            raw = raw + f"</{decision_tag}>"
+            tag_content = _extract_tag(raw, decision_tag)
+            if tag_content is None:
+                return GradeResult(
+                    correct=False, status="error",
+                    detail=f"No <{decision_tag}> tag found in: {raw!r}",
+                )
+            result = _parse_verdict(tag_content)
+            # Preserve the full response (reasoning + verdict) in detail
+            if not result.detail:
+                result = GradeResult(
+                    correct=result.correct, status=result.status, detail=raw,
+                )
+            return result
         return _parse_verdict(raw)
     except (asyncio.CancelledError, KeyboardInterrupt):
         raise
@@ -246,12 +306,19 @@ class LLMGrader:
     def __init__(self, config: LLMGraderConfig) -> None:
         self.config = config
         self.client = AsyncLLMClient(config.client)
+        self._cache: dict[tuple[str, str, str], GradeResult] = {}
 
     async def grade(self, question: str, reference: str, extracted: str) -> GradeResult:
-        return await _llm_grade(
+        key = (question, reference, extracted)
+        if key in self._cache:
+            return self._cache[key]
+        result = await _llm_grade(
             self.client, self.config.system_prompt, self.config.user_template,
             question, reference, extracted,
+            decision_tag=self.config.decision_tag,
         )
+        self._cache[key] = result
+        return result
 
     async def grade_batch(
         self, requests: list[tuple[str, str, str]]
@@ -265,6 +332,11 @@ class LLMGrader:
             return []
         if n == 1:
             return [await self.grade(*requests[0])]
+
+        # When decision_tag is set, the stop sequence and tag format instruction
+        # make batch prompts unusable — fall through to individual calls.
+        if self.config.decision_tag is not None:
+            return list(await asyncio.gather(*(self.grade(q, r, e) for q, r, e in requests)))
 
         # Build batched prompt
         lines = []

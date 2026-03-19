@@ -133,6 +133,10 @@ class RLVREnv(ProblemEnv):
             f"Reward: {total_reward:.2f}"
         )
 
+        # Exclude from training when the judge fails — the policy should not
+        # receive gradient signal for judge noise.
+        exclude = grade_status in ("error", "ambiguous", "timeout")
+
         return StepResult(
             reward=total_reward,
             episode_done=True,
@@ -147,6 +151,7 @@ class RLVREnv(ProblemEnv):
             logs={
                 "grade_status": grade_status,
             },
+            exclude=exclude,
         )
 
 

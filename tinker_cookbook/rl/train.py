@@ -357,6 +357,10 @@ class Config:
     # When False, disables per-role/per-player advantage subgroups from builders.
     # Useful for A/B experiments comparing with/without subgroup splitting.
     use_advantage_subgroups: bool = True
+    # Divide each trajectory's advantage by its action token count before
+    # broadcasting. Makes each trajectory contribute equally to the gradient
+    # regardless of length. See docs/losses.mdx.
+    normalize_advantages_by_length: bool = False
 
     # Number of optimizer steps per training iteration.
     # Useful for very large batch sizes.
@@ -479,6 +483,8 @@ async def do_sync_training_with_stream_minibatch(
     trajectories to be ready. This allows us to overlap sampling and training.
     """
     # Initial sampling client
+    wandb_run_id = ml_logger.get_wandb_run_id()
+    loop_state_extra = {"wandb_run_id": wandb_run_id} if wandb_run_id is not None else None
     sampling_client, _ = await save_checkpoint_and_get_sampling_client(
         training_client,
         start_batch,
@@ -487,6 +493,7 @@ async def do_sync_training_with_stream_minibatch(
         start_batch,
         cfg.ttl_seconds,
         retry_config=_sampling_retry_config_from_cfg(cfg),
+        loop_state_extra=loop_state_extra,
     )
 
     for i_batch in range(start_batch, end_batch):
@@ -573,6 +580,7 @@ async def do_sync_training_with_stream_minibatch(
                 kl_reference_client,
                 tokenizer,
                 usage_tracker=usage_tracker,
+                loop_state_extra=loop_state_extra,
             )
 
         # Log metrics
@@ -626,11 +634,16 @@ async def do_async_training(
     trajectory_groups_queue = asyncio.Queue[WrappedTrajectoryGroup | None]()
 
     # Initial sampling client to use
+    wandb_run_id = ml_logger.get_wandb_run_id()
+    loop_state_extra = {"wandb_run_id": wandb_run_id} if wandb_run_id is not None else None
+    init_loop_state: dict[str, Any] = {"batch": start_batch}
+    if wandb_run_id is not None:
+        init_loop_state["wandb_run_id"] = wandb_run_id
     path_dict = await checkpoint_utils.save_checkpoint_async(
         training_client=training_client,
         name=f"{start_batch:06d}",
         log_path=cfg.log_path,
-        loop_state={"batch": start_batch},
+        loop_state=init_loop_state,
         kind="both",
         ttl_seconds=cfg.ttl_seconds,
     )
@@ -759,6 +772,7 @@ async def do_async_training(
                     tokenizer,
                     filter_stale_trajectory_group,
                     usage_tracker=usage_tracker,
+                    loop_state_extra=loop_state_extra,
                 )
             else:
                 if not filter_stale_trajectory_group(wrapped_trajectory_group):
@@ -789,6 +803,7 @@ async def do_async_training(
                     [g.env_group_builder for g in wrapped_trajectory_groups],
                     [g.trajectory_group for g in wrapped_trajectory_groups],
                     usage_tracker=usage_tracker,
+                    loop_state_extra=loop_state_extra,
                 )
             sampling_client_step = i_batch + 1
             sampling_client_updated_event.set()
@@ -918,15 +933,17 @@ async def save_checkpoint_and_get_sampling_client(
     start_batch: int = 0,
     ttl_seconds: int | None = None,
     retry_config: RetryConfig | None = None,
+    loop_state_extra: dict[str, Any] | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     metrics = {}
     with timed("save_checkpoint", metrics):
         if save_every > 0 and i_batch > start_batch and i_batch % save_every == 0:
+            loop_state = {"batch": i_batch, **(loop_state_extra or {})}
             path_dict = await checkpoint_utils.save_checkpoint_async(
                 training_client=training_client,
                 name=f"{i_batch:06d}",
                 log_path=log_path,
-                loop_state={"batch": i_batch},
+                loop_state=loop_state,
                 kind="both",
                 ttl_seconds=ttl_seconds,
             )
@@ -951,13 +968,52 @@ async def prepare_minibatch(
     advantage_scheme: AdvantageScheme = "mean_center",
     advantage_alpha: float = 0.5,
     use_advantage_subgroups: bool = True,
+    normalize_advantages_by_length: bool = False,
 ) -> tuple[list[tinker.Datum], dict[str, Any]]:
     """Converts the trajectories into a minibatch, and provides metrics about the minibatch"""
 
-    # Compute trajectory metrics
+    # Compute trajectory metrics (before filtering so counts reflect reality)
     metrics = {}
     taglist_P = [env_group_builder.logging_tags() for env_group_builder in env_group_builders_P]
     metrics.update(compute_trajectory_metrics(trajectory_groups_P, taglist_P))
+
+    # Filter excluded trajectories (e.g. judge failures) before advantage computation.
+    # Build new TrajectoryGroups keeping only non-excluded trajectories.
+    excluded_trajectories = 0
+    excluded_groups = 0
+    filtered_groups_P: list[TrajectoryGroup] = []
+    filtered_builders_P: list[EnvGroupBuilder] = []
+    for builder, traj_group in safezip(env_group_builders_P, trajectory_groups_P):
+        valid_indices = [
+            i for i, traj in enumerate(traj_group.trajectories_G) if not traj.is_excluded
+        ]
+        n_excluded = len(traj_group.trajectories_G) - len(valid_indices)
+        excluded_trajectories += n_excluded
+        if len(valid_indices) < 2:
+            # Can't center advantages with < 2 trajectories
+            excluded_groups += 1
+            continue
+        if n_excluded == 0:
+            filtered_groups_P.append(traj_group)
+        else:
+            filtered_groups_P.append(
+                TrajectoryGroup(
+                    trajectories_G=[traj_group.trajectories_G[i] for i in valid_indices],
+                    final_rewards_G=[traj_group.final_rewards_G[i] for i in valid_indices],
+                    metrics_G=[traj_group.metrics_G[i] for i in valid_indices],
+                )
+            )
+        filtered_builders_P.append(builder)
+
+    metrics["excluded_trajectories"] = excluded_trajectories
+    metrics["excluded_groups"] = excluded_groups
+
+    if not filtered_groups_P:
+        logger.warning("All groups excluded after filtering. No gradient this step.")
+        return [], metrics
+
+    trajectory_groups_P = filtered_groups_P
+    env_group_builders_P = filtered_builders_P
 
     # Compute advantages once for the full batch (used for both display and training)
     advantages_P = compute_advantages(
@@ -986,7 +1042,11 @@ async def prepare_minibatch(
 
     # Assemble training data
     with timed("assemble_training_data", metrics):
-        data_D, _metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
+        data_D, _metadata_D = assemble_training_data(
+            trajectory_groups_P,
+            advantages_P,
+            normalize_advantages_by_length=normalize_advantages_by_length,
+        )
 
     # Incorporate KL penalty if configured
     if kl_penalty_coef > 0 and kl_reference_client is not None:
@@ -1013,6 +1073,7 @@ async def compute_full_batch_metrics_and_get_sampling_client(
     do_compute_post_kl: bool,
     ttl_seconds: int | None = None,
     retry_config: RetryConfig | None = None,
+    loop_state_extra: dict[str, Any] | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     """
     At the end of the iteration, this will compute metrics for the full batch
@@ -1033,6 +1094,7 @@ async def compute_full_batch_metrics_and_get_sampling_client(
             save_every,
             ttl_seconds=ttl_seconds,
             retry_config=retry_config,
+            loop_state_extra=loop_state_extra,
         )
     )
 
@@ -1064,6 +1126,7 @@ async def do_train_step_streaming_and_get_sampling_client(
     tokenizer: Tokenizer,
     trajectory_group_filter: Callable[[WrappedTrajectoryGroup | None], bool] = lambda _: True,
     usage_tracker: UsageTracker | None = None,
+    loop_state_extra: dict[str, Any] | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     """
     As soon as we have enough trajectories for a minibatch, we will train on them.
@@ -1125,6 +1188,7 @@ async def do_train_step_streaming_and_get_sampling_client(
                 advantage_scheme=cfg.advantage_scheme,
                 advantage_alpha=cfg.advantage_alpha,
                 use_advantage_subgroups=cfg.use_advantage_subgroups,
+                normalize_advantages_by_length=cfg.normalize_advantages_by_length,
             )
             metrics.update(prepare_minibatch_metrics)
 
@@ -1198,6 +1262,7 @@ async def do_train_step_streaming_and_get_sampling_client(
         cfg.compute_post_kl,
         cfg.ttl_seconds,
         retry_config=_sampling_retry_config_from_cfg(cfg),
+        loop_state_extra=loop_state_extra,
     )
     metrics.update(full_batch_metrics)
     return sampling_client, metrics
@@ -1213,6 +1278,7 @@ async def do_train_step_and_get_sampling_client(
     env_group_builders_P: Sequence[EnvGroupBuilder],
     trajectory_groups_P: list[TrajectoryGroup],
     usage_tracker: UsageTracker | None = None,
+    loop_state_extra: dict[str, Any] | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     update_scope_context({"step": i_batch})
 
@@ -1227,6 +1293,7 @@ async def do_train_step_and_get_sampling_client(
         advantage_scheme=cfg.advantage_scheme,
         advantage_alpha=cfg.advantage_alpha,
         use_advantage_subgroups=cfg.use_advantage_subgroups,
+        normalize_advantages_by_length=cfg.normalize_advantages_by_length,
     )
     metrics.update(prepare_minibatch_metrics)
 
@@ -1265,6 +1332,7 @@ async def do_train_step_and_get_sampling_client(
         cfg.compute_post_kl,
         cfg.ttl_seconds,
         retry_config=_sampling_retry_config_from_cfg(cfg),
+        loop_state_extra=loop_state_extra,
     )
     metrics.update(full_batch_metrics)
 
@@ -1287,6 +1355,8 @@ async def do_sync_training(
 ):
     """Implements fully synchronous on-policy training"""
     # Initial sampling client
+    wandb_run_id = ml_logger.get_wandb_run_id()
+    loop_state_extra = {"wandb_run_id": wandb_run_id} if wandb_run_id is not None else None
     sampling_client, _ = await save_checkpoint_and_get_sampling_client(
         training_client,
         start_batch,
@@ -1295,6 +1365,7 @@ async def do_sync_training(
         start_batch,
         cfg.ttl_seconds,
         retry_config=_sampling_retry_config_from_cfg(cfg),
+        loop_state_extra=loop_state_extra,
     )
 
     for i_batch in range(start_batch, end_batch):
@@ -1401,11 +1472,22 @@ async def main(
     usage_tracker: UsageTracker | None = None,
 ):
     """Main training loop for MDP RL."""
+    # Read checkpoint info first so we can resume the wandb run
+    resume_info = checkpoint_utils.get_last_checkpoint(cfg.log_path)
+    if resume_info:
+        start_batch = resume_info["batch"]
+        # Don't re-run eval at the checkpoint step — the previous session already did it,
+        # and wandb rejects metrics at steps ≤ its last logged step.
+        cfg = chz.replace(cfg, eval_on_start=False)
+    else:
+        start_batch = 0
+
     ml_logger = ml_log.setup_logging(
         log_dir=cfg.log_path,
         wandb_project=cfg.wandb_project,
         config=cfg,
         wandb_name=cfg.wandb_name,
+        wandb_resume_run_id=resume_info.get("wandb_run_id") if resume_info else None,
     )
     if cfg.enable_trace:
         # Get and rename the current (main) task
@@ -1421,12 +1503,6 @@ async def main(
 
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("pylatexenc").setLevel(logging.WARNING)
-
-    resume_info = checkpoint_utils.get_last_checkpoint(cfg.log_path)
-    if resume_info:
-        start_batch = resume_info["batch"]
-    else:
-        start_batch = 0
 
     service_client = tinker.ServiceClient(base_url=cfg.base_url)
     user_metadata: dict[str, str] = {}
@@ -1514,12 +1590,15 @@ async def main(
 
     # Save final checkpoint
     if start_batch < num_batches:
+        final_loop_state: dict[str, Any] = {"batch": num_batches}
+        if (final_wandb_id := ml_logger.get_wandb_run_id()) is not None:
+            final_loop_state["wandb_run_id"] = final_wandb_id
         _ = await checkpoint_utils.save_checkpoint_async(
             training_client=training_client,
             name="final",
             log_path=cfg.log_path,
             kind="both",
-            loop_state={"batch": num_batches},
+            loop_state=final_loop_state,
             ttl_seconds=cfg.ttl_seconds,
         )
     else:

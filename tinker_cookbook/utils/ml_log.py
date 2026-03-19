@@ -105,6 +105,10 @@ class Logger(ABC):
         """Get a permalink to view this logger's results."""
         return None
 
+    def get_wandb_run_id(self) -> str | None:
+        """Get the wandb run ID if this logger uses wandb."""
+        return None
+
 
 class _PermissiveJSONEncoder(json.JSONEncoder):
     """A JSON encoder that handles non-encodable objects by converting them to their type string."""
@@ -210,6 +214,7 @@ class WandbLogger(Logger):
         config: Any | None = None,
         log_dir: str | Path | None = None,
         wandb_name: str | None = None,
+        resume_run_id: str | None = None,
     ):
         if not _wandb_available:
             raise ImportError(
@@ -220,13 +225,16 @@ class WandbLogger(Logger):
         if not os.environ.get("WANDB_API_KEY"):
             raise ValueError("WANDB_API_KEY environment variable not set")
 
-        # Initialize wandb run
+        # Initialize wandb run — resume into existing run if ID provided
         assert wandb is not None  # For type checker
         self.run = wandb.init(
             project=project,
             config=dump_config(config) if config else None,
             dir=str(log_dir) if log_dir else None,
             name=wandb_name,
+            id=resume_run_id,
+            resume="must" if resume_run_id else "never",
+            settings=wandb.Settings(init_timeout=300),
         )
 
     def log_hparams(self, config: Any) -> None:
@@ -249,6 +257,12 @@ class WandbLogger(Logger):
         """Get the URL of the wandb run."""
         if self.run and wandb is not None:
             return self.run.url
+        return None
+
+    def get_wandb_run_id(self) -> str | None:
+        """Get the wandb run ID for checkpoint persistence."""
+        if self.run and wandb is not None:
+            return self.run.id
         return None
 
 
@@ -383,6 +397,13 @@ class MultiplexLogger(Logger):
                 return url
         return None
 
+    def get_wandb_run_id(self) -> str | None:
+        """Get the wandb run ID from child loggers."""
+        for logger in self.loggers:
+            if run_id := logger.get_wandb_run_id():
+                return run_id
+        return None
+
 
 def setup_logging(
     log_dir: str,
@@ -390,6 +411,7 @@ def setup_logging(
     wandb_name: str | None = None,
     config: Any | None = None,
     do_configure_logging_module: bool = True,
+    wandb_resume_run_id: str | None = None,
 ) -> Logger:
     """
     Set up logging infrastructure with multiple backends.
@@ -430,6 +452,7 @@ def setup_logging(
                     config=config,
                     log_dir=log_dir_path,
                     wandb_name=wandb_name,
+                    resume_run_id=wandb_resume_run_id,
                 )
             )
 

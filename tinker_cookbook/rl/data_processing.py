@@ -151,7 +151,12 @@ def _flatten_chunks(chunks: list[tinker.ModelInputChunk]) -> FlatOb:
     return out
 
 
-def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.Datum]:
+def trajectory_to_data(
+    traj: Trajectory,
+    traj_advantage: float,
+    *,
+    normalize_advantages_by_length: bool = False,
+) -> list[tinker.Datum]:
     """
     Return one or more Datum objects corresponding to the trajectory.
     If the sequence grows by appending, i.e., each successive observation contains
@@ -209,6 +214,15 @@ def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.D
             },
         )
 
+    # When normalizing by length, divide the trajectory advantage by the total
+    # number of action tokens so each trajectory contributes equally to the
+    # gradient regardless of sequence length.
+    if normalize_advantages_by_length:
+        total_action_tokens = sum(len(t.ac.tokens) for t in traj.transitions)
+        per_token_advantage = traj_advantage / total_action_tokens if total_action_tokens > 0 else 0.0
+    else:
+        per_token_advantage = traj_advantage
+
     data: list[tinker.Datum] = []
     for transition in traj.transitions:
         ob = transition.ob
@@ -229,7 +243,7 @@ def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.D
             [0.0] * delta_ob_len + ac_with_logprobs.logprobs
         )
         SequenceAccumulator.advantages.extend(
-            [0] * delta_ob_len + [traj_advantage] * len(ac_with_logprobs.tokens)
+            [0] * delta_ob_len + [per_token_advantage] * len(ac_with_logprobs.tokens)
         )
         SequenceAccumulator.mask.extend([0.0] * delta_ob_len + [1.0] * len(ac_with_logprobs.tokens))
 
@@ -242,6 +256,8 @@ def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.D
 def assemble_training_data(
     trajectory_groups_P: List[TrajectoryGroup],
     advantages_P: List[torch.Tensor],
+    *,
+    normalize_advantages_by_length: bool = False,
 ) -> tuple[List[tinker.Datum], List[dict[str, int]]]:
     """Convert trajectories to training data format."""
     data_D: list[tinker.Datum] = []
@@ -254,7 +270,11 @@ def assemble_training_data(
             safezip(traj_group.trajectories_G, advantages_G)
         ):
             # Build the full sequence from the trajectory
-            new_data = trajectory_to_data(traj, float(traj_advantage))
+            new_data = trajectory_to_data(
+                traj,
+                float(traj_advantage),
+                normalize_advantages_by_length=normalize_advantages_by_length,
+            )
             data_D.extend(new_data)
             metadata_D.extend([dict(group_idx=i_group, traj_idx=i_traj) for _ in new_data])
 

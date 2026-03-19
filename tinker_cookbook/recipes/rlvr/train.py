@@ -14,6 +14,7 @@ from tinker.types import LossFnType
 from tinker_cookbook import checkpoint_utils, cli_utils
 from tinker_cookbook.hyperparam_utils import get_lr
 from tinker_cookbook.recipes.rlvr.builders import DATASET_BUILDER_MAP
+from tinker_cookbook.recipes.rlvr.graders import GraderConfig
 from tinker_cookbook.rl.train import AsyncConfig, Config, KLReferenceConfig, StreamMinibatchConfig, main
 from tinker_cookbook.rl.types import AdvantageScheme
 
@@ -70,10 +71,17 @@ class CLIConfig:
     clip_ratio_upper: float = 0.2  # PPO clip: 1 + upper (DAPO uses 0.28)
     grad_clip_norm: float = 0.3
     remove_constant_reward_groups: bool = False
+    normalize_advantages_by_length: bool = False
 
     # Stream minibatch settings
     stream_groups_per_batch: int | None = None  # enables StreamMinibatchConfig when set
     stream_num_minibatches: int = 2
+
+    # Multi-run staggering
+    initial_delay_s: float = 0.0  # sleep before first step (stagger concurrent runs)
+
+    # Grader override (replaces builder default when set)
+    grader_config: GraderConfig | None = None
 
 
 def derive_loss_fn_config(cli_config: CLIConfig) -> dict[str, Any] | None:
@@ -89,6 +97,10 @@ def derive_loss_fn_config(cli_config: CLIConfig) -> dict[str, Any] | None:
 
 
 async def cli_main(cli_config: CLIConfig) -> None:
+    if cli_config.initial_delay_s > 0:
+        logger.info(f"Staggering: sleeping {cli_config.initial_delay_s:.0f}s before start")
+        await asyncio.sleep(cli_config.initial_delay_s)
+
     renderer_name = await checkpoint_utils.resolve_renderer_name_from_checkpoint_or_default_async(
         model_name=cli_config.model_name,
         explicit_renderer_name=cli_config.renderer_name,
@@ -109,7 +121,8 @@ async def cli_main(cli_config: CLIConfig) -> None:
     sampling_max_connections = max(16, cli_config.batch_size * cli_config.group_size)
 
     builder_cls = DATASET_BUILDER_MAP[cli_config.dataset]
-    dataset_builder = builder_cls(
+
+    builder_kwargs: dict[str, Any] = dict(
         batch_size=cli_config.batch_size,
         group_size=cli_config.group_size,
         model_name_for_tokenizer=cli_config.model_name,
@@ -119,6 +132,11 @@ async def cli_main(cli_config: CLIConfig) -> None:
         format_coef=cli_config.format_coef,
         eos_coef=cli_config.eos_coef,
     )
+
+    if cli_config.grader_config is not None:
+        builder_kwargs["grader_config"] = cli_config.grader_config
+
+    dataset_builder = builder_cls(**builder_kwargs)
 
     loss_fn_config = derive_loss_fn_config(cli_config)
 
@@ -152,6 +170,7 @@ async def cli_main(cli_config: CLIConfig) -> None:
         grad_clip_norm=cli_config.grad_clip_norm,
         loss_fn_config=loss_fn_config,
         remove_constant_reward_groups=cli_config.remove_constant_reward_groups,
+        normalize_advantages_by_length=cli_config.normalize_advantages_by_length,
         async_config=AsyncConfig(
             max_steps_off_policy=cli_config.max_steps_off_policy,
             groups_per_batch=cli_config.batch_size,
