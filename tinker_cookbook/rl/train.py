@@ -377,10 +377,12 @@ class Config:
     # for most post-trained models, and non-1 temperatures currently do not play
     # well with KL penalty.
     temperature: float = 1.0
-    # Eval sampling temperature. MaxRL uses 0.6 for eval while training at 1.0.
+    top_p: float = 1.0
+    top_k: int = -1  # -1 = disabled
+    # Eval sampling parameters.
     eval_temperature: float = 1.0
-    # Eval nucleus sampling probability. MaxRL uses 0.95.
     eval_top_p: float = 1.0
+    eval_top_k: int = -1
     # Compute extra post-update KL metrics (adds overhead).
     compute_post_kl: bool = False
     # Remove groups where all trajectories have identical reward.
@@ -542,6 +544,8 @@ async def do_sync_training_with_stream_minibatch(
                     builder,
                     max_tokens=cfg.max_tokens,
                     temperature=cfg.temperature,
+                    top_p=cfg.top_p,
+                    top_k=cfg.top_k,
                     do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
                     enable_logging=enable_logging,
                     usage_tracker=usage_tracker,
@@ -870,6 +874,8 @@ async def do_group_rollout_and_filter_constant_reward(
     max_tokens: int,
     temperature: float,
     do_remove_constant_reward_groups: bool,
+    top_p: float = 1.0,
+    top_k: int = -1,
     enable_logging: bool = True,
     usage_tracker: UsageTracker | None = None,
     model_name: str = "",
@@ -885,6 +891,8 @@ async def do_group_rollout_and_filter_constant_reward(
                 stop=probe_env.stop_condition,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
             )
             trajectory_group = await do_batched_group_rollout(
                 env_group_builder, sampling_client, sampling_params
@@ -1549,6 +1557,7 @@ async def main(
                 model_name=cfg.model_name,
                 temperature=cfg.eval_temperature,
                 top_p=cfg.eval_top_p,
+                top_k=cfg.eval_top_k,
             )
         )
 
