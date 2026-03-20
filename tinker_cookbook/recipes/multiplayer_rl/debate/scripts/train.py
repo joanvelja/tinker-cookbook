@@ -432,6 +432,10 @@ def build_config(cli: CLIConfig) -> train.Config:
         )
         # Self-play training → eval vs base weights (opponent_model=model_name
         # creates fresh sampling client with init weights).
+        # When judge is served via OR (not Tinker), eval falls back to the
+        # trainee model on Tinker as the eval judge. Same underlying model,
+        # different serving path. Proper OR eval support is a TODO.
+        eval_judge_model = model_name if cli.judge_provider != "tinker" else cli.judge_model
         inspect_builder = DebateInspectEvaluatorBuilder(
             adapter=eval_adapter,
             prompts_ref=prompts_ref,
@@ -439,7 +443,7 @@ def build_config(cli: CLIConfig) -> train.Config:
             protocol_kind=cli.protocol_kind,
             randomize_position=True if cli.self_play else randomize_position,
             opponent_model=model_name if cli.self_play else cli.opponent_model,
-            judge_model=cli.judge_model,
+            judge_model=eval_judge_model,
             judge_renderer_name=cli.judge_renderer_name,
             opponent_max_tokens=cli.opponent_max_tokens,
             judge_max_tokens=cli.judge_max_tokens,

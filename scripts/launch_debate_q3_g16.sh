@@ -70,6 +70,7 @@ COMMON=(
   eval_every=4
   save_every=4
   wandb_project=debate-gpqa-main-fig
+  behavior_if_log_dir_exists=resume
 )
 
 IDX=0
