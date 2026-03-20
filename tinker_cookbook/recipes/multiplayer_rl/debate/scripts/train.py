@@ -182,27 +182,11 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             n_epochs=self.n_epochs,
         )
 
-        test_ds: RLDataset | None = None
-        if self.test_problems:
-            test_ds = DebateDataset(
-                problems=self.test_problems,
-                batch_size=len(self.test_problems),
-                group_size=self.group_size,
-                game=game,
-                renderer=trained_renderer,
-                step_reward_fn=self.step_reward_fn,
-                judge_callback=judge_callback,
-                outcome_reward_fn=zero_sum_outcome_reward,
-                opponent_completer=opponent_completer,
-                opponent_renderer=opponent_renderer,
-                randomize_position=self.randomize_position,
-                scorer=scorer_client,
-                scorer_parallelism=scorer_parallelism,
-                episode_log_dir=self.episode_log_dir,
-                split="test",
-            )
-
-        return train_ds, test_ds
+        # No inline eval for debate — DebateInspectEvaluator handles eval.
+        # The auto-appended RLTestSetEvaluator would run group_size * N_test
+        # full debates (self-play vs self, not vs base), which is expensive
+        # and uninformative for self-play training.
+        return train_ds, None
 
 
 @chz.chz
