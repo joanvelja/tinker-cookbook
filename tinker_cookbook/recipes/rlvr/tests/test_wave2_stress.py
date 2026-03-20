@@ -14,7 +14,7 @@ from tinker_cookbook.recipes.rlvr.builders import (
     SympyBoxedBuilder,
     _standard_fewshot_prefix,
 )
-from tinker_cookbook.recipes.rlvr.env import ANSWER_FORMAT_INSTRUCTION, BOXED_FORMAT_INSTRUCTION
+from tinker_cookbook.recipes.rlvr.env import ANSWER_FORMAT_INSTRUCTION, BOXED_FORMAT_INSTRUCTION, GPQA_FORMAT_INSTRUCTION
 from tinker_cookbook.recipes.rlvr.graders import CompositeGraderConfig, GraderConfig, LLMGraderConfig, SympyGraderConfig
 
 
@@ -97,9 +97,9 @@ class TestFormatInstructionParity:
         builder = Gsm8kBuilder(**_COMMON)
         assert builder.format_instruction == " Provide a numerical answer without units, written inside \\boxed{}."
 
-    def test_gpqa_inherits_answer_format_instruction(self):
+    def test_gpqa_uses_gpqa_format_instruction(self):
         builder = GpqaOpenEndedBuilder(**_COMMON)
-        assert builder.format_instruction == ANSWER_FORMAT_INSTRUCTION
+        assert builder.format_instruction == GPQA_FORMAT_INSTRUCTION
 
     def test_omnimath_uses_boxed_format_instruction(self):
         builder = OmniMathBuilder(**_COMMON)
@@ -213,11 +213,14 @@ class TestFewshotBehavior:
         prefix = builder._resolve_convo_prefix()
         assert prefix is None
 
-    def test_gpqa_no_fewshot(self):
-        """GpqaOpenEndedBuilder inherits from RLVRDatasetBuilder (no include_fewshot field)."""
+    def test_gpqa_has_system_prompt(self):
+        """GpqaOpenEndedBuilder sets a system prompt via convo_prefix."""
         builder = GpqaOpenEndedBuilder(**_COMMON)
         prefix = builder._resolve_convo_prefix()
-        assert prefix is None
+        assert prefix is not None
+        assert len(prefix) == 1
+        assert prefix[0]["role"] == "system"
+        assert "graduate-level science" in prefix[0]["content"]
 
     def test_omnimath_no_fewshot(self):
         builder = OmniMathBuilder(**_COMMON)

@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 _FINAL_ANSWER_RE = re.compile(r"<final_answer>(.*?)</final_answer>", re.DOTALL)
 
 ANSWER_FORMAT_INSTRUCTION = "\n\nWrite your final answer inside <final_answer></final_answer> tags."
+GPQA_FORMAT_INSTRUCTION = "\n\nReason through this step by step, then write your final answer inside <final_answer></final_answer> tags."
 BOXED_FORMAT_INSTRUCTION = "\n\nWrite your final answer as \\boxed{answer}."
 
 

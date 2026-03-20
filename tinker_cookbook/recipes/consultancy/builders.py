@@ -7,8 +7,10 @@ The reference answer is still stored and logged for offline FN/FP analysis.
 
 import chz
 
+from tinker_cookbook import renderers
 from tinker_cookbook.llm_client import LLMClientConfig
-from tinker_cookbook.recipes.rlvr.builders import RLVRDatasetBuilder
+from tinker_cookbook.recipes.rlvr.builders import RLVRDatasetBuilder, _gpqa_system
+from tinker_cookbook.recipes.rlvr.env import GPQA_FORMAT_INSTRUCTION
 from tinker_cookbook.recipes.rlvr.graders import GraderConfig, LLMGraderConfig
 from tinker_cookbook.recipes.rlvr.types import RLVRExample
 
@@ -26,7 +28,7 @@ Do NOT guess the correct answer yourself. Judge only by the quality of the argum
 CORRECT = the answer correctly addresses the question.
 INCORRECT = the answer is wrong, incomplete, or nonsensical."""
 
-_CONSULTANCY_USER = "Question: {question}\nAnswer: {response}"
+_CONSULTANCY_USER = "Question: {question}\nAnswer: {response}\n\nReason through your evaluation step by step before giving your verdict."
 
 
 # ---------------------------------------------------------------------------
@@ -43,9 +45,11 @@ class ConsultancyGpqaBuilder(RLVRDatasetBuilder):
     - The default grader model + base_url point at the frozen base model.
     """
 
+    convo_prefix: list[renderers.Message] | None = chz.field(default_factory=_gpqa_system)
+    format_instruction: str = GPQA_FORMAT_INSTRUCTION
     grader_config: GraderConfig = LLMGraderConfig(
         client=LLMClientConfig(
-            model="qwen/qwen3.5-35b-a3b",
+            model="qwen/qwen3-30b-a3b",
             base_url="https://openrouter.ai/api/v1",
             api_key_env="OPENROUTER_API_KEY",
             reasoning_effort="none",

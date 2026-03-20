@@ -17,6 +17,7 @@ from tinker_cookbook import renderers
 from tinker_cookbook.recipes.rlvr.env import (
     ANSWER_FORMAT_INSTRUCTION,
     BOXED_FORMAT_INSTRUCTION,
+    GPQA_FORMAT_INSTRUCTION,
     RLVRDataset,
     extract_final_answer,
 )
@@ -346,9 +347,15 @@ class DeepMathBuilder(SympyBoxedBuilder):
 # ---------------------------------------------------------------------------
 
 
+def _gpqa_system() -> list[renderers.Message]:
+    return [{"role": "system", "content": "You are solving a graduate-level science question."}]
+
+
 @chz.chz
 class GpqaOpenEndedBuilder(RLVRDatasetBuilder):
     grader_config: GraderConfig = LLMGraderConfig()
+    convo_prefix: list[renderers.Message] | None = chz.field(default_factory=_gpqa_system)
+    format_instruction: str = GPQA_FORMAT_INSTRUCTION
     subset: str = "extended"
     split: str = "train"
     eval_frac: float = 0.1
