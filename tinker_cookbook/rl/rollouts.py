@@ -164,7 +164,7 @@ async def do_batched_group_rollout(
     envs_G: list[Env] = [env_group_builder.env_thunk() for _ in range(G)]
     await asyncio.gather(*(env.initial_observation() for env in envs_G))
 
-    async def _step_and_build(env: Env, seq: tinker.SampleSequence) -> Trajectory:
+    async def _step_and_build(env: Env, seq: tinker.SampledSequence) -> Trajectory:
         assert seq.logprobs is not None
         ac = TokensWithLogprobs(tokens=seq.tokens, maybe_logprobs=seq.logprobs)
         step_result = await env.step(seq.tokens)
