@@ -8,9 +8,11 @@ Evals and other code should use the appropriate interface.
 
 from __future__ import annotations
 
+import asyncio
+import os
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import tinker
 
@@ -173,3 +175,60 @@ class TinkerMessageCompleter(MessageCompleter):
         parsed_message, _success = self.renderer.parse_response(output_tokens)
 
         return {"role": "assistant", "content": parsed_message["content"]}
+
+
+class OpenAIMessageCompleter(MessageCompleter):
+    """MessageCompleter backed by any OpenAI-compatible API (OpenRouter, vLLM, etc.)."""
+
+    def __init__(
+        self,
+        model: str,
+        base_url: str,
+        api_key_env: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+        top_k: int | None = None,
+        reasoning_effort: str | None = None,
+        extra_body: dict[str, Any] | None = None,
+        max_concurrent: int = 64,
+    ):
+        from openai import AsyncOpenAI
+
+        api_key = os.environ.get(api_key_env)
+        if not api_key:
+            raise ValueError(f"Environment variable {api_key_env} is not set")
+
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._model = model
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self._top_p = top_p
+        self._top_k = top_k
+        self._reasoning_effort = reasoning_effort
+        self._extra_body = extra_body or {}
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def __call__(self, messages: list[renderers.Message]) -> renderers.Message:
+        kwargs: dict[str, Any] = dict(
+            model=self._model,
+            messages=messages,
+            max_tokens=self._max_tokens,
+            temperature=self._temperature,
+            top_p=self._top_p,
+        )
+        if self._reasoning_effort is not None:
+            kwargs["reasoning_effort"] = self._reasoning_effort
+        if self._top_k is not None:
+            kwargs.setdefault("extra_body", {}).update(self._extra_body)
+            kwargs["extra_body"]["top_k"] = self._top_k
+        elif self._extra_body:
+            kwargs["extra_body"] = self._extra_body
+
+        async with self._semaphore:
+            t0 = time.monotonic()
+            response = await self._client.chat.completions.create(**kwargs)
+            self._last_sample_wall_s = time.monotonic() - t0
+
+        content = response.choices[0].message.content or ""
+        return {"role": "assistant", "content": content}

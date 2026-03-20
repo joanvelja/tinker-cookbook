@@ -96,7 +96,7 @@ def generate_format_instructions(fields: Mapping[str, FieldSpec]) -> str:
     """Generate XML format instruction text from field specs."""
     from .fields import BinaryScoring, EnumScoring, NumericScoring
 
-    lines = ["You MUST include the following XML tags in your response:"]
+    lines = ["After your reasoning, you MUST include the following XML tags at the end of your response:"]
     for name, spec in fields.items():
         scoring = spec.scoring
         if isinstance(scoring, BinaryScoring):

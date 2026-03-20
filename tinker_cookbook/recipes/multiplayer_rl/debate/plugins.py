@@ -73,3 +73,23 @@ def completion_and_format_reward_fn(
     eos_reward = eos_coef * (float(completed) - 1.0)
 
     return format_reward + eos_reward
+
+
+def role_has_format_failure(state: DebateState, role: Role) -> bool:
+    """Check if any utterance by this role failed field extraction.
+
+    Only considers utterances where field_specs were defined for that
+    role/phase — utterances in phases without field_specs have fields=None
+    legitimately and should not trigger the gate.
+    """
+    from .prompts import resolve_prompts
+
+    prompts = resolve_prompts(state.spec.prompts_ref)
+    for utt in state.transcript:
+        if utt.role != role:
+            continue
+        # Only check utterances where fields were expected
+        specs = prompts.get_field_specs(role.value, utt.phase.value)
+        if specs and utt.fields is None:
+            return True
+    return False

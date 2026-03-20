@@ -45,6 +45,7 @@ class DebateDataset(RLDataset):
         step_reward_fn: StepRewardFn | None = None,
         judge_callback: JudgeCallback | None = None,
         outcome_reward_fn: OutcomeRewardFn | None = None,
+        gate_reward_on_format: bool = False,
         include_roles: tuple[Role, ...] = (Role.DEBATER_A, Role.DEBATER_B),
         opponent_completer: MessageCompleter | None = None,
         opponent_renderer: Renderer | None = None,
@@ -79,6 +80,7 @@ class DebateDataset(RLDataset):
         self.step_reward_fn = step_reward_fn
         self.judge_callback = judge_callback
         self.outcome_reward_fn = outcome_reward_fn
+        self.gate_reward_on_format = gate_reward_on_format
         self.include_roles = include_roles
         self.opponent_completer = opponent_completer
         self.opponent_renderer = opponent_renderer
@@ -117,6 +119,7 @@ class DebateDataset(RLDataset):
                 step_reward_fn=self.step_reward_fn,
                 judge_callback=self.judge_callback,
                 outcome_reward_fn=self.outcome_reward_fn,
+                gate_reward_on_format=self.gate_reward_on_format,
                 include_roles=self.include_roles,
                 group_size=self.group_size,
                 opponent_completer=self.opponent_completer,

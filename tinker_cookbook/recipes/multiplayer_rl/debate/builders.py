@@ -25,7 +25,7 @@ from tinker_cookbook.renderers import Renderer
 
 from .scoring.metrics import MetricFn, mcq_debate_metrics
 from .scoring.trajectory import final_answer
-from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn
+from .plugins import JudgeCallback, OutcomeRewardFn, StepRewardFn, role_has_format_failure
 from .prompts import check_ab_symmetry, resolve_prompts
 from .core.reducer import fork_state
 from .core.runtime import DebateRuntime
@@ -157,6 +157,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
     step_reward_fn: StepRewardFn | None = None
     judge_callback: JudgeCallback | None = None
     outcome_reward_fn: OutcomeRewardFn | None = None
+    gate_reward_on_format: bool = False
     include_roles: tuple[Role, ...] = (Role.DEBATER_A, Role.DEBATER_B)
     group_size: int = 1
     opponent_completer: MessageCompleter | None = None
@@ -541,7 +542,12 @@ class DebateGroupBuilder(EnvGroupBuilder):
                 results.append((0.0, m))
             else:
                 rewards_by_role = self.outcome_reward_fn(outcome)
-                results.append((rewards_by_role.get(env.role, 0.0), m))
+                reward = rewards_by_role.get(env.role, 0.0)
+                # Gate: if this role had any format failure, assign a loss (-1).
+                # Preserves zero-sum and mirrors RLVR where format fail → no reward.
+                if self.gate_reward_on_format and role_has_format_failure(env.runtime.state, env.role):
+                    reward = -1.0
+                results.append((reward, m))
         return results
 
     def advantage_subgroups(self, n_trajectories: int) -> tuple[tuple[int, ...], ...] | None:

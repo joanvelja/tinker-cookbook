@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from typing import Any
 
 import chz
 import tinker
 from tinker.lib.public_interfaces.service_client import RetryConfig
 
 from tinker_cookbook import cli_utils, hyperparam_utils, model_info
-from tinker_cookbook.completers import TinkerMessageCompleter
+from tinker_cookbook.completers import OpenAIMessageCompleter, TinkerMessageCompleter
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.rl import train
 from tinker_cookbook.rl.train import StreamMinibatchConfig
@@ -49,6 +50,14 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     opponent_model: str
     judge_model: str
     judge_renderer_name: str | None = None
+    judge_provider: str = "tinker"  # "tinker" or "openai_compatible"
+    judge_base_url: str | None = None
+    judge_api_key_env: str | None = None
+    judge_reasoning_effort: str | None = None
+    judge_temperature: float = 0.7
+    judge_top_p: float = 1.0
+    judge_top_k: int | None = None
+    judge_extra_body: dict[str, Any] | None = None
     opponent_max_tokens: int = 8192
     judge_max_tokens: int = 4096
     train_problems: list[DebateProblemSpec] = chz.field(default_factory=list)
@@ -60,6 +69,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
     randomize_position: bool = True
     prompts_ref: str = "judge_exploit"
     step_reward_fn: StepRewardFn | None = None
+    gate_reward_on_format: bool = False
     self_play: bool = False
     base_url: str | None = None
     episode_log_dir: str | None = None
@@ -102,22 +112,38 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             opponent_completer = None
             opponent_renderer = None
 
-        judge_name = self.judge_renderer_name or model_info.get_recommended_renderer_name(
-            self.judge_model, reasoning_effort=self.reasoning_effort
-        )
-        judge_renderer = get_renderer(judge_name, get_tokenizer(self.judge_model))
-        judge_sampling = service.create_sampling_client(
-            base_model=self.judge_model,
-            retry_config=retry_config,
-        )
-        judge_completer = TinkerMessageCompleter(
-            sampling_client=judge_sampling,
-            renderer=judge_renderer,
-            max_tokens=self.judge_max_tokens,
-            usage_tracker=tracker,
-            actor="judge",
-            model_name=self.judge_model,
-        )
+        if self.judge_provider == "openai_compatible":
+            assert self.judge_base_url is not None, "judge_base_url required for openai_compatible"
+            assert self.judge_api_key_env is not None, "judge_api_key_env required for openai_compatible"
+            judge_completer = OpenAIMessageCompleter(
+                model=self.judge_model,
+                base_url=self.judge_base_url,
+                api_key_env=self.judge_api_key_env,
+                max_tokens=self.judge_max_tokens,
+                temperature=self.judge_temperature,
+                top_p=self.judge_top_p,
+                top_k=self.judge_top_k,
+                reasoning_effort=self.judge_reasoning_effort,
+                extra_body=self.judge_extra_body,
+                max_concurrent=self.max_connections,
+            )
+        else:
+            judge_name = self.judge_renderer_name or model_info.get_recommended_renderer_name(
+                self.judge_model, reasoning_effort=self.reasoning_effort
+            )
+            judge_renderer = get_renderer(judge_name, get_tokenizer(self.judge_model))
+            judge_sampling = service.create_sampling_client(
+                base_model=self.judge_model,
+                retry_config=retry_config,
+            )
+            judge_completer = TinkerMessageCompleter(
+                sampling_client=judge_sampling,
+                renderer=judge_renderer,
+                max_tokens=self.judge_max_tokens,
+                usage_tracker=tracker,
+                actor="judge",
+                model_name=self.judge_model,
+            )
         judge_callback = LLMJudgeCallback(judge_completer)
         scorer_client = (
             self.scorer_builder.build(usage_tracker=tracker)
@@ -145,6 +171,7 @@ class DebateRLDatasetBuilder(RLDatasetBuilder):
             step_reward_fn=self.step_reward_fn,
             judge_callback=judge_callback,
             outcome_reward_fn=zero_sum_outcome_reward,
+            gate_reward_on_format=self.gate_reward_on_format,
             opponent_completer=opponent_completer,
             opponent_renderer=opponent_renderer,
             randomize_position=self.randomize_position,
@@ -186,6 +213,14 @@ class CLIConfig:
     opponent_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     judge_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     judge_renderer_name: str | None = None
+    judge_provider: str = "tinker"
+    judge_base_url: str | None = None
+    judge_api_key_env: str | None = None
+    judge_reasoning_effort: str | None = None
+    judge_temperature: float = 0.7
+    judge_top_p: float = 1.0
+    judge_top_k: int | None = None
+    judge_extra_body: dict[str, Any] | None = None
     opponent_max_tokens: int = 8192
     judge_max_tokens: int = 4096
     problem_source: ProblemSource = GPQAProblemSource()
@@ -200,12 +235,25 @@ class CLIConfig:
     self_play: bool = False
     prompts_ref: str | None = None
     format_penalty: bool = False
+    format_coef: float = 0.05
+    eos_coef: float = 0.05
+    gate_reward_on_format: bool = False
     kl_penalty_coef: float = 0.0
     loss_fn: str = "ppo"
+    loss_fn_config: dict[str, Any] | None = None
+    clip_ratio_lower: float = 0.2
+    clip_ratio_upper: float = 0.2
     num_substeps: int = 2
     grad_clip_norm: float = 0.3
     advantage_scheme: str = "maxrl"
     advantage_alpha: float = 0.5
+    normalize_advantages_by_length: bool = False
+    temperature: float = 1.0
+    top_p: float = 1.0
+    top_k: int = -1
+    eval_temperature: float = 1.0
+    eval_top_p: float = 1.0
+    eval_top_k: int = -1
     inspect_eval: DebateInspectEvaluatorBuilder | None = None
     eval_limit: int | None = 25
     eval_every: int = 10
@@ -220,6 +268,17 @@ class CLIConfig:
     progress_timeout_s: int = 900
     scorer_builder: DebateScorerBuilder | None = None
     num_minibatches: int = 8
+
+
+def _derive_loss_fn_config(cli: CLIConfig) -> dict[str, Any] | None:
+    if cli.loss_fn_config is not None:
+        return cli.loss_fn_config
+    if cli.loss_fn in ("ppo", "cispo"):
+        return {
+            "clip_low_threshold": 1.0 - cli.clip_ratio_lower,
+            "clip_high_threshold": 1.0 + cli.clip_ratio_upper,
+        }
+    return None
 
 
 def build_config(cli: CLIConfig) -> train.Config:
@@ -277,7 +336,12 @@ def build_config(cli: CLIConfig) -> train.Config:
 
     step_reward_fn: StepRewardFn | None
     if cli.format_penalty:
-        step_reward_fn = completion_and_format_reward_fn
+        from functools import partial
+        step_reward_fn = partial(
+            completion_and_format_reward_fn,
+            format_coef=cli.format_coef,
+            eos_coef=cli.eos_coef,
+        )
     else:
         step_reward_fn = None
 
@@ -305,6 +369,14 @@ def build_config(cli: CLIConfig) -> train.Config:
         opponent_model=cli.opponent_model,
         judge_model=cli.judge_model,
         judge_renderer_name=cli.judge_renderer_name,
+        judge_provider=cli.judge_provider,
+        judge_base_url=cli.judge_base_url,
+        judge_api_key_env=cli.judge_api_key_env,
+        judge_reasoning_effort=cli.judge_reasoning_effort,
+        judge_temperature=cli.judge_temperature,
+        judge_top_p=cli.judge_top_p,
+        judge_top_k=cli.judge_top_k,
+        judge_extra_body=cli.judge_extra_body,
         opponent_max_tokens=cli.opponent_max_tokens,
         judge_max_tokens=cli.judge_max_tokens,
         train_problems=train_problems,
@@ -317,6 +389,7 @@ def build_config(cli: CLIConfig) -> train.Config:
         self_play=cli.self_play,
         prompts_ref=prompts_ref,
         step_reward_fn=step_reward_fn,
+        gate_reward_on_format=cli.gate_reward_on_format,
         base_url=cli.base_url,
         episode_log_dir=episode_log_dir,
         n_epochs=cli.n_epochs,
@@ -387,12 +460,20 @@ def build_config(cli: CLIConfig) -> train.Config:
         dataset_builder=dataset_builder,
         learning_rate=learning_rate,
         max_tokens=cli.max_tokens,
+        temperature=cli.temperature,
+        top_p=cli.top_p,
+        top_k=cli.top_k,
+        eval_temperature=cli.eval_temperature,
+        eval_top_p=cli.eval_top_p,
+        eval_top_k=cli.eval_top_k,
         kl_penalty_coef=cli.kl_penalty_coef,
         loss_fn=cli.loss_fn,
+        loss_fn_config=_derive_loss_fn_config(cli),
         num_substeps=cli.num_substeps,
         grad_clip_norm=cli.grad_clip_norm,
         advantage_scheme=cli.advantage_scheme,
         advantage_alpha=cli.advantage_alpha,
+        normalize_advantages_by_length=cli.normalize_advantages_by_length,
         eval_every=cli.eval_every,
         eval_on_start=cli.eval_on_start,
         save_every=cli.save_every,

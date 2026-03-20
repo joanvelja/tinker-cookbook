@@ -2,7 +2,7 @@
 # GPQA RLVR — Q3-30B-A3B-Instruct, G=16, 3 seeds
 #
 # Config: B=64, G=16, 32 steps (4 epochs over 491 train problems)
-# normalize_advantages_by_length=True, grad_clip=0.3
+# normalize_advantages_by_length=True, grad_clip=disabled
 # async pipelining (max_steps_off_policy=2), num_substeps=2
 #
 # Cost estimate: ~$81/seed, ~$243 total (lower bound)
@@ -46,7 +46,6 @@ COMMON=(
   behavior_if_log_dir_exists=resume
   max_steps_off_policy=2
   num_substeps=2
-  grader_max_concurrent=1024
 )
 
 IDX=0

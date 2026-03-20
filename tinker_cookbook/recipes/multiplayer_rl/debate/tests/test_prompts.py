@@ -659,7 +659,7 @@ def test_field_instructions_generated():
     assert fi is not None
     assert "<decision>" in fi
     assert "<reason>" in fi
-    assert "You MUST include" in fi
+    assert "MUST include" in fi
 
 
 def test_field_names_lookup():
@@ -772,7 +772,7 @@ def test_generate_field_instructions_format():
     }
     result = generate_format_instructions(fields)
     assert result == (
-        "You MUST include the following XML tags in your response:\n"
+        "After your reasoning, you MUST include the following XML tags at the end of your response:\n"
         "<score>0-10 rating</score>\n"
         "<comment>brief comment</comment>"
     )
