@@ -172,13 +172,8 @@ class TestRewardParity:
             format_coef=0.1,
         )
         result = _run(env.step(_tokens("<final_answer>42</final_answer>")))
-        # format=1.0, answer=1.0 -> 0.1*(1-1) + 1.0 = 1.0
-        assert result.reward == pytest.approx(1.0)
-
-        # ProblemEnv baseline
-        penv = _ConcreteProblemEnv(MockRenderer(), grader, correct_format_result=True, format_coef=0.1)
-        presult = _run(penv.step(_tokens("<final_answer>42</final_answer>")))
-        assert presult.reward == pytest.approx(result.reward)
+        # format=1.0, answer=1.0 -> 1.0 * (1.0 + 0.1*1.0 + 0.0*1.0) = 1.1
+        assert result.reward == pytest.approx(1.1)
 
     def test_correct_format_wrong_answer(self):
         """Format OK + wrong answer -> reward = 0.0."""
@@ -189,7 +184,7 @@ class TestRewardParity:
             format_coef=0.1,
         )
         result = _run(env.step(_tokens("<final_answer>wrong</final_answer>")))
-        # format=1.0, answer=0.0 -> 0.1*(1-1) + 0.0 = 0.0
+        # format=1.0, answer=0.0 -> 0.0 * (...) = 0.0
         assert result.reward == pytest.approx(0.0)
 
     def test_failed_parse_no_reward(self):
@@ -201,9 +196,8 @@ class TestRewardParity:
             format_coef=0.1,
         )
         result = _run(env.step(_tokens("<final_answer>42</final_answer>")))
-        # parse_success=False → no extraction → boxed=0, answer=0
-        # reward = 0.1*(0-1) + 0.0 = -0.1
-        assert result.reward == pytest.approx(-0.1)
+        # parse_success=False → no extraction → answer=0 → reward = 0.0
+        assert result.reward == pytest.approx(0.0)
 
     def test_failed_everything(self):
         """Extraction fails -> format=0, answer=0, reward = -format_coef."""
@@ -214,11 +208,11 @@ class TestRewardParity:
             format_coef=0.1,
         )
         result = _run(env.step(_tokens("no tags here")))
-        # extraction failed: format=0, answer=0 -> 0.1*(0-1)+0 = -0.1
-        assert result.reward == pytest.approx(-0.1)
+        # extraction failed: answer=0 -> reward = 0.0
+        assert result.reward == pytest.approx(0.0)
 
     def test_reward_formula_custom_format_coef(self):
-        """Verify formula works with non-default format_coef (extraction fails)."""
+        """Verify formula: extraction fails -> answer=0 -> reward=0 regardless of format_coef."""
         for fc in [0.0, 0.5, 1.0, 2.0]:
             grader = MockGrader(correct=True, status="correct")
             env = RLVREnv(
@@ -227,9 +221,8 @@ class TestRewardParity:
                 format_coef=fc,
             )
             result = _run(env.step(_tokens("no tags")))
-            # boxed=0.0, eos=1.0, answer=0.0 -> fc*(0-1) + 0.0*(1-1) + 0.0
-            expected = fc * (0.0 - 1.0)
-            assert result.reward == pytest.approx(expected), f"format_coef={fc}"
+            # extraction failed -> answer=0 -> 0.0 * (...) = 0.0
+            assert result.reward == pytest.approx(0.0), f"format_coef={fc}"
 
     def test_reward_formula_custom_eos_coef(self):
         """Verify eos_coef penalizes truncation. But parse_success=False
@@ -243,8 +236,9 @@ class TestRewardParity:
                 format_coef=0.1, eos_coef=ec,
             )
             result = _run(env.step(_tokens("<final_answer>42</final_answer>")))
-            # boxed=1.0, eos=1.0, answer=1.0 -> 0.1*(1-1) + ec*(1-1) + 1.0 = 1.0
-            assert result.reward == pytest.approx(1.0), f"eos_coef={ec}"
+            # boxed=1.0, eos=1.0, answer=1.0 -> 1.0 * (1.0 + 0.1*1.0 + ec*1.0)
+            expected = 1.0 * (1.0 + 0.1 + ec)
+            assert result.reward == pytest.approx(expected), f"eos_coef={ec}"
 
 
 # ===========================================================================

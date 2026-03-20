@@ -160,8 +160,8 @@ def test_rlvr_env_step_correct():
     result = _run(env.step(_tokens(content)))
 
     # correct_boxed=1.0, correct_eos=1.0, correct_answer=1.0
-    # reward = 0.1*(1-1) + 0.0*(1-1) + 1.0 = 1.0
-    assert result.reward == pytest.approx(1.0)
+    # reward = 1.0 * (1.0 + 0.1*1.0 + 0.0*1.0) = 1.1
+    assert result.reward == pytest.approx(1.1)
     assert result.episode_done is True
     assert result.metrics["correct"] == 1.0
     assert result.metrics["format_boxed"] == 1.0
@@ -176,7 +176,7 @@ def test_rlvr_env_step_incorrect():
     result = _run(env.step(_tokens(content)))
 
     # correct_boxed=1.0, correct_eos=1.0, correct_answer=0.0
-    # reward = 0.1*(1-1) + 0.0*(1-1) + 0.0 = 0.0
+    # reward = 0.0 * (...) = 0.0
     assert result.reward == pytest.approx(0.0)
     assert result.metrics["correct"] == 0.0
     assert result.metrics["format_boxed"] == 1.0
@@ -189,9 +189,9 @@ def test_rlvr_env_step_extraction_fails():
     content = "no tags here at all"
     result = _run(env.step(_tokens(content)))
 
-    # Extraction failed: correct_boxed=0.0, correct_eos=1.0, correct_answer=0.0
-    # reward = 0.1*(0-1) + 0.0*(1-1) + 0.0 = -0.1
-    assert result.reward == pytest.approx(-0.1)
+    # Extraction failed: correct_answer=0.0
+    # reward = 0.0 * (...) = 0.0
+    assert result.reward == pytest.approx(0.0)
     assert result.metrics["correct"] == 0.0
     assert result.metrics["format_boxed"] == 0.0
     assert result.logs["grade_status"] == "error"
@@ -207,9 +207,9 @@ def test_rlvr_env_step_parse_fail_no_reward():
     content = "<final_answer>4</final_answer>"
     result = _run(env.step(_tokens(content)))
 
-    # parse_success=False → no extraction, no grading
-    # reward = 0.1*(0-1) + 0.0*(0-1) + 0.0 = -0.1
-    assert result.reward == pytest.approx(-0.1)
+    # parse_success=False → no extraction, no grading → correct_answer=0.0
+    # reward = 0.0 * (...) = 0.0
+    assert result.reward == pytest.approx(0.0)
     assert result.metrics["format_boxed"] == 0.0
     assert result.metrics["format_eos"] == 0.0
     assert result.metrics["correct"] == 0.0

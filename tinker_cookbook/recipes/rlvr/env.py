@@ -120,11 +120,13 @@ class RLVREnv(ProblemEnv):
                 correct_answer = float(result.correct)
                 grade_status = result.status
 
-        # reward = format_coef * (boxed - 1) + eos_coef * (eos - 1) + correct
-        total_reward = (
-            self.format_coef * (correct_boxed - 1)
-            + self.eos_coef * (correct_eos - 1)
-            + correct_answer
+        # Correct answers get a format/EoS bonus; wrong/truncated get flat 0.
+        # This avoids penalizing exploration into long trajectories while
+        # rewarding well-formatted correct answers.
+        total_reward = correct_answer * (
+            1.0
+            + self.format_coef * correct_boxed
+            + self.eos_coef * correct_eos
         )
 
         logtree.log_text(f"Problem: {self.get_question()}")

@@ -177,6 +177,7 @@ async def cli_main(cli_config: CLIConfig) -> None:
         loss_fn_config=loss_fn_config,
         remove_constant_reward_groups=cli_config.remove_constant_reward_groups,
         normalize_advantages_by_length=cli_config.normalize_advantages_by_length,
+        num_groups_to_log=cli_config.batch_size,  # log all groups
         async_config=AsyncConfig(
             max_steps_off_policy=cli_config.max_steps_off_policy,
             groups_per_batch=cli_config.batch_size,

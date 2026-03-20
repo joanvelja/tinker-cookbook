@@ -489,6 +489,7 @@ def build_config(cli: CLIConfig) -> train.Config:
         sampling_max_connections=max_connections,
         sampling_progress_timeout=cli.progress_timeout_s,
         remove_constant_reward_groups=True,
+        num_groups_to_log=cli.batch_size,  # log all groups
         stream_minibatch_config=StreamMinibatchConfig(
             groups_per_batch=cli.batch_size,
             num_minibatches=cli.num_minibatches,
