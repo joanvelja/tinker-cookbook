@@ -76,11 +76,11 @@ GRADER_SECONDARY: list[SignalSpec] = [
 # -- Gate: OVERFIT --
 OVERFIT_PRIMARY: list[SignalSpec] = [
     _d("train_eval_gap", False),
-    _s("eval_correct", "test/env/all/correct", True),
+    _s("eval_correct", "test/test/env/all/correct", True),
 ]
 OVERFIT_SECONDARY: list[SignalSpec] = [
-    _s("eval_format", "test/env/all/format_boxed", True),
-    _s("eval_reward", "test/env/all/reward/total", True),
+    _s("eval_format", "test/test/env/all/format_boxed", True),
+    _s("eval_reward", "test/test/env/all/reward/total", True),
 ]
 
 ALL_GATES: dict[str, tuple[list[SignalSpec], list[SignalSpec]]] = {
@@ -191,7 +191,7 @@ def train_eval_gap(rows: list[dict]) -> list[float | None]:
     """
     result: list[float | None] = []
     for row in rows:
-        eval_correct = _get(row, "test/env/all/correct")
+        eval_correct = _get(row, "test/test/env/all/correct")
         train_correct = _get(row, "env/all/correct")
         if eval_correct is not None and train_correct is not None:
             result.append(train_correct - eval_correct)
