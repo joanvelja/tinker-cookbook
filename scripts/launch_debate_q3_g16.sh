@@ -69,6 +69,7 @@ COMMON=(
   num_substeps=2
   eval_every=4
   save_every=4
+  eval_limit=None
   wandb_project=debate-gpqa-main-fig
   behavior_if_log_dir_exists=resume
 )
