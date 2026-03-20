@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-LOG_DIR="logs/rlvr-q3-g16"
+LOG_DIR="logs/rendering-fix-rlvr-q3-g16"
 mkdir -p "$LOG_DIR"
 
 COMMON=(
@@ -51,7 +51,7 @@ COMMON=(
 IDX=0
 run_one() {
   local SEED=$1
-  local NAME="rlvr-q3-g16-s${SEED}"
+  local NAME="rendering-fix-rlvr-q3-g16-s${SEED}"
   local DELAY=$((IDX * 90))
   echo "=== Launching ${NAME} (delay=${DELAY}s) ==="
   uv run --env-file .env python -m tinker_cookbook.recipes.rlvr.train \
