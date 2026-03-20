@@ -68,7 +68,7 @@ class ConsultancyGpqaBuilder(RLVRDatasetBuilder):
     )
     subset: str = "extended"
     split: str = "train"
-    eval_frac: float = 0.1
+    eval_frac: float = 0.12
     dataset_name: str = "consultancy_gpqa"
 
     def _load_data(self) -> tuple[list[RLVRExample], list[RLVRExample] | None]:

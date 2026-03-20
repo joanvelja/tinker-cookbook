@@ -83,7 +83,7 @@ class GPQAOpenEndedProblemSource(ProblemSource):
 
     subset: str = "extended"
     split: str = "train"
-    test_fraction: float = 0.1
+    test_fraction: float = 0.12
     seed: int = 42
     record_ids: list[str] | None = None
 

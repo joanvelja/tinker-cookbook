@@ -369,7 +369,7 @@ class GpqaOpenEndedBuilder(RLVRDatasetBuilder):
     format_instruction: str = GPQA_FORMAT_INSTRUCTION
     subset: str = "extended"
     split: str = "train"
-    eval_frac: float = 0.1
+    eval_frac: float = 0.12
     dataset_name: str = "gpqa_oe"
 
     def _load_data(self) -> tuple[list[RLVRExample], list[RLVRExample] | None]:
