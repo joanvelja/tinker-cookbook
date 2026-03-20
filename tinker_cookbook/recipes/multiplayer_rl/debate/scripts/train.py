@@ -264,6 +264,7 @@ class CLIConfig:
     log_path: str | None = None
     episode_log_dir: str | None = None
     base_url: str | None = None
+    behavior_if_log_dir_exists: cli_utils.LogdirBehavior = "ask"
     max_connections: int | None = None
     progress_timeout_s: int = 900
     scorer_builder: DebateScorerBuilder | None = None
@@ -498,7 +499,7 @@ def build_config(cli: CLIConfig) -> train.Config:
 def main():
     cli_config = chz.entrypoint(CLIConfig)
     config = build_config(cli_config)
-    cli_utils.check_log_dir(config.log_path, behavior_if_exists="ask")
+    cli_utils.check_log_dir(config.log_path, behavior_if_exists=cli_config.behavior_if_log_dir_exists)
     usage_tracker = UsageTracker()
     # Inject tracker into dataset builder for opponent/judge completers.
     object.__setattr__(config.dataset_builder, "_usage_tracker", usage_tracker)
