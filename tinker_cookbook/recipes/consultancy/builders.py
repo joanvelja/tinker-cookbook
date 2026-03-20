@@ -48,6 +48,7 @@ class ConsultancyGpqaBuilder(RLVRDatasetBuilder):
     convo_prefix: list[renderers.Message] | None = chz.field(default_factory=_gpqa_system)
     format_instruction: str = GPQA_FORMAT_INSTRUCTION
     grade_full_response: bool = True
+    gt_scorer_config: GraderConfig = LLMGraderConfig()  # gpt-5-mini with reference access
     grader_config: GraderConfig = LLMGraderConfig(
         client=LLMClientConfig(
             model="qwen/qwen3-30b-a3b",

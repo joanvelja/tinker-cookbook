@@ -55,6 +55,7 @@ class RLVREnv(ProblemEnv):
         format_coef: float = 0.1,
         eos_coef: float = 0.0,
         grade_full_response: bool = False,
+        gt_scorer: Grader | None = None,
     ):
         super().__init__(renderer, convo_prefix, format_coef=format_coef)
         self.question = question
@@ -64,6 +65,7 @@ class RLVREnv(ProblemEnv):
         self.format_instruction = format_instruction
         self.eos_coef = eos_coef
         self.grade_full_response = grade_full_response
+        self.gt_scorer = gt_scorer
 
     def get_question(self) -> str:
         return self.question + self.format_instruction
@@ -120,6 +122,16 @@ class RLVREnv(ProblemEnv):
                 correct_answer = float(result.correct)
                 grade_status = result.status
 
+        # Ground-truth scorer (metrics only, no reward effect).
+        # Uses extracted answer, not full response. INCORRECT on parse failure.
+        gt_correct: float | None = None
+        if self.gt_scorer is not None:
+            if correct_boxed:
+                gt_result = await self.gt_scorer.grade(self.question, self.reference, extracted)
+                gt_correct = float(gt_result.correct)
+            else:
+                gt_correct = 0.0
+
         # Correct answers get a format/EoS bonus; wrong/truncated get flat 0.
         # This avoids penalizing exploration into long trajectories while
         # rewarding well-formatted correct answers.
@@ -153,6 +165,7 @@ class RLVREnv(ProblemEnv):
                 "format_eos": correct_eos,
                 "correct": correct_answer,
                 "time/check_answer_s": check_answer_s,
+                **({"gt_correct": gt_correct} if gt_correct is not None else {}),
             },
             logs={
                 "grade_status": grade_status,
@@ -182,6 +195,7 @@ class RLVRDataset(RLDataset):
         format_coef: float = 0.1,
         eos_coef: float = 0.0,
         grade_full_response: bool = False,
+        gt_scorer: Grader | None = None,
     ):
         self.examples = examples
         self.batch_size = batch_size
@@ -196,6 +210,7 @@ class RLVRDataset(RLDataset):
         self.format_coef = format_coef
         self.eos_coef = eos_coef
         self.grade_full_response = grade_full_response
+        self.gt_scorer = gt_scorer
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         n = len(self.examples)
@@ -222,6 +237,7 @@ class RLVRDataset(RLDataset):
                     format_coef=self.format_coef,
                     eos_coef=self.eos_coef,
                     grade_full_response=self.grade_full_response,
+                    gt_scorer=self.gt_scorer,
                 ),
                 num_envs=self.group_size,
                 dataset_name=self.dataset_name,

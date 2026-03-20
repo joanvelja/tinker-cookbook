@@ -142,6 +142,7 @@ class RLVRDatasetBuilder(RLDatasetBuilder):
     format_coef: float = 0.1
     eos_coef: float = 0.0
     grade_full_response: bool = False
+    gt_scorer_config: GraderConfig | None = None
 
     @abstractmethod
     def _load_data(self) -> tuple[list[RLVRExample], list[RLVRExample] | None]:
@@ -162,6 +163,11 @@ class RLVRDatasetBuilder(RLDatasetBuilder):
         )
         extract_fn = self._get_extract_fn()
         convo_prefix = self._resolve_convo_prefix()
+        gt_scorer = (
+            self.gt_scorer_config.build(concurrency_hint=self.batch_size * self.group_size)
+            if self.gt_scorer_config is not None
+            else None
+        )
 
         train_examples, eval_examples = self._load_data()
 
@@ -179,6 +185,7 @@ class RLVRDatasetBuilder(RLDatasetBuilder):
             format_coef=self.format_coef,
             eos_coef=self.eos_coef,
             grade_full_response=self.grade_full_response,
+            gt_scorer=gt_scorer,
         )
 
         eval_ds: RLVRDataset | None = None
@@ -196,6 +203,7 @@ class RLVRDatasetBuilder(RLDatasetBuilder):
                 n_batches=None,
                 format_coef=self.format_coef,
                 eos_coef=self.eos_coef,
+                gt_scorer=gt_scorer,
                 grade_full_response=self.grade_full_response,
             )
 
