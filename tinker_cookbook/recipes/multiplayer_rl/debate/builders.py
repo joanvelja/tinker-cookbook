@@ -527,6 +527,7 @@ class DebateGroupBuilder(EnvGroupBuilder):
                 for record in recorder.calls
             ]
             calls_path = os.path.join(self.episode_log_dir, "semantic_calls.jsonl")
+            os.makedirs(os.path.dirname(calls_path), exist_ok=True)
             with _EPISODE_LOG_LOCK:
                 with open(calls_path, "a") as f:
                     f.writelines(lines)
