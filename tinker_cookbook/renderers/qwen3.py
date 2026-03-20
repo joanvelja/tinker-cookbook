@@ -381,20 +381,27 @@ class Qwen3DisableThinkingRenderer(Qwen3Renderer):
 
 class Qwen3InstructRenderer(Qwen3Renderer):
     """
-    Renderer for Qwen3 instruct 2507 models. Unlike the earlier Qwen3 models, these models do not
-    use the <think> tag at all.
-
-    Inherits from Qwen3Renderer. ThinkingPart in content is still handled (rendered as
-    <think>...</think>) in case the conversation includes thinking.
+    Renderer for Qwen3 instruct 2507 models. These models are not trained with
+    thinking, but the base Qwen3Renderer prefills ``<think>\\n`` which can trigger
+    residual thinking behavior. We override to prefill a closed think block
+    ``<think>\\n\\n</think>\\n`` so the model skips straight to visible output.
     """
+
+    def build_generation_prompt(
+        self,
+        messages: list[Message],
+        role: str = "assistant",
+        prefill: str | None = None,
+    ) -> tinker.ModelInput:
+        """Prefill with closed think block to suppress thinking."""
+        no_think_prefill = "<think>\n\n</think>\n" + (prefill or "")
+        # Skip Qwen3Renderer.build_generation_prompt (which prefills open <think>)
+        # and go directly to the grandparent.
+        return super(Qwen3Renderer, self).build_generation_prompt(messages, role, no_think_prefill)
 
     @property
     def has_extension_property(self) -> bool:
         """Qwen3 Instruct always satisfies extension - no thinking to strip from history."""
-        # NOTE: If callers include ThinkingPart in history, Qwen3Renderer may still strip it
-        # when strip_thinking_from_history=True, so extension can break.
-        # This is a rare case that'll only occur if we prompt the instruct model
-        # with a conversation from a different model.
         return True
 
 

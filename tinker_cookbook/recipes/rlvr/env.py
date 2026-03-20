@@ -54,6 +54,7 @@ class RLVREnv(ProblemEnv):
         convo_prefix: list[renderers.Message] | None = None,
         format_coef: float = 0.1,
         eos_coef: float = 0.0,
+        grade_full_response: bool = False,
     ):
         super().__init__(renderer, convo_prefix, format_coef=format_coef)
         self.question = question
@@ -62,6 +63,7 @@ class RLVREnv(ProblemEnv):
         self.extract_fn = extract_fn
         self.format_instruction = format_instruction
         self.eos_coef = eos_coef
+        self.grade_full_response = grade_full_response
 
     def get_question(self) -> str:
         return self.question + self.format_instruction
@@ -111,8 +113,9 @@ class RLVREnv(ProblemEnv):
                 check_answer_s = 0.0
             else:
                 correct_boxed = 1.0
+                grader_input = content if self.grade_full_response else extracted
                 t0 = time.monotonic()
-                result = await self.grader.grade(self.question, self.reference, extracted)
+                result = await self.grader.grade(self.question, self.reference, grader_input)
                 check_answer_s = time.monotonic() - t0
                 correct_answer = float(result.correct)
                 grade_status = result.status
@@ -176,6 +179,7 @@ class RLVRDataset(RLDataset):
         n_batches: int | None = None,
         format_coef: float = 0.1,
         eos_coef: float = 0.0,
+        grade_full_response: bool = False,
     ):
         self.examples = examples
         self.batch_size = batch_size
@@ -189,6 +193,7 @@ class RLVRDataset(RLDataset):
         self._n_batches = n_batches
         self.format_coef = format_coef
         self.eos_coef = eos_coef
+        self.grade_full_response = grade_full_response
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         n = len(self.examples)
@@ -214,6 +219,7 @@ class RLVRDataset(RLDataset):
                     convo_prefix=self.convo_prefix,
                     format_coef=self.format_coef,
                     eos_coef=self.eos_coef,
+                    grade_full_response=self.grade_full_response,
                 ),
                 num_envs=self.group_size,
                 dataset_name=self.dataset_name,

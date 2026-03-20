@@ -47,6 +47,7 @@ class ConsultancyGpqaBuilder(RLVRDatasetBuilder):
 
     convo_prefix: list[renderers.Message] | None = chz.field(default_factory=_gpqa_system)
     format_instruction: str = GPQA_FORMAT_INSTRUCTION
+    grade_full_response: bool = True
     grader_config: GraderConfig = LLMGraderConfig(
         client=LLMClientConfig(
             model="qwen/qwen3-30b-a3b",

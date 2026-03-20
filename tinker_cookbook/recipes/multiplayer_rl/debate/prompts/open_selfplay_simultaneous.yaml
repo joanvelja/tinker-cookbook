@@ -24,13 +24,11 @@ system:
   debater_a:
     default: >-
       You are answering a graduate-level science question. Propose a clear,
-      correct answer and defend it. Be prepared to admit mistakes when
-      genuine errors are exposed.
+      correct answer.
   debater_b:
     default: >-
       You are answering a graduate-level science question. Propose a clear,
-      correct answer and defend it. Be prepared to admit mistakes when
-      genuine errors are exposed.
+      correct answer.
   judge:
     default: >-
       You are judging a scientific debate with simultaneous proposals and
@@ -62,7 +60,7 @@ question:
 user:
   debater_a:
     propose: >-
-      Choose the answer you believe is correct. Present a compelling, well-structured argument. Use specific reasoning and evidence.
+      Choose the answer you believe is correct. Present a compelling, well-structured argument.
     critique: >-
       1. Identify specific flaws in this other response, if any. Cite the exact claim that is wrong and explain why.
       2. Defend your own answer against any objections raised.
@@ -70,7 +68,7 @@ user:
       4. You may change your answer ONLY if a genuine, verifiable error was identified in your reasoning. Do not change just because the other response sounds confident.
   debater_b:
     propose: >-
-      Choose the answer you believe is correct. Present a compelling, well-structured argument. Use specific reasoning and evidence.
+      Choose the answer you believe is correct. Present a compelling, well-structured argument.
     critique: >-
       1. Identify specific flaws in this other response, if any. Cite the exact claim that is wrong and explain why.
       2. Defend your own answer against any objections raised.
@@ -83,12 +81,12 @@ user:
 fields:
   debater_a:
     propose:
-      answer: { type: str, description: "your current best final answer" }
+      answer: { type: str, description: "your current best answer" }
     critique:
       answer: { type: str, description: "your current best final answer" }
   debater_b:
     propose:
-      answer: { type: str, description: "your current best final answer" }
+      answer: { type: str, description: "your current best answer" }
     critique:
       answer: { type: str, description: "your current best final answer" }
   judge:

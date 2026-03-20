@@ -394,7 +394,9 @@ TOOL_CAPABLE_MODELS = {
 _HF_TEST_MODELS = [
     ("meta-llama/Llama-3.2-1B-Instruct", None, {}),
     ("Qwen/Qwen3-30B-A3B", None, {}),
-    ("Qwen/Qwen3-30B-A3B-Instruct-2507", None, {}),
+    # Qwen3-30B-A3B-Instruct-2507: intentionally diverges from HF template —
+    # we prefill <think>\n\n</think>\n to suppress residual thinking behavior.
+    # ("Qwen/Qwen3-30B-A3B-Instruct-2507", None, {}),
     ("deepseek-ai/DeepSeek-V3.1", None, {}),  # non-thinking (default)
     ("deepseek-ai/DeepSeek-V3.1", "deepseekv3_thinking", {"thinking": True}),  # thinking mode
     ("openai/gpt-oss-20b", None, {}),
